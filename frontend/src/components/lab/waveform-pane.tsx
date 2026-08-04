@@ -12,6 +12,7 @@ type WaveformPaneProps = {
   onCursorChange: (time: number) => void;
   onHoverChange?: (time: number | null) => void;
   onReady?: (instance: WaveSurfer | null) => void;
+  onAudioReady?: (instance: WaveSurfer) => void;
   onPlayingChange?: (isPlaying: boolean) => void;
 };
 
@@ -28,6 +29,7 @@ export function WaveformPane({
   onCursorChange,
   onHoverChange,
   onReady,
+  onAudioReady,
   onPlayingChange,
 }: WaveformPaneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -43,11 +45,13 @@ export function WaveformPane({
   const cursorChangeRef = useRef(onCursorChange);
   const hoverChangeRef = useRef(onHoverChange);
   const readyRef = useRef(onReady);
+  const audioReadyRef = useRef(onAudioReady);
   const playingChangeRef = useRef(onPlayingChange);
   selectionChangeRef.current = onSelectionChange;
   cursorChangeRef.current = onCursorChange;
   hoverChangeRef.current = onHoverChange;
   readyRef.current = onReady;
+  audioReadyRef.current = onAudioReady;
   playingChangeRef.current = onPlayingChange;
 
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -114,6 +118,7 @@ export function WaveformPane({
     ws.on("ready", () => {
       setState("ready");
       setError(null);
+      audioReadyRef.current?.(ws);
     });
     ws.on("error", (err) => {
       if (isAbortLike(err)) return;
@@ -142,8 +147,19 @@ export function WaveformPane({
     const onPointerMove = (e: PointerEvent) => {
       const t = timeAtClientX(e.clientX);
       if (t !== null) hoverChangeRef.current?.(t);
-      if (pointerDownRef.current && pointerStartXRef.current !== null) {
-        if (Math.abs(e.clientX - pointerStartXRef.current) > 4) draggedRef.current = true;
+      if (
+        pointerDownRef.current &&
+        pointerStartXRef.current !== null &&
+        pointerStartTimeRef.current !== null &&
+        t !== null
+      ) {
+        if (Math.abs(e.clientX - pointerStartXRef.current) > 4) {
+          draggedRef.current = true;
+          selectionChangeRef.current(
+            Math.min(pointerStartTimeRef.current, t),
+            Math.max(pointerStartTimeRef.current, t),
+          );
+        }
       }
     };
     const onPointerUp = (e: PointerEvent) => {

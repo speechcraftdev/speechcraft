@@ -6,6 +6,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@midday/ui/dropdown-menu";
 import { Icons } from "@midday/ui/icons";
@@ -16,6 +18,7 @@ import { type ClipEdit, type LabClip, formatClock, formatSeconds } from "./lab-d
 import { WaveformPane } from "./waveform-pane";
 
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+const DEFAULT_PLAYBACK_RATE = 1;
 
 type ClipLabPanelProps = {
   clip: LabClip;
@@ -28,6 +31,8 @@ type ClipLabPanelProps = {
   onRedo: () => void;
   onMarkReference: () => void;
   onRunModel: () => void;
+  autoplay: boolean;
+  onAutoplayConsumed: () => void;
 };
 
 export function ClipLabPanel({
@@ -41,11 +46,13 @@ export function ClipLabPanel({
   onRedo,
   onMarkReference,
   onRunModel,
+  autoplay,
+  onAutoplayConsumed,
 }: ClipLabPanelProps) {
   const waveSurferRef = useRef<WaveSurfer | null>(null);
   const [playhead, setPlayhead] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [rate, setRate] = useState(1);
+  const [rate, setRate] = useState(DEFAULT_PLAYBACK_RATE);
   const [selectionStart, setSelectionStart] = useState(0);
   const [selectionEnd, setSelectionEnd] = useState(0);
   const [hover, setHover] = useState<number | null>(null);
@@ -62,6 +69,8 @@ export function ClipLabPanel({
     setSelectionEnd(0);
     setHover(null);
     setIsPlaying(false);
+    setRate(DEFAULT_PLAYBACK_RATE);
+    waveSurferRef.current?.setPlaybackRate(DEFAULT_PLAYBACK_RATE, true);
   }, [clip.id]);
 
   const togglePlayback = useCallback(() => {
@@ -78,7 +87,15 @@ export function ClipLabPanel({
     }
   }, [selLo, selHi]);
 
-  // Space toggles playback.
+  const playFromStart = useCallback(() => {
+    const ws = waveSurferRef.current;
+    if (!ws) return;
+    ws.setTime(0);
+    setPlayhead(0);
+    void ws.play();
+  }, []);
+
+  // Space toggles playback; Shift+Space restarts from clip start.
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -90,18 +107,22 @@ export function ClipLabPanel({
       ) {
         return;
       }
-      if (event.code === "Space" && !event.metaKey && !event.ctrlKey) {
+      if (event.code === "Space" && !event.metaKey && !event.ctrlKey && !event.altKey) {
         event.preventDefault();
-        togglePlayback();
+        if (event.shiftKey) {
+          playFromStart();
+        } else {
+          togglePlayback();
+        }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [togglePlayback]);
+  }, [togglePlayback, playFromStart]);
 
-  const cycleRate = () => {
-    const idx = PLAYBACK_RATES.indexOf(rate as (typeof PLAYBACK_RATES)[number]);
-    const next = PLAYBACK_RATES[(idx + 1) % PLAYBACK_RATES.length]!;
+  const chooseRate = (value: string) => {
+    const next = Number(value);
+    if (!PLAYBACK_RATES.includes(next as (typeof PLAYBACK_RATES)[number])) return;
     setRate(next);
     waveSurferRef.current?.setPlaybackRate(next, true);
   };
@@ -183,6 +204,14 @@ export function ClipLabPanel({
               waveSurferRef.current = ws;
               ws?.setPlaybackRate(rate, true);
             }}
+            onAudioReady={(ws) => {
+              ws.setPlaybackRate(rate, true);
+              if (!autoplay) return;
+              onAutoplayConsumed();
+              ws.setTime(0);
+              setPlayhead(0);
+              void ws.play();
+            }}
             onPlayingChange={setIsPlaying}
           />
         ) : (
@@ -196,9 +225,22 @@ export function ClipLabPanel({
         <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={togglePlayback}>
           {isPlaying ? <Icons.Pause className="size-4" /> : <Icons.Play className="size-4" />}
         </Button>
-        <Button type="button" variant="ghost" size="sm" className="h-8 tabular-nums" onClick={cycleRate}>
-          {rate}×
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" variant="ghost" size="sm" className="h-8 tabular-nums">
+              Speed {rate}×
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-24">
+            <DropdownMenuRadioGroup value={String(rate)} onValueChange={chooseRate}>
+              {PLAYBACK_RATES.map((playbackRate) => (
+                <DropdownMenuRadioItem key={playbackRate} value={String(playbackRate)}>
+                  {playbackRate}×
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <Separator orientation="vertical" className="mx-1 h-5" />
 

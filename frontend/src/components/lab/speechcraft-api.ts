@@ -5,8 +5,9 @@
 // optimistic state — wiring those mutations is the next step.
 
 import type { LabClip, MachineBucket, ReviewStatus } from "./lab-data";
+import { speechcraftApiBase } from "@/lib/api-base";
 
-const BASE = process.env.NEXT_PUBLIC_SPEECHCRAFT_API_URL ?? "/sc-api";
+const BASE = speechcraftApiBase();
 
 // Default QC gate thresholds — mirror backend dataset_qc.py
 // (DEFAULT_TRANSCRIPT_THRESHOLD / DEFAULT_SPEAKER_THRESHOLD). transcript_match
@@ -155,6 +156,43 @@ export type DatasetRunLog = {
 /** Raw backend worker log for a run (tail-truncated). Diagnostics drawer. */
 export async function fetchRunLog(runId: string): Promise<DatasetRunLog> {
   return getJson<DatasetRunLog>(`/api/dataset-runs/${runId}/log`);
+}
+
+// ── Canonical export (Clip Lab authoritative) ─────────────────────────────
+export type CanonicalExportBlockedReason = {
+  clip_id: string;
+  reasons: string[];
+};
+
+export type CanonicalExportPreview = {
+  run_id: string;
+  accepted_clip_count: number;
+  total_duration_sec: number;
+  original_audio_count: number;
+  edited_audio_count: number;
+  blocked_clip_count: number;
+  blocked_reasons: CanonicalExportBlockedReason[];
+};
+
+export type CanonicalExportSummary = {
+  export_id: string;
+  run_id: string;
+  project_id: string;
+  created_at: string;
+  accepted_clip_count: number;
+  total_duration_sec: number;
+  snapshot_dir: string;
+  manifest_path: string;
+};
+
+/** Dry-run: accepted clip counts, duration, and export blockers. */
+export async function fetchCanonicalExportPreview(runId: string): Promise<CanonicalExportPreview> {
+  return getJson<CanonicalExportPreview>(`/api/dataset-runs/${runId}/canonical-export-preview`);
+}
+
+/** Relative artifact path for a canonical export snapshot (under the run root). */
+export function canonicalExportArtifactPath(exportId: string): string {
+  return `artifacts/canonical_exports/${exportId}`;
 }
 
 /** Pick the most relevant run to review: newest run that actually has clips. */

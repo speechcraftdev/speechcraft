@@ -155,6 +155,7 @@ export function LabWorkstation() {
   const [filterTags, setFilterTags] = useState<string[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>("source");
   const [filterBuckets, setFilterBuckets] = useState<MachineBucket[]>([]);
+  const [autoplayClipId, setAutoplayClipId] = useState<string | null>(null);
   const seededRunRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -228,6 +229,14 @@ export function LabWorkstation() {
     () => sortClips(filterClips(clips, search, filterStatuses, filterTags, filterBuckets), sortMode),
     [clips, search, filterStatuses, filterTags, filterBuckets, sortMode],
   );
+
+  // If filters/search/sort hide the active clip, clear selection so the queue
+  // and main panel never disagree about what's being edited.
+  useEffect(() => {
+    if (!activeClipId) return;
+    if (visibleClips.some((clip) => clip.id === activeClipId)) return;
+    setActiveClipId(null);
+  }, [visibleClips, activeClipId]);
 
   const activeClip = useMemo(
     () => clips.find((c) => c.id === activeClipId) ?? null,
@@ -352,7 +361,10 @@ export function LabWorkstation() {
           }),
         "Status update",
       );
-      if (nextId) setActiveClipId(nextId);
+      if (nextId) {
+        setAutoplayClipId(nextId);
+        setActiveClipId(nextId);
+      }
     },
     [activeClipId, applyClipWrite, runId],
   );
@@ -421,10 +433,34 @@ export function LabWorkstation() {
       const sr = clip.sampleRateHz || 16000;
       let operation: DatasetAudioEditOperation | null = null;
       if (edit.op === "delete_range" && edit.startSeconds != null && edit.endSeconds != null) {
+        const currentDuration = clip.durationSeconds || 0;
+        const startSeconds = Math.max(0, Math.min(edit.startSeconds, currentDuration));
+        const endSeconds = Math.max(0, Math.min(edit.endSeconds, currentDuration));
+        const durationSamples = Math.round(currentDuration * sr);
+        const startSample = Math.max(0, Math.min(Math.round(startSeconds * sr), durationSamples));
+        const endSample = Math.max(0, Math.min(Math.round(endSeconds * sr), durationSamples));
+        if (endSample <= startSample) {
+          toast({
+            title: "Selection too small",
+            description: "Drag a wider area before deleting.",
+            variant: "error",
+            duration: 2500,
+          });
+          return;
+        }
+        if (startSample === 0 && endSample >= durationSamples) {
+          toast({
+            title: "Cannot delete entire clip",
+            description: "Leave some audio in the clip or reject it instead.",
+            variant: "error",
+            duration: 3000,
+          });
+          return;
+        }
         operation = {
           kind: "delete_range",
-          start_sample: Math.round(edit.startSeconds * sr),
-          end_sample: Math.round(edit.endSeconds * sr),
+          start_sample: startSample,
+          end_sample: endSample,
         };
       } else if (
         edit.op === "insert_silence" &&
@@ -532,8 +568,8 @@ export function LabWorkstation() {
   useHotkeys("shift+enter", (e) => { e.preventDefault(); decide("rejected"); }, { enabled: hotkeyEnabled }, [decide]);
   useHotkeys("up", (e) => { e.preventDefault(); navigate("prev"); }, { enabled: hotkeyEnabled }, [navigate]);
   useHotkeys("down", (e) => { e.preventDefault(); navigate("next"); }, { enabled: hotkeyEnabled }, [navigate]);
-  useHotkeys("meta+z", (e) => { e.preventDefault(); undoEdit(); }, { enabled: hotkeyEnabled }, [undoEdit]);
-  useHotkeys("meta+shift+z", (e) => { e.preventDefault(); redoEdit(); }, { enabled: hotkeyEnabled }, [redoEdit]);
+  useHotkeys("mod+z", (e) => { e.preventDefault(); undoEdit(); }, { enabled: hotkeyEnabled }, [undoEdit]);
+  useHotkeys("mod+shift+z", (e) => { e.preventDefault(); redoEdit(); }, { enabled: hotkeyEnabled }, [redoEdit]);
 
   const isLoading =
     !demo &&
@@ -611,7 +647,7 @@ export function LabWorkstation() {
         </div>
       </header>
 
-      <ExportDialog open={exportOpen} onOpenChange={setExportOpen} />
+      <ExportDialog runId={runId} open={exportOpen} onOpenChange={setExportOpen} />
 
       {mode === "qc" ? (
         <DatasetHealthPage runId={runId} demo={demo} />
@@ -684,6 +720,8 @@ export function LabWorkstation() {
                     onRedo={redoEdit}
                     onMarkReference={markReference}
                     onRunModel={runModel}
+                    autoplay={autoplayClipId === activeClip.id}
+                    onAutoplayConsumed={() => setAutoplayClipId(null)}
                   />
                   <TranscriptPanel
                     clip={activeClip}

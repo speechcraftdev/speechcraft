@@ -3,8 +3,9 @@
 // processing calls are added as their wizard steps are wired.
 
 import { SpeechcraftApiError } from "@/components/lab/speechcraft-write-api";
+import { speechcraftApiBase } from "@/lib/api-base";
 
-const BASE = process.env.NEXT_PUBLIC_SPEECHCRAFT_API_URL ?? "/sc-api";
+const BASE = speechcraftApiBase();
 
 export type SpeechcraftProject = {
   id: string;

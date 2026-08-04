@@ -16,7 +16,7 @@ from .canonical_export import (
 )
 from .reference_clip_candidates import mark_dataset_clip_as_reference_candidate
 from .dataset_worker_client import run_dataset_worker_preflight
-from .defaults import resolve_asr_device_and_compute_type, resolve_whisper_model
+from .defaults import resolve_whisper_model
 from .dataset_runs import (
     create_dataset_run,
     get_candidate_review_media_bytes,
@@ -124,8 +124,10 @@ ALLOWED_WAV_CONTENT_TYPES = {
 
 DEFAULT_ALLOWED_ORIGINS = (
     "http://127.0.0.1:4173",
+    "http://127.0.0.1:3002",
     "http://127.0.0.1:5173",
     "http://localhost:4173",
+    "http://localhost:3002",
     "http://localhost:5173",
 )
 
@@ -179,14 +181,13 @@ def system_preflight(
     asr_device: str | None = None,
     asr_compute_type: str | None = None,
 ) -> dict[str, object]:
-    resolved_device, resolved_compute_type = resolve_asr_device_and_compute_type()
     return run_dataset_worker_preflight(
         artifact_root=artifact_root,
         asr_model=asr_model or resolve_whisper_model("large-v3"),
         asr_model_path=asr_model_path,
         asr_cache_dir=asr_cache_dir,
-        asr_device=asr_device or resolved_device,
-        asr_compute_type=asr_compute_type or resolved_compute_type,
+        asr_device=asr_device,
+        asr_compute_type=asr_compute_type,
     )
 
 

@@ -4,7 +4,10 @@
 // returns 409 if either is stale. Error responses are mapped into a typed
 // SpeechcraftApiError so the workstation can react per failure kind.
 
-const BASE = process.env.NEXT_PUBLIC_SPEECHCRAFT_API_URL ?? "/sc-api";
+import { speechcraftApiBase } from "@/lib/api-base";
+import type { CanonicalExportSummary } from "./speechcraft-api";
+
+const BASE = speechcraftApiBase();
 
 // ── Error taxonomy ──────────────────────────────────────────────────────
 // Mirrors the HTTPException status codes raised in backend/app/main.py:
@@ -80,6 +83,15 @@ async function sendJson<T>(
     method,
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await parseError(res);
+  return (await res.json()) as T;
+}
+
+async function postJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
   });
   if (!res.ok) throw await parseError(res);
   return (await res.json()) as T;
@@ -255,4 +267,11 @@ export async function finalizeDatasetQc(
     "POST",
     { thresholds, manual_overrides: manualOverrides },
   );
+}
+
+// ── Canonical export ──────────────────────────────────────────────────────
+
+/** Create a canonical JSONL export snapshot from current Clip Lab state. */
+export function createCanonicalExport(runId: string): Promise<CanonicalExportSummary> {
+  return postJson<CanonicalExportSummary>(`/api/dataset-runs/${runId}/canonical-exports`);
 }

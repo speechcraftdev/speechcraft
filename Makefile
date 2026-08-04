@@ -58,7 +58,7 @@ dev-worker:
 backend-docs: dev-backend
 
 dev-frontend:
-	cd $(FRONTEND_DIR) && SPEECHCRAFT_BACKEND_URL=$(FRONTEND_API_BASE_URL) bun run dev
+	cd $(FRONTEND_DIR) && SPEECHCRAFT_BACKEND_URL=$(FRONTEND_API_BASE_URL) NEXT_PUBLIC_SPEECHCRAFT_API_URL=$(FRONTEND_API_BASE_URL) bun run dev
 
 check: check-backend check-frontend
 

@@ -1,19 +1,39 @@
+"use client";
+
 // Presentational keyboard legend, mirroring Midday's shortcut convention
 // (small bordered keycap pills, e.g. transaction-shortcuts.tsx). The actual
 // hotkeys are wired in LabWorkstation via react-hotkeys-hook.
 
+import { useSyncExternalStore } from "react";
+
 const SHORTCUTS: { keys: string[]; label: string }[] = [
   { keys: ["Space"], label: "Play / pause" },
+  { keys: ["⇧", "Space"], label: "Play from start" },
   { keys: ["Enter"], label: "Accept & next" },
   { keys: ["⇧", "Enter"], label: "Reject & next" },
   { keys: ["↑", "↓"], label: "Prev / next clip" },
-  { keys: ["⌘", "Z"], label: "Undo" },
 ];
 
+function modKeyLabel(): string {
+  if (typeof navigator === "undefined") return "Ctrl";
+  return /Mac|iPhone|iPod|iPad/i.test(navigator.userAgent) ? "⌘" : "Ctrl";
+}
+
+const subscribe = () => () => {};
+const getModKey = () => modKeyLabel();
+const getServerModKey = () => "Ctrl";
+
 export function KeyboardBar() {
+  const modKey = useSyncExternalStore(subscribe, getModKey, getServerModKey);
+  const shortcuts = [
+    ...SHORTCUTS,
+    { keys: [modKey, "Z"], label: "Undo" },
+    { keys: [modKey, "⇧", "Z"], label: "Redo" },
+  ];
+
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border px-4 py-2.5">
-      {SHORTCUTS.map((shortcut) => (
+      {shortcuts.map((shortcut) => (
         <div key={shortcut.label} className="flex items-center gap-1.5">
           <span className="flex items-center gap-0.5">
             {shortcut.keys.map((key) => (

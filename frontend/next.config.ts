@@ -7,8 +7,14 @@ const speechcraftBackend =
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  allowedDevOrigins: ["127.0.0.1", "localhost"],
   // Local single-user tool: keep builds unblocked while we iterate.
   typescript: { ignoreBuildErrors: true },
+  experimental: {
+    // Local Speechcraft ingest routinely streams large WAVs through the /sc-api
+    // rewrite. The default 10MB proxy buffer truncates uploads.
+    proxyClientMaxBodySize: "512mb",
+  },
   async rewrites() {
     return [
       {

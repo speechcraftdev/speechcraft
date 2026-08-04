@@ -57,7 +57,7 @@ export function WorkstationSidebar() {
         <ProjectPicker />
       </aside>
 
-      <ExportDialog open={exportOpen} onOpenChange={setExportOpen} />
+      <ExportDialog runId={null} open={exportOpen} onOpenChange={setExportOpen} />
     </TooltipProvider>
   );
 }

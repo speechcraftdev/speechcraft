@@ -22,6 +22,17 @@ DEFAULT_MFA_DICTIONARY = "english_us_mfa"
 DEFAULT_MFA_ACOUSTIC_MODEL = "english_mfa"
 
 
+def resolve_asr_device_and_compute_type() -> tuple[str, str]:
+    try:
+        import torch
+    except ImportError:
+        return "cpu", "int8"
+
+    if torch.cuda.is_available():
+        return "cuda", "float16"
+    return "cpu", "int8"
+
+
 def module_check(module_name: str, import_name: str | None = None) -> dict[str, Any]:
     target = import_name or module_name
     try:
@@ -183,14 +194,21 @@ def asr_model_check(args: argparse.Namespace) -> dict[str, Any]:
     try:
         from speechcraft_dataset.models import check_asr_model
 
+        device = args.asr_device
+        compute_type = args.asr_compute_type
+        if not device or not compute_type:
+            auto_device, auto_compute_type = resolve_asr_device_and_compute_type()
+            device = device or auto_device
+            compute_type = compute_type or auto_compute_type
+
         return check_asr_model(
             model=args.asr_model,
             model_path=args.asr_model_path,
             cache_dir=args.asr_cache_dir,
             local_only=True,
             load_model=True,
-            device=args.asr_device,
-            compute_type=args.asr_compute_type,
+            device=device,
+            compute_type=compute_type,
             timeout_seconds=args.asr_model_timeout_seconds,
         )
     except Exception as exc:
@@ -247,8 +265,8 @@ def main() -> None:
     parser.add_argument("--asr-model", default=os.environ.get("SPEECHCRAFT_ASR_MODEL", "small.en"))
     parser.add_argument("--asr-model-path", default=os.environ.get("SPEECHCRAFT_ASR_MODEL_PATH"))
     parser.add_argument("--asr-cache-dir", default=os.environ.get("SPEECHCRAFT_ASR_CACHE_DIR"))
-    parser.add_argument("--asr-device", default=os.environ.get("SPEECHCRAFT_ASR_DEVICE", "cpu"))
-    parser.add_argument("--asr-compute-type", default=os.environ.get("SPEECHCRAFT_ASR_COMPUTE_TYPE", "int8"))
+    parser.add_argument("--asr-device", default=os.environ.get("SPEECHCRAFT_ASR_DEVICE"))
+    parser.add_argument("--asr-compute-type", default=os.environ.get("SPEECHCRAFT_ASR_COMPUTE_TYPE"))
     parser.add_argument("--asr-model-timeout-seconds", type=int, default=120)
     parser.add_argument("--check-asr-model-load", action="store_true")
     parser.add_argument("--mfa-bin", default=os.environ.get("SPEECHCRAFT_MFA_BIN"))

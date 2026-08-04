@@ -44,3 +44,6 @@ backend/data/qc_graph_exploration.zip
 backend/logs/
 repomix-output.xml
 docs/review_bundles/*.patch
+
+
+/.tmp/
