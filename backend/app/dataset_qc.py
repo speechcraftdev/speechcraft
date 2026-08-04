@@ -40,7 +40,7 @@ EXPORT_SUMMARY_REL = "artifacts/export_summary.json"
 NATIVE_EXPORT_DIR_REL = "artifacts/native_export_clips"
 
 SCORE_METHODS = {
-    "transcript_match": "min_meaningful_ctc_span",
+    "transcript_match": "whisper_b1_lj_v1",
     "speaker_check": "min_valid_window_similarity",
 }
 
@@ -169,14 +169,6 @@ def _weak_speaker_spans(row: dict[str, Any]) -> list[DatasetQcWeakSpanView]:
 
 
 def _transcript_score_from_row(row: dict[str, Any]) -> float:
-    for field_name in (
-        "ctc_min_span_score",
-        "ctc_min_aligned_token_score",
-        "ctc_min_window_score",
-        "ctc_mean_score",
-    ):
-        if field_name in row and row.get(field_name) is not None:
-            return _score_from_fraction(row.get(field_name), field_name)
     return _validate_qc_score(row.get("transcript_match_score"), "transcript_match_score")
 
 
@@ -500,14 +492,17 @@ def get_dataset_qc(repository: Any, run_id: str) -> DatasetQcPayloadView:
             if transcript_row is None:
                 qc_reason_codes.append("missing_transcript_qc")
             else:
-                try:
-                    transcript_match = _transcript_score_from_row(transcript_row)
-                    transcript_reason_codes = [
-                        str(code) for code in (transcript_row.get("reason_codes") or []) if isinstance(code, str)
-                    ]
-                    weak_transcript_spans = _weak_transcript_spans(transcript_row)
-                except DatasetQcValidationError:
+                transcript_reason_codes = [
+                    str(code) for code in (transcript_row.get("reason_codes") or []) if isinstance(code, str)
+                ]
+                weak_transcript_spans = _weak_transcript_spans(transcript_row)
+                if transcript_row.get("transcript_match_score") is None:
                     qc_reason_codes.append("missing_transcript_qc")
+                else:
+                    try:
+                        transcript_match = _transcript_score_from_row(transcript_row)
+                    except DatasetQcValidationError:
+                        qc_reason_codes.append("missing_transcript_qc")
 
             if speaker_row is None:
                 qc_reason_codes.append("missing_speaker_qc")

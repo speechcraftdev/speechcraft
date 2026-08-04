@@ -2064,7 +2064,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                         "speaker_check_min": 70,
                     },
                     "score_methods": {
-                        "transcript_match": "min_meaningful_ctc_span",
+                        "transcript_match": "whisper_b1_lj_v1",
                         "speaker_check": "min_valid_window_similarity",
                     },
                     "manual_overrides": [],
@@ -2134,7 +2134,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                         "speaker_check_min": 70,
                     },
                     "score_methods": {
-                        "transcript_match": "min_meaningful_ctc_span",
+                        "transcript_match": "whisper_b1_lj_v1",
                         "speaker_check": "min_valid_window_similarity",
                     },
                     "manual_overrides": [
@@ -2188,7 +2188,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                     "stage": "dataset_qc",
                     "thresholds": {"transcript_match_min": 85, "speaker_check_min": 70},
                     "score_methods": {
-                        "transcript_match": "min_meaningful_ctc_span",
+                        "transcript_match": "whisper_b1_lj_v1",
                         "speaker_check": "min_valid_window_similarity",
                     },
                     "manual_overrides": [],
@@ -2223,7 +2223,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                     "stage": "dataset_qc",
                     "thresholds": {"transcript_match_min": 85, "speaker_check_min": 70},
                     "score_methods": {
-                        "transcript_match": "min_meaningful_ctc_span",
+                        "transcript_match": "whisper_b1_lj_v1",
                         "speaker_check": "min_valid_window_similarity",
                     },
                     "manual_overrides": [],

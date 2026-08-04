@@ -93,39 +93,35 @@ normalization hazard tracker instead.
 NeMo, speaker-purity QC, dataset QC, review-decision persistence, and VoxCPM
 manifest export remain after this stage contract is stable.
 
-## Offline CTC transcript QC experiment
+## Transcript confidence QC (Whisper B1-LJ)
 
-Standalone tool for manually validating whether Wav2Vec2 CTC confidence ranks
-candidate review clips by transcript/audio agreement. This does not change the
-production pipeline or frontend.
+Production transcript-confidence scoring runs on **final candidate review clips**
+with clip-level `faster-whisper` (`large-v3` by default) and the frozen B1-LJ
+formula. The old Wav2Vec2 CTC / greedy-decode TC path has been removed.
 
 ```bash
 cd workers/dataset
-uv sync --locked
-
-PYTHONPATH=workers/dataset .venv/bin/python \
-  -m speechcraft_dataset.analyze_ctc_transcript_qc \
-  --run-root ../../backend/data/media/dataset-runs/mb-mq3wkz25/dataset-17d22e1684db \
-  --out /tmp/ctc-qc-madison \
-  --export-worst 50
+uv run python -m speechcraft_dataset.analyze_whisper_b1_transcript_qc \
+  --run-root /path/to/dataset-run \
+  --model large-v3 \
+  --device auto
 ```
 
-Outputs under `--out`:
+Behavior notes:
 
-- `ctc_transcript_qc.json`
-- `ctc_transcript_qc_summary.json`
-- `ctc_transcript_qc_by_score.csv`
-- `worst_clips/` and `best_clips/` (wav + sidecar txt for ear-checking)
-
-If `import ctc_segmentation` fails with a NumPy 2 ABI error after install,
-rebuild the extension from source against the current NumPy:
-
-```bash
-cd /tmp && curl -sL https://files.pythonhosted.org/packages/source/c/ctc_segmentation/ctc_segmentation-1.7.4.tar.gz -o ctc_segmentation-1.7.4.tar.gz
-tar xf ctc_segmentation-1.7.4.tar.gz && cd ctc_segmentation-1.7.4
-NPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION ../workers/dataset/.venv/bin/python setup.py build_ext --inplace
-cp ctc_segmentation/ctc_segmentation_dyn*.so ../workers/dataset/.venv/lib/python3.12/site-packages/ctc_segmentation/
-```
+- Whisper is loaded once per analysis run and reused across clips.
+- Required transcription options: `word_timestamps=True`, `vad_filter=False`,
+  `condition_on_previous_text=False`.
+- Scoring uses lexical word probabilities only; punctuation-only tokens are excluded.
+- Zero lexical words leave `transcript_match_score` as `null`, mark the clip
+  review-required, and emit `no_lexical_words`.
+- Segments with lexical content and `no_speech_prob >= 0.7` are review-required
+  without mutating the B1-LJ formula.
+- Number/symbol hazards are review metadata, not score penalties.
+- Config keys such as `transcript_qc_backend=ctc` or Wav2Vec2 model ids fail with
+  an actionable removal error.
+- TC scoring is independent of the current ASR+MFA slicer; it does not score
+  transient processing buffers.
 
 ## Backend Run Lifecycle
 

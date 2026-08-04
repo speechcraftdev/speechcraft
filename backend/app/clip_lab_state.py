@@ -559,17 +559,9 @@ def _score_from_fraction(raw: Any) -> float | None:
 
 
 def _transcript_match_score(row: dict[str, Any]) -> float | None:
-    if row.get("transcript_match_score") is not None:
-        return _score_from_fraction(row.get("transcript_match_score"))
-    for field_name in (
-        "ctc_min_span_score",
-        "ctc_min_aligned_token_score",
-        "ctc_min_window_score",
-        "ctc_mean_score",
-    ):
-        if field_name in row and row.get(field_name) is not None:
-            return _score_from_fraction(row.get(field_name))
-    return None
+    if row.get("transcript_match_score") is None:
+        return None
+    return _score_from_fraction(row.get("transcript_match_score"))
 
 
 def _speaker_check_score(row: dict[str, Any]) -> float | None:

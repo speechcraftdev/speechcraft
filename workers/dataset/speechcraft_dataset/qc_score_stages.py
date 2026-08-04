@@ -5,7 +5,7 @@ from typing import Any
 
 
 def run_transcript_qc_stage(run_root: Path, config: dict[str, Any]) -> dict[str, Any]:
-    from .analyze_ctc_transcript_qc import run_transcript_qc
+    from .analyze_whisper_b1_transcript_qc import run_transcript_qc
 
     return run_transcript_qc(run_root, config)
 

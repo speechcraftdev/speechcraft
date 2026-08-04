@@ -599,7 +599,6 @@ class ClipLabStateTests(unittest.TestCase):
         {
           "clip_id": "candidate_review_clip_000001",
           "transcript_match_score": 95,
-          "ctc_min_span_score": 0.50,
         }
       ],
     }
@@ -621,6 +620,39 @@ class ClipLabStateTests(unittest.TestCase):
     clip = next(row for row in view["clips"] if row["clip_id"] == "candidate_review_clip_000001")
     self.assertEqual(clip["transcript_match"], 95.0)
     self.assertEqual(clip["speaker_check"], 88.0)
+
+  def test_null_transcript_match_score_is_tolerated(self) -> None:
+    artifacts = self.run_root / "artifacts"
+    transcript_qc = {
+      "schema_version": 1,
+      "stage": "transcript_qc",
+      "clips": [
+        {
+          "clip_id": "candidate_review_clip_000001",
+          "transcript_match_score": None,
+          "reason_codes": ["no_lexical_words"],
+          "review_required": True,
+        }
+      ],
+    }
+    speaker_purity = {
+      "schema_version": 1,
+      "stage": "speaker_purity",
+      "clips": [
+        {
+          "clip_id": "candidate_review_clip_000001",
+          "speaker_check_score": 88,
+        }
+      ],
+    }
+    (artifacts / "transcript_qc.json").write_text(json.dumps(transcript_qc), encoding="utf-8")
+    (artifacts / "speaker_purity.json").write_text(json.dumps(speaker_purity), encoding="utf-8")
+
+    view = build_clip_lab_view(self.run_root, run_id="run-1")
+    clip = next(row for row in view["clips"] if row["clip_id"] == "candidate_review_clip_000001")
+    self.assertIsNone(clip["transcript_match"])
+    self.assertEqual(clip["speaker_check"], 88.0)
+
 
   def test_resolve_manifest_source_audio_hash_prefers_audio_sha256(self) -> None:
     row = {"id": "clip-1", "audio_sha256": "a" * 64, "audio_hash": "a" * 64}

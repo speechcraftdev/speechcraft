@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate QC metric exploration plots for mb / mc / poki."""
+"""Generate QC metric exploration plots for mb / mc / poki.
+
+Historical offline exploration helper. Transcript inputs still read archived
+`eval_ctc_qc_v2` experiment dumps under backend/data. Production transcript
+confidence scoring now uses Whisper B1-LJ via analyze_whisper_b1_transcript_qc.
+"""
 
 from __future__ import annotations
 

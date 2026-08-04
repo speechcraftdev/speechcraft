@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-import numpy as np
 from pydantic import ValidationError
 from sqlmodel import Session
 
@@ -164,10 +163,6 @@ class DatasetQcTests(TestCase):
         run_root = self.repository.media_root / str(self.run.artifact_root)
         transcript = json.loads((run_root / "artifacts" / "transcript_qc.json").read_text(encoding="utf-8"))
         transcript["clips"][0]["transcript_match_score"] = "bad-score"
-        transcript["clips"][0]["ctc_min_span_score"] = None
-        transcript["clips"][0]["ctc_min_aligned_token_score"] = None
-        transcript["clips"][0]["ctc_min_window_score"] = None
-        transcript["clips"][0]["ctc_mean_score"] = None
         (run_root / "artifacts" / "transcript_qc.json").write_text(json.dumps(transcript), encoding="utf-8")
 
         payload = get_dataset_qc(self.repository, self.run.id)
@@ -176,13 +171,27 @@ class DatasetQcTests(TestCase):
         self.assertIsNone(clip.transcript_match)
         self.assertIn("missing_transcript_qc", clip.qc_reason_codes)
 
-    def test_qc_payload_prefers_precise_raw_metric_fields_over_rounded_scores(self) -> None:
+    def test_null_transcript_match_score_treated_as_missing(self) -> None:
+        run_root = self.repository.media_root / str(self.run.artifact_root)
+        transcript = json.loads((run_root / "artifacts" / "transcript_qc.json").read_text(encoding="utf-8"))
+        transcript["clips"][0]["transcript_match_score"] = None
+        transcript["clips"][0]["reason_codes"] = ["no_lexical_words"]
+        transcript["clips"][0]["review_required"] = True
+        (run_root / "artifacts" / "transcript_qc.json").write_text(json.dumps(transcript), encoding="utf-8")
+
+        payload = get_dataset_qc(self.repository, self.run.id)
+        clip = next(row for row in payload.clips if row.clip_id == "candidate_review_clip_000001")
+
+        self.assertIsNone(clip.transcript_match)
+        self.assertIn("missing_transcript_qc", clip.qc_reason_codes)
+        self.assertIn("no_lexical_words", clip.transcript_reason_codes)
+
+    def test_qc_payload_uses_transcript_match_score_directly(self) -> None:
         run_root = self.repository.media_root / str(self.run.artifact_root)
         transcript = json.loads((run_root / "artifacts" / "transcript_qc.json").read_text(encoding="utf-8"))
         speaker = json.loads((run_root / "artifacts" / "speaker_purity.json").read_text(encoding="utf-8"))
 
-        transcript["clips"][0]["transcript_match_score"] = 87
-        transcript["clips"][0]["ctc_min_span_score"] = 0.87654
+        transcript["clips"][0]["transcript_match_score"] = 87.654
         speaker["clips"][0]["speaker_check_score"] = 74
         speaker["clips"][0]["min_window_similarity"] = 0.74231
 
@@ -196,64 +205,53 @@ class DatasetQcTests(TestCase):
         self.assertEqual(clip.speaker_check, 74.23)
 
     def test_get_qc_accepts_worker_written_transcript_qc_artifact(self) -> None:
-        from speechcraft_dataset.analyze_ctc_transcript_qc import CtcModelBundle, run_transcript_qc
+        from speechcraft_dataset.analyze_whisper_b1_transcript_qc import run_transcript_qc
 
         run_root = self.repository.media_root / str(self.run.artifact_root)
-        fake_metrics = {
-            "transcript_score_method": "min_meaningful_ctc_span",
-            "ctc_mean_score": 0.91,
-            "ctc_min_span_score": 0.87,
-            "ctc_min_window_score": 0.88,
-            "ctc_min_token_score": 0.75,
-            "ctc_min_aligned_token_score": 0.76,
-            "unaligned_token_count": 0,
-            "weak_span_count": 1,
-            "weak_spans": [
-                {
-                    "start_sec": 0.1,
-                    "end_sec": 0.4,
-                    "text": "HELLO",
-                    "score": 0.87,
-                }
-            ],
-            "segment_confidence": 0.9,
-            "transcript_match_score": 87,
-            "bucket": "accepted",
-            "bucket_hint": "pass",
-            "reason_codes": [],
-            "audio_duration_sec": 1.0,
-            "aligned_speech_sec": 1.0,
-            "unexplained_speech_sec": 0.0,
-            "aligned_speech_ratio": 1.0,
-            "unaligned_speech_ratio": 0.0,
-            "char_timings_span_sec": 0.8,
-        }
+
+        class FakeWord:
+            def __init__(self, word: str, probability: float, start: float = 0.0, end: float = 0.2) -> None:
+                self.word = word
+                self.probability = probability
+                self.start = start
+                self.end = end
+
+        class FakeSegment:
+            def __init__(self) -> None:
+                self.text = " hello world "
+                self.start = 0.0
+                self.end = 1.0
+                self.avg_logprob = -0.2
+                self.compression_ratio = 1.1
+                self.no_speech_prob = 0.01
+                self.words = [
+                    FakeWord("hello", 0.91, 0.0, 0.4),
+                    FakeWord("world", 0.88, 0.4, 0.9),
+                ]
+
+        class FakeModel:
+            def transcribe(self, *_args, **_kwargs):
+                return [FakeSegment()], object()
+
         with patch(
-            "speechcraft_dataset.analyze_ctc_transcript_qc.load_ctc_model",
-            return_value=CtcModelBundle(
-                model=object(),
-                processor=object(),
-                char_list=["H", "E", "L", "O", "|"],
-                device="cpu",
-            ),
+            "speechcraft_dataset.analyze_whisper_b1_transcript_qc.resolve_transcript_qc_model_reference",
+            return_value=("large-v3", "/tmp/fake-whisper"),
         ), patch(
-            "speechcraft_dataset.analyze_ctc_transcript_qc.read_analysis_audio",
-            return_value=(np.zeros(16000, dtype=np.float32), 16000),
-        ), patch(
-            "speechcraft_dataset.analyze_ctc_transcript_qc.score_clip",
-            return_value=fake_metrics,
+            "speechcraft_dataset.analyze_whisper_b1_transcript_qc.resolve_device",
+            return_value="cpu",
         ):
-            run_transcript_qc(run_root, {})
+            run_transcript_qc(run_root, {}, model_factory=lambda *_args, **_kwargs: FakeModel())
 
         payload = get_dataset_qc(self.repository, self.run.id)
         self.assertTrue(payload.ready)
         self.assertEqual(payload.invalid_artifacts, [])
         clip = next(row for row in payload.clips if row.clip_id == "candidate_review_clip_000001")
-        self.assertEqual(clip.transcript_match, 87)
-        self.assertEqual(clip.weak_transcript_spans[0].score, 87.0)
+        self.assertIsNotNone(clip.transcript_match)
+        self.assertGreaterEqual(clip.transcript_match or 0.0, 0.0)
+        self.assertLessEqual(clip.transcript_match or 0.0, 100.0)
 
     def test_worker_written_qc_artifacts_make_backend_ready_and_finalizeable(self) -> None:
-        from speechcraft_dataset.analyze_ctc_transcript_qc import CtcModelBundle, run_transcript_qc
+        from speechcraft_dataset.analyze_whisper_b1_transcript_qc import run_transcript_qc
         from speechcraft_dataset.eval_speaker_purity import run_speaker_purity
 
         run_root = self.repository.media_root / str(self.run.artifact_root)
@@ -261,28 +259,26 @@ class DatasetQcTests(TestCase):
         (artifacts / "transcript_qc.json").unlink()
         (artifacts / "speaker_purity.json").unlink()
 
-        fake_transcript_metrics = {
-            "transcript_score_method": "min_meaningful_ctc_span",
-            "ctc_mean_score": 0.91,
-            "ctc_min_span_score": 0.87,
-            "ctc_min_window_score": 0.88,
-            "ctc_min_token_score": 0.75,
-            "ctc_min_aligned_token_score": 0.76,
-            "unaligned_token_count": 0,
-            "weak_span_count": 1,
-            "weak_spans": [{"start_sec": 0.1, "end_sec": 0.4, "text": "HELLO", "score": 0.87}],
-            "segment_confidence": 0.9,
-            "transcript_match_score": 87,
-            "bucket": "accepted",
-            "bucket_hint": "pass",
-            "reason_codes": [],
-            "audio_duration_sec": 1.0,
-            "aligned_speech_sec": 1.0,
-            "unexplained_speech_sec": 0.0,
-            "aligned_speech_ratio": 1.0,
-            "unaligned_speech_ratio": 0.0,
-            "char_timings_span_sec": 0.8,
-        }
+        class FakeWord:
+            def __init__(self, word: str, probability: float) -> None:
+                self.word = word
+                self.probability = probability
+                self.start = 0.0
+                self.end = 0.2
+
+        class FakeSegment:
+            def __init__(self) -> None:
+                self.text = " hello world "
+                self.start = 0.0
+                self.end = 1.0
+                self.avg_logprob = -0.2
+                self.compression_ratio = 1.1
+                self.no_speech_prob = 0.01
+                self.words = [FakeWord("hello", 0.95), FakeWord("world", 0.93)]
+
+        class FakeModel:
+            def transcribe(self, *_args, **_kwargs):
+                return [FakeSegment()], object()
 
         def fake_evaluate(*_args, **_kwargs):
             stage_dir = artifacts / "_speaker_purity_stage"
@@ -331,24 +327,16 @@ class DatasetQcTests(TestCase):
             return {"target_speaker_id": "speaker_0"}
 
         with patch(
-            "speechcraft_dataset.analyze_ctc_transcript_qc.load_ctc_model",
-            return_value=CtcModelBundle(
-                model=object(),
-                processor=object(),
-                char_list=["H", "E", "L", "O", "|"],
-                device="cpu",
-            ),
+            "speechcraft_dataset.analyze_whisper_b1_transcript_qc.resolve_transcript_qc_model_reference",
+            return_value=("large-v3", "/tmp/fake-whisper"),
         ), patch(
-            "speechcraft_dataset.analyze_ctc_transcript_qc.read_analysis_audio",
-            return_value=(np.zeros(16000, dtype=np.float32), 16000),
-        ), patch(
-            "speechcraft_dataset.analyze_ctc_transcript_qc.score_clip",
-            return_value=fake_transcript_metrics,
+            "speechcraft_dataset.analyze_whisper_b1_transcript_qc.resolve_device",
+            return_value="cpu",
         ), patch(
             "speechcraft_dataset.eval_speaker_purity.evaluate_speaker_purity",
             side_effect=fake_evaluate,
         ):
-            run_transcript_qc(run_root, {})
+            run_transcript_qc(run_root, {}, model_factory=lambda *_args, **_kwargs: FakeModel())
             run_speaker_purity(run_root, {})
 
         payload = get_dataset_qc(self.repository, self.run.id)
@@ -480,7 +468,7 @@ class DatasetQcTests(TestCase):
         dataset_qc = json.loads(dataset_qc_path.read_text(encoding="utf-8"))
         self.assertEqual(dataset_qc["schema_version"], 1)
         self.assertEqual(dataset_qc["thresholds"]["transcript_match_min"], 85)
-        self.assertEqual(dataset_qc["score_methods"]["transcript_match"], "min_meaningful_ctc_span")
+        self.assertEqual(dataset_qc["score_methods"]["transcript_match"], "whisper_b1_lj_v1")
         self.assertEqual(dataset_qc["score_methods"]["speaker_check"], "min_valid_window_similarity")
         created_at = dataset_qc["created_at"]
 
