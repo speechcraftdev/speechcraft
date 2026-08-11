@@ -1,0 +1,37 @@
+experiment: slicer_daddy_test_v2
+created_at: 2026-08-11
+
+buckeye_normalized: /home/aaravthegreat/Datasets/buckeye/normalized_reviewed_2026-07-18
+nemo_batch: /home/aaravthegreat/Datasets/buckeye/eval_runs/2026-07-18_buckeye_nemo_batch_v1
+acoustic_matrix: /home/aaravthegreat/Datasets/buckeye/eval_runs/2026-07-18_buckeye_acoustic_matrix_v1
+vad_geometry: /home/aaravthegreat/Datasets/buckeye/eval_runs/2026-07-21_buckeye_vad_geometry_experiment
+failure_tournament_A_policies: /home/aaravthegreat/Projects/speechcraft/eval_runs/failure_driven_slicer_tournament_fast_full_16way_buckeye_2026-07-29
+proper_D_recheck: /home/aaravthegreat/Projects/speechcraft/eval_runs/failure_driven_geometry_recheck_proper_D_full_2026-07-29
+
+review_bundles:
+  geometry_blocker_fix: /home/aaravthegreat/Projects/speechcraft/review_bundles/geometry_blocker_fix_review_bundle_no_audio_2026-07-29.zip
+  fast_16way_buckeye: /home/aaravthegreat/Projects/speechcraft/review_bundles/failure_driven_slicer_tournament_fast_full_16way_buckeye_review_bundle_no_audio_2026-07-29.zip
+  buckeye_vad_geometry: /home/aaravthegreat/Datasets/buckeye/eval_runs/2026-07-21_buckeye_vad_geometry_experiment_review_bundle_no_audio.zip
+  buckeye_acoustic_matrix: /home/aaravthegreat/Datasets/buckeye/eval_runs/2026-07-18_buckeye_acoustic_matrix_review_bundle_no_audio.zip
+  buckeye_nemo_batch: /home/aaravthegreat/Datasets/buckeye/eval_runs/2026-07-18_buckeye_nemo_batch_review_bundle_no_audio.zip
+
+product_validation:
+  emma_watson_diarization: /home/aaravthegreat/Projects/speechcraft/eval_runs/youtube_diarization_u6iJN8OovWg
+  emma_watson_speaker0_slicer_asr: /home/aaravthegreat/Projects/speechcraft/eval_runs/youtube_u6iJN8OovWg_speaker_0_vad_percentile_rms_clips_2026-07-22
+
+invalid_results:
+  - artifact: /home/aaravthegreat/Projects/speechcraft/eval_runs/failure_driven_slicer_tournament_fast_full_16way_buckeye_2026-07-29
+    invalid_scope: A_vs_D_geometry_comparison
+    reason: fast runner reused A-geometry VAD cache for proper_D_baseline
+    still_valid: A-derived policy variant results
+
+authoritative_geometry_result:
+  A_reference: /home/aaravthegreat/Projects/speechcraft/eval_runs/failure_driven_slicer_tournament_fast_full_16way_buckeye_2026-07-29
+  D_reference: /home/aaravthegreat/Projects/speechcraft/eval_runs/failure_driven_geometry_recheck_proper_D_full_2026-07-29
+  blocker_review_bundle: /home/aaravthegreat/Projects/speechcraft/review_bundles/geometry_blocker_fix_review_bundle_no_audio_2026-07-29.zip
+
+next_required_work:
+  - annotated character-dataset replay for failure_27_bad_end
+  - annotated character-dataset replay for failure_49_bad_start
+  - annotated character-dataset replay for failure_93_scope_contamination
+

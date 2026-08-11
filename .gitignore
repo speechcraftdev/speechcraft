@@ -1,0 +1,26 @@
+# Keep this repo as an index/snapshot, not a data dump.
+
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.ogg
+*.mp4
+*.mkv
+
+__pycache__/
+*.pyc
+
+*.onnx
+*.pt
+*.ckpt
+*.nemo
+
+scratch/
+tmp/
+cache/
+shared_cache/
+shared_feature_cache/
+compact_runs/
+eval_runs/
+
