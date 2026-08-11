@@ -47,3 +47,12 @@ docs/review_bundles/*.patch
 
 
 /.tmp/
+
+# Local eval / experiment / review artifacts (keep working tree usable)
+eval_runs/
+tmp/
+frontend/tmp/
+review_bundles/
+vad_percentile_rms_*_review*/
+vad_percentile_rms_*_clip_review*/
+workers/dataset/fixtures/
