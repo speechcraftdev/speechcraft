@@ -18,15 +18,31 @@ from referee.types import (
 )
 from referee.validate import validate
 
-DEPTH_GT_20MS = 0.020
-DEPTH_GT_50MS = 0.050
-DEPTH_GT_100MS = 0.100
+# Thresholds in milliseconds. Classification uses integer microseconds so that
+# float subtraction artifacts (e.g. 1.05 - 1.0 == 0.050000000000000044) do not
+# turn an intended exact 20/50/100 ms depth into a false strict `>` hit.
+DEPTH_GT_20MS = 20
+DEPTH_GT_50MS = 50
+DEPTH_GT_100MS = 100
 
 
 def _rate(count: int, total: int) -> float | None:
     if total == 0:
         return None
     return count / total
+
+
+def _depth_sec_to_us(depth_sec: float) -> int:
+    """Nearest-microsecond depth for threshold classification."""
+    return int(round(depth_sec * 1_000_000.0))
+
+
+def _depth_gt_threshold_ms(depth_sec: float, threshold_ms: int) -> bool:
+    """Strict mathematical `>` on millisecond thresholds via integer microseconds.
+
+    Exactly 20 / 50 / 100 ms is NOT counted as greater than that threshold.
+    """
+    return _depth_sec_to_us(depth_sec) > threshold_ms * 1000
 
 
 def _leak_depth_inside_phone(
@@ -60,11 +76,11 @@ def _safety_counts(
         if depth is None:
             continue
         inside += 1
-        if depth > DEPTH_GT_20MS:
+        if _depth_gt_threshold_ms(depth, DEPTH_GT_20MS):
             gt20 += 1
-        if depth > DEPTH_GT_50MS:
+        if _depth_gt_threshold_ms(depth, DEPTH_GT_50MS):
             gt50 += 1
-        if depth > DEPTH_GT_100MS:
+        if _depth_gt_threshold_ms(depth, DEPTH_GT_100MS):
             gt100 += 1
     return len(times), inside, gt20, gt50, gt100
 

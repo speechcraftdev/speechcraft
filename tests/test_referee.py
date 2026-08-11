@@ -86,8 +86,7 @@ class TestPhonePenetrationSemantics:
         assert _leak_depth_inside_phone(1.100, phones) is None
 
     def test_strict_depth_thresholds_in_aggregate(self) -> None:
-        # Use depths safely away from float-equality edges for 0.020 / 0.050 / 0.100.
-        # Exact-threshold strictness is asserted separately on float literals below.
+        # Depths safely away from exact thresholds; exact edges covered below.
         reference = _ref(phones=[_phone(1.000, 1.300)])
         cuts = [
             _cut(1.010),  # depth 0.010 — inside, not >20ms
@@ -110,14 +109,46 @@ class TestPhonePenetrationSemantics:
         assert metrics.depth_gt_50ms_rate == pytest.approx(3 / 7)
         assert metrics.depth_gt_100ms_rate == pytest.approx(1 / 7)
 
-    def test_threshold_comparisons_are_strict_gt(self) -> None:
-        # Operator contract: equality does not count (strict >).
-        assert not (0.020 > 0.020)
-        assert not (0.050 > 0.050)
-        assert not (0.100 > 0.100)
-        assert 0.021 > 0.020
-        assert 0.051 > 0.050
-        assert 0.101 > 0.100
+    def test_exact_threshold_depths_via_evaluator(self) -> None:
+        # Phone/cut coordinates chosen so intended depths are exactly 20/50/100 ms.
+        # Float subtraction of these times is NOT exact (e.g. 1.05-1.0 can be
+        # 0.050000000000000044); the evaluator must still treat them as exact.
+        reference = _ref(phones=[_phone(1.000, 3.000)])
+        result = SlicerResult(
+            cutpoints=(
+                _cut(1.020),  # intended exact 20 ms
+                _cut(1.050),  # intended exact 50 ms
+                _cut(1.100),  # intended exact 100 ms
+            ),
+            clips=(_clip(2.0, 5.0),),
+        )
+        metrics = evaluate(reference, result).unique_cut_safety
+        assert metrics.unique_cutpoint_count == 3
+        assert metrics.inside_phone_count == 3
+        # Exact threshold is NOT counted as strict `>`.
+        assert metrics.depth_gt_20ms_count == 2  # 50ms and 100ms only
+        assert metrics.depth_gt_50ms_count == 1  # 100ms only
+        assert metrics.depth_gt_100ms_count == 0
+
+    def test_just_below_and_above_threshold_depths_via_evaluator(self) -> None:
+        reference = _ref(phones=[_phone(1.000, 3.000)])
+        result = SlicerResult(
+            cutpoints=(
+                _cut(1.019),  # 19 ms — not >20
+                _cut(1.021),  # 21 ms — >20, not >50
+                _cut(1.049),  # 49 ms — >20, not >50
+                _cut(1.051),  # 51 ms — >50, not >100
+                _cut(1.099),  # 99 ms — >50, not >100
+                _cut(1.101),  # 101 ms — >100
+            ),
+            clips=(_clip(2.0, 5.0),),
+        )
+        metrics = evaluate(reference, result).unique_cut_safety
+        assert metrics.unique_cutpoint_count == 6
+        assert metrics.inside_phone_count == 6
+        assert metrics.depth_gt_20ms_count == 5  # all except 19 ms
+        assert metrics.depth_gt_50ms_count == 3  # 51, 99, 101
+        assert metrics.depth_gt_100ms_count == 1  # 101 only
 
 
 

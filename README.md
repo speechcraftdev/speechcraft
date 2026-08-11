@@ -42,16 +42,18 @@ review_bundles/
 code_snapshots/
 PHASE1_REFEREE.md
 referee/
+adapter/
 tests/test_referee.py
+tests/test_adapter.py
 ```
 
-## Phase 1 referee
+## Phase 1 referee / Phase 2 adapters
 
-Neutral evaluation of slicer cutpoints/clips against annotated references. See `PHASE1_REFEREE.md`. Run synthetic tests:
+Neutral evaluation of slicer cutpoints/clips against annotated references. Phase 2 adds A/D execution adapters over that contract (one path, explicit geometry configs, no shared acoustic cache). See `PHASE1_REFEREE.md`. Run tests:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install pytest
-.venv/bin/python -m pytest tests/test_referee.py -q
+.venv/bin/python -m pytest tests/ -q
 ```
 
 ## Current Interpretation

@@ -21,6 +21,7 @@ Outside a trusted phone means **not demonstrated unsafe**, not “safe.”
 
 - Inside phone `[a, b]` only when `a < t < b` (exact endpoints are outside).
 - Depth thresholds use strict `>` (20 / 50 / 100 ms).
+- Threshold classification uses integer microseconds (nearest µs) so float subtraction artifacts cannot turn an intended exact 20/50/100 ms depth into a false `>` hit.
 - Overlapping trusted phones within one buffer are rejected (canonical Buckeye truth should not contain them).
 - Eligible speech = trusted phones minus the **union** of uncertainty masks.
 - Retained speech = eligible speech covered by the **union** of emitted clips per `(recording_id, buffer_id)`.
@@ -28,4 +29,11 @@ Outside a trusted phone means **not demonstrated unsafe**, not “safe.”
 
 ## Phase 1 scope
 
-Pure types, validation, interval arithmetic, and synthetic unit tests only. No slicer adapter, VAD/RMS/geometry, cache, packer, or report generator.
+Pure types, validation, interval arithmetic, and synthetic unit tests only.
+
+## Phase 2 (execution adapters)
+
+- Adds A/D execution adapters that return Phase-1 `SlicerResult` only.
+- A and D share one adapter path and differ only by explicit immutable geometry config.
+- Annotations remain evaluator-only; the adapter request cannot carry phones/uncertainty/reference labels.
+- Phase 2 intentionally performs no shared acoustic caching between runs (including A vs D).
