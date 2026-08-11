@@ -40,6 +40,18 @@ AUDIT_2026-08-11.md
 scratch_manifest.md
 review_bundles/
 code_snapshots/
+PHASE1_REFEREE.md
+referee/
+tests/test_referee.py
+```
+
+## Phase 1 referee
+
+Neutral evaluation of slicer cutpoints/clips against annotated references. See `PHASE1_REFEREE.md`. Run synthetic tests:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install pytest
+.venv/bin/python -m pytest tests/test_referee.py -q
 ```
 
 ## Current Interpretation
