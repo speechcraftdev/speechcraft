@@ -37,3 +37,9 @@ Pure types, validation, interval arithmetic, and synthetic unit tests only.
 - A and D share one adapter path and differ only by explicit immutable geometry config.
 - Annotations remain evaluator-only; the adapter request cannot carry phones/uncertainty/reference labels.
 - Phase 2 intentionally performs no shared acoustic caching between runs (including A vs D).
+
+## Phase 3 (A/D smoke + geometry guard)
+
+- Compact private execution diagnostics (fingerprints + observation hashes) sit beside `SlicerResult`; the evaluator stays geometry-blind.
+- Real canonical A and D must produce different geometry fingerprints and must not share workdirs/cache artifacts or collapse onto identical VAD observation signatures.
+- Still no shared acoustic cache.

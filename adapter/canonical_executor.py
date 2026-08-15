@@ -2,14 +2,16 @@
 
 Canonical research path (not reimplemented here):
 
-    /home/aaravthegreat/Projects/speaker_ts_eval/src
+    $SPEAKER_TS_EVAL_SRC (or sibling ../speaker_ts_eval/src)
       speaker_ts_eval/slicer_daddy_test.py          # VadPercentileRmsDetector + packer helpers
       speaker_ts_eval/repaired_buckeye_benchmark.py # per-buffer 3–15s packing
       speaker_ts_eval/buckeye_safecut_benchmark.py  # Silero VAD frame geometry
 
 Speechcraft scripts (e.g. run_personal_vad_percentile_rms.py) call the same stack.
-Phase 2: every invocation uses a fresh workdir and fresh feature computation —
+
+Every invocation uses a fresh workdir and fresh feature computation —
 no shared acoustic cache or reusable detector context between A and D.
+Phase 3 still does not add a cross-geometry cache; A computes A, D computes D.
 """
 
 from __future__ import annotations
@@ -17,13 +19,23 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from adapter.config import GeometryConfig
+from adapter.diagnostics import (
+    ExecutionDiagnostics,
+    SPEAKER_TS_EVAL_SRC_ENV,
+    geometry_canonical_json,
+    geometry_fingerprint,
+    hash_clip_intervals,
+    hash_cutpoint_times,
+    hash_vad_probabilities,
+    hash_vad_timestamps,
+    resolve_speaker_ts_eval_src,
+)
 from adapter.types import RawClip, RawCutpoint, RawSlicerOutput, SlicerRequest
-
-_SPEAKER_TS_EVAL_SRC = Path("/home/aaravthegreat/Projects/speaker_ts_eval/src")
 
 _VAD_ENV_KEYS = (
     "SPEAKER_TS_EVAL_VAD_BACKEND",
@@ -44,18 +56,28 @@ class IndependentRunState:
         self.instance_id = instance_id
 
 
+@dataclass(frozen=True)
+class CanonicalExecution:
+    """Raw slicer output plus private diagnostics. Diagnostics stay off SlicerResult."""
+
+    raw: RawSlicerOutput
+    diagnostics: ExecutionDiagnostics
+
+
 _NEXT_INSTANCE_ID = 1
 
 
-def _ensure_speaker_ts_eval_on_path() -> None:
-    src = str(_SPEAKER_TS_EVAL_SRC)
-    if src not in sys.path:
-        sys.path.insert(0, src)
+def _ensure_speaker_ts_eval_on_path() -> Path:
+    src = resolve_speaker_ts_eval_src()
+    src_str = str(src)
+    if src_str not in sys.path:
+        sys.path.insert(0, src_str)
+    return src
 
 
 def _import_canonical() -> dict[str, Any]:
     """Import canonical detector/packer symbols; fail clearly if unavailable."""
-    _ensure_speaker_ts_eval_on_path()
+    src = _ensure_speaker_ts_eval_on_path()
     try:
         from speaker_ts_eval.buckeye_safecut_benchmark import (  # type: ignore[import-not-found]
             SourceInfo,
@@ -81,7 +103,8 @@ def _import_canonical() -> dict[str, Any]:
     except ImportError as exc:
         raise RuntimeError(
             "Canonical slicer path unavailable: install/import speaker_ts_eval "
-            f"from {_SPEAKER_TS_EVAL_SRC} (plus numpy/torch/silero-vad as needed)."
+            f"from {src} (set {SPEAKER_TS_EVAL_SRC_ENV} to that src directory; "
+            "plus numpy/torch/silero-vad as needed)."
         ) from exc
 
     return {
@@ -126,12 +149,24 @@ def _probe_wav(path: Path) -> dict[str, Any]:
     }
 
 
+def _flatten_frames(vad_frames_by_recording: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    frames: list[dict[str, Any]] = []
+    for recording_id in sorted(vad_frames_by_recording):
+        frames.extend(vad_frames_by_recording[recording_id])
+    return frames
+
+
 def execute_canonical(request: SlicerRequest) -> RawSlicerOutput:
     """Run vad_percentile_rms + common 3–15s packer for one request.
 
-    Fresh workdir and fresh IndependentRunState every call — Phase 2 forbids
-    sharing VAD/feature caches or detector contexts across A vs D (or any two runs).
+    Fresh workdir and fresh IndependentRunState every call — A vs D (or any two
+    runs) must not share VAD/feature caches or detector contexts.
     """
+    return execute_canonical_diagnosed(request).raw
+
+
+def execute_canonical_diagnosed(request: SlicerRequest) -> CanonicalExecution:
+    """Same execution as execute_canonical, plus compact private diagnostics."""
     global _NEXT_INSTANCE_ID
     canon = _import_canonical()
     config = request.config
@@ -149,6 +184,7 @@ def execute_canonical(request: SlicerRequest) -> RawSlicerOutput:
         _NEXT_INSTANCE_ID += 1
         run_state = IndependentRunState(workdir=workdir, config=config, instance_id=instance_id)
         assert run_state.instance_id == instance_id
+        assert run_state.workdir == workdir
 
         probe = _probe_wav(request.audio_path)
         if int(probe["sample_rate"]) != int(config.sample_rate_hz):
@@ -177,6 +213,8 @@ def execute_canonical(request: SlicerRequest) -> RawSlicerOutput:
             }
 
         # Per-run dirs only; TemporaryDirectory is discarded after the call.
+        # Feature cache files are keyed only by recording_id in the canonical
+        # helper — that is why A and D must never share this directory.
         vad_cache_dir = workdir / "vad_frames"
         feature_cache_dir = workdir / "audio_features"
         (workdir / "tables").mkdir(parents=True, exist_ok=True)
@@ -194,9 +232,15 @@ def execute_canonical(request: SlicerRequest) -> RawSlicerOutput:
                 else:
                     os.environ[key] = value
 
+        frames = _flatten_frames(vad_frames_by_recording)
+        vad_observation_count = len(frames)
+        vad_timestamp_sha256 = hash_vad_timestamps(frames)
+        vad_probability_sha256 = hash_vad_probabilities(frames)
+        del frames
+
         frame_index = {
-            recording_id: canon["index_frames"](frames)
-            for recording_id, frames in vad_frames_by_recording.items()
+            recording_id: canon["index_frames"](rec_frames)
+            for recording_id, rec_frames in vad_frames_by_recording.items()
         }
         audio_feature_cache = canon["build_audio_feature_cache"](
             sources=sources,
@@ -302,4 +346,24 @@ def execute_canonical(request: SlicerRequest) -> RawSlicerOutput:
             )
             for clip in clips
         )
-        return RawSlicerOutput(cutpoints=raw_cuts, clips=raw_clips)
+        raw = RawSlicerOutput(cutpoints=raw_cuts, clips=raw_clips)
+
+        diagnostics = ExecutionDiagnostics(
+            geometry_name=config.name,
+            geometry_canonical=geometry_canonical_json(config),
+            geometry_fingerprint=geometry_fingerprint(config),
+            instance_id=run_state.instance_id,
+            workdir=str(run_state.workdir),
+            vad_cache_dir=str(vad_cache_dir),
+            feature_cache_dir=str(feature_cache_dir),
+            vad_cache_paths=tuple(sorted(str(path) for path in vad_cache_dir.glob("*.json"))),
+            feature_cache_paths=tuple(
+                sorted(str(path) for path in feature_cache_dir.glob("*.json"))
+            ),
+            vad_observation_count=vad_observation_count,
+            vad_timestamp_sha256=vad_timestamp_sha256,
+            vad_probability_sha256=vad_probability_sha256,
+            candidate_cutpoint_sha256=hash_cutpoint_times(cutpoints),
+            selected_clip_sha256=hash_clip_intervals(raw_clips),
+        )
+        return CanonicalExecution(raw=raw, diagnostics=diagnostics)

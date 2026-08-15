@@ -1,0 +1,942 @@
+diff --git a/PHASE1_REFEREE.md b/PHASE1_REFEREE.md
+index 6d31060..9852ddc 100644
+--- a/PHASE1_REFEREE.md
++++ b/PHASE1_REFEREE.md
+@@ -37,3 +37,9 @@ Pure types, validation, interval arithmetic, and synthetic unit tests only.
+ - A and D share one adapter path and differ only by explicit immutable geometry config.
+ - Annotations remain evaluator-only; the adapter request cannot carry phones/uncertainty/reference labels.
+ - Phase 2 intentionally performs no shared acoustic caching between runs (including A vs D).
++
++## Phase 3 (A/D smoke + geometry guard)
++
++- Compact private execution diagnostics (fingerprints + observation hashes) sit beside `SlicerResult`; the evaluator stays geometry-blind.
++- Real canonical A and D must produce different geometry fingerprints and must not share workdirs/cache artifacts or collapse onto identical VAD observation signatures.
++- Still no shared acoustic cache.
+diff --git a/README.md b/README.md
+index 25ab7a1..577a9ce 100644
+--- a/README.md
++++ b/README.md
+@@ -47,15 +47,24 @@ tests/test_referee.py
+ tests/test_adapter.py
+ ```
+ 
+-## Phase 1 referee / Phase 2 adapters
++## Phase 1 referee / Phase 2 adapters / Phase 3 A-D guard
+ 
+-Neutral evaluation of slicer cutpoints/clips against annotated references. Phase 2 adds A/D execution adapters over that contract (one path, explicit geometry configs, no shared acoustic cache). See `PHASE1_REFEREE.md`. Run tests:
++Neutral evaluation of slicer cutpoints/clips against annotated references. Phase 2 adds A/D execution adapters over that contract (one path, explicit geometry configs, no shared acoustic cache). Phase 3 adds geometry fingerprints plus a real canonical A/D smoke so A and D cannot silently share feature computation. See `PHASE1_REFEREE.md`.
++
++Fast tests:
+ 
+ ```bash
+ python3 -m venv .venv && .venv/bin/pip install pytest
+ .venv/bin/python -m pytest tests/ -q
+ ```
+ 
++Real canonical A/D smoke (needs torch / silero-vad / soundfile; does not download Buckeye):
++
++```bash
++/home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \
++    scripts/run_canonical_ad_smoke.py
++```
++
+ ## Current Interpretation
+ 
+ Use the completed fast 16-way run for A-derived policy variants. Do not use it to compare A against D.
+diff --git a/adapter/canonical_executor.py b/adapter/canonical_executor.py
+index a08493c..0bc98c2 100644
+--- a/adapter/canonical_executor.py
++++ b/adapter/canonical_executor.py
+@@ -2,14 +2,16 @@
+ 
+ Canonical research path (not reimplemented here):
+ 
+-    /home/aaravthegreat/Projects/speaker_ts_eval/src
++    $SPEAKER_TS_EVAL_SRC (or sibling ../speaker_ts_eval/src)
+       speaker_ts_eval/slicer_daddy_test.py          # VadPercentileRmsDetector + packer helpers
+       speaker_ts_eval/repaired_buckeye_benchmark.py # per-buffer 3–15s packing
+       speaker_ts_eval/buckeye_safecut_benchmark.py  # Silero VAD frame geometry
+ 
+ Speechcraft scripts (e.g. run_personal_vad_percentile_rms.py) call the same stack.
+-Phase 2: every invocation uses a fresh workdir and fresh feature computation —
++
++Every invocation uses a fresh workdir and fresh feature computation —
+ no shared acoustic cache or reusable detector context between A and D.
++Phase 3 still does not add a cross-geometry cache; A computes A, D computes D.
+ """
+ 
+ from __future__ import annotations
+@@ -17,14 +19,24 @@ from __future__ import annotations
+ import os
+ import sys
+ import tempfile
++from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any
+ 
+ from adapter.config import GeometryConfig
++from adapter.diagnostics import (
++    ExecutionDiagnostics,
++    SPEAKER_TS_EVAL_SRC_ENV,
++    geometry_canonical_json,
++    geometry_fingerprint,
++    hash_clip_intervals,
++    hash_cutpoint_times,
++    hash_vad_probabilities,
++    hash_vad_timestamps,
++    resolve_speaker_ts_eval_src,
++)
+ from adapter.types import RawClip, RawCutpoint, RawSlicerOutput, SlicerRequest
+ 
+-_SPEAKER_TS_EVAL_SRC = Path("/home/aaravthegreat/Projects/speaker_ts_eval/src")
+-
+ _VAD_ENV_KEYS = (
+     "SPEAKER_TS_EVAL_VAD_BACKEND",
+     "SPEAKER_TS_EVAL_VAD_WINDOW_SAMPLES",
+@@ -44,18 +56,28 @@ class IndependentRunState:
+         self.instance_id = instance_id
+ 
+ 
++@dataclass(frozen=True)
++class CanonicalExecution:
++    """Raw slicer output plus private diagnostics. Diagnostics stay off SlicerResult."""
++
++    raw: RawSlicerOutput
++    diagnostics: ExecutionDiagnostics
++
++
+ _NEXT_INSTANCE_ID = 1
+ 
+ 
+-def _ensure_speaker_ts_eval_on_path() -> None:
+-    src = str(_SPEAKER_TS_EVAL_SRC)
+-    if src not in sys.path:
+-        sys.path.insert(0, src)
++def _ensure_speaker_ts_eval_on_path() -> Path:
++    src = resolve_speaker_ts_eval_src()
++    src_str = str(src)
++    if src_str not in sys.path:
++        sys.path.insert(0, src_str)
++    return src
+ 
+ 
+ def _import_canonical() -> dict[str, Any]:
+     """Import canonical detector/packer symbols; fail clearly if unavailable."""
+-    _ensure_speaker_ts_eval_on_path()
++    src = _ensure_speaker_ts_eval_on_path()
+     try:
+         from speaker_ts_eval.buckeye_safecut_benchmark import (  # type: ignore[import-not-found]
+             SourceInfo,
+@@ -81,7 +103,8 @@ def _import_canonical() -> dict[str, Any]:
+     except ImportError as exc:
+         raise RuntimeError(
+             "Canonical slicer path unavailable: install/import speaker_ts_eval "
+-            f"from {_SPEAKER_TS_EVAL_SRC} (plus numpy/torch/silero-vad as needed)."
++            f"from {src} (set {SPEAKER_TS_EVAL_SRC_ENV} to that src directory; "
++            "plus numpy/torch/silero-vad as needed)."
+         ) from exc
+ 
+     return {
+@@ -126,12 +149,24 @@ def _probe_wav(path: Path) -> dict[str, Any]:
+     }
+ 
+ 
++def _flatten_frames(vad_frames_by_recording: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
++    frames: list[dict[str, Any]] = []
++    for recording_id in sorted(vad_frames_by_recording):
++        frames.extend(vad_frames_by_recording[recording_id])
++    return frames
++
++
+ def execute_canonical(request: SlicerRequest) -> RawSlicerOutput:
+     """Run vad_percentile_rms + common 3–15s packer for one request.
+ 
+-    Fresh workdir and fresh IndependentRunState every call — Phase 2 forbids
+-    sharing VAD/feature caches or detector contexts across A vs D (or any two runs).
++    Fresh workdir and fresh IndependentRunState every call — A vs D (or any two
++    runs) must not share VAD/feature caches or detector contexts.
+     """
++    return execute_canonical_diagnosed(request).raw
++
++
++def execute_canonical_diagnosed(request: SlicerRequest) -> CanonicalExecution:
++    """Same execution as execute_canonical, plus compact private diagnostics."""
+     global _NEXT_INSTANCE_ID
+     canon = _import_canonical()
+     config = request.config
+@@ -149,6 +184,7 @@ def execute_canonical(request: SlicerRequest) -> RawSlicerOutput:
+         _NEXT_INSTANCE_ID += 1
+         run_state = IndependentRunState(workdir=workdir, config=config, instance_id=instance_id)
+         assert run_state.instance_id == instance_id
++        assert run_state.workdir == workdir
+ 
+         probe = _probe_wav(request.audio_path)
+         if int(probe["sample_rate"]) != int(config.sample_rate_hz):
+@@ -177,6 +213,8 @@ def execute_canonical(request: SlicerRequest) -> RawSlicerOutput:
+             }
+ 
+         # Per-run dirs only; TemporaryDirectory is discarded after the call.
++        # Feature cache files are keyed only by recording_id in the canonical
++        # helper — that is why A and D must never share this directory.
+         vad_cache_dir = workdir / "vad_frames"
+         feature_cache_dir = workdir / "audio_features"
+         (workdir / "tables").mkdir(parents=True, exist_ok=True)
+@@ -194,9 +232,15 @@ def execute_canonical(request: SlicerRequest) -> RawSlicerOutput:
+                 else:
+                     os.environ[key] = value
+ 
++        frames = _flatten_frames(vad_frames_by_recording)
++        vad_observation_count = len(frames)
++        vad_timestamp_sha256 = hash_vad_timestamps(frames)
++        vad_probability_sha256 = hash_vad_probabilities(frames)
++        del frames
++
+         frame_index = {
+-            recording_id: canon["index_frames"](frames)
+-            for recording_id, frames in vad_frames_by_recording.items()
++            recording_id: canon["index_frames"](rec_frames)
++            for recording_id, rec_frames in vad_frames_by_recording.items()
+         }
+         audio_feature_cache = canon["build_audio_feature_cache"](
+             sources=sources,
+@@ -302,4 +346,24 @@ def execute_canonical(request: SlicerRequest) -> RawSlicerOutput:
+             )
+             for clip in clips
+         )
+-        return RawSlicerOutput(cutpoints=raw_cuts, clips=raw_clips)
++        raw = RawSlicerOutput(cutpoints=raw_cuts, clips=raw_clips)
++
++        diagnostics = ExecutionDiagnostics(
++            geometry_name=config.name,
++            geometry_canonical=geometry_canonical_json(config),
++            geometry_fingerprint=geometry_fingerprint(config),
++            instance_id=run_state.instance_id,
++            workdir=str(run_state.workdir),
++            vad_cache_dir=str(vad_cache_dir),
++            feature_cache_dir=str(feature_cache_dir),
++            vad_cache_paths=tuple(sorted(str(path) for path in vad_cache_dir.glob("*.json"))),
++            feature_cache_paths=tuple(
++                sorted(str(path) for path in feature_cache_dir.glob("*.json"))
++            ),
++            vad_observation_count=vad_observation_count,
++            vad_timestamp_sha256=vad_timestamp_sha256,
++            vad_probability_sha256=vad_probability_sha256,
++            candidate_cutpoint_sha256=hash_cutpoint_times(cutpoints),
++            selected_clip_sha256=hash_clip_intervals(raw_clips),
++        )
++        return CanonicalExecution(raw=raw, diagnostics=diagnostics)
+diff --git a/adapter/canonical_smoke.py b/adapter/canonical_smoke.py
+new file mode 100644
+index 0000000..634951b
+--- /dev/null
++++ b/adapter/canonical_smoke.py
+@@ -0,0 +1,163 @@
++"""Tiny helpers for the real canonical A/D smoke (not a benchmark framework)."""
++
++from __future__ import annotations
++
++import wave
++from dataclasses import dataclass, fields
++from pathlib import Path
++
++from adapter.config import CURRENT_A, PROPER_D, GeometryConfig
++from adapter.canonical_executor import execute_canonical_diagnosed
++from adapter.convert import to_slicer_result
++from adapter.diagnostics import (
++    ExecutionDiagnostics,
++    geometry_sensitive_signals_differ,
++    same_geometry_signatures,
++    write_tiny_mono_wav,
++)
++from adapter.types import SlicerRequest
++from referee import BufferScope, RecordingReference, SlicerResult, evaluate
++from referee.validate import validate
++
++SMOKE_RECORDING_ID = "smoke0"
++SMOKE_BUFFER_ID = "buf0"
++
++
++@dataclass(frozen=True)
++class GeometryRun:
++    result: SlicerResult
++    diagnostics: ExecutionDiagnostics
++
++
++def _audio_duration_sec(path: Path) -> float:
++    with wave.open(str(path), "rb") as reader:
++        rate = reader.getframerate()
++        return reader.getnframes() / rate if rate else 0.0
++
++
++def run_one(audio_path: Path, config: GeometryConfig) -> GeometryRun:
++    duration = _audio_duration_sec(audio_path)
++    request = SlicerRequest(
++        recording_id=SMOKE_RECORDING_ID,
++        audio_path=audio_path,
++        sample_rate_hz=config.sample_rate_hz,
++        buffers=(BufferScope(SMOKE_BUFFER_ID, 0.0, float(duration)),),
++        config=config,
++    )
++    assert {f.name for f in fields(request)} == {
++        "recording_id",
++        "audio_path",
++        "sample_rate_hz",
++        "buffers",
++        "config",
++    }
++    execution = execute_canonical_diagnosed(request)
++    result = to_slicer_result(execution.raw)
++    assert {f.name for f in fields(result)} == {"cutpoints", "clips"}
++    return GeometryRun(result=result, diagnostics=execution.diagnostics)
++
++
++def evaluator_reference_for(audio_path: Path) -> RecordingReference:
++    duration = _audio_duration_sec(audio_path)
++    return RecordingReference(
++        recording_id=SMOKE_RECORDING_ID,
++        buffers=(BufferScope(SMOKE_BUFFER_ID, 0.0, float(duration)),),
++        phones=(),
++        uncertainty_intervals=(),
++    )
++
++
++def assert_valid_public_result(audio_path: Path, result: SlicerResult) -> None:
++    reference = evaluator_reference_for(audio_path)
++    validate(reference, result)
++    scored = evaluate(reference, result)
++    assert scored.clip_count == len(result.clips)
++
++
++def assert_independent_state(left: ExecutionDiagnostics, right: ExecutionDiagnostics) -> None:
++    assert left.instance_id != right.instance_id
++    assert left.workdir != right.workdir
++    assert left.vad_cache_dir != right.vad_cache_dir
++    assert left.feature_cache_dir != right.feature_cache_dir
++    left_paths = set(left.vad_cache_paths) | set(left.feature_cache_paths)
++    right_paths = set(right.vad_cache_paths) | set(right.feature_cache_paths)
++    overlap = left_paths & right_paths
++    assert not overlap, f"A/D shared cache artifacts: {sorted(overlap)}"
++
++
++def assert_a_d_not_collapsed(a: ExecutionDiagnostics, d: ExecutionDiagnostics) -> None:
++    assert a.geometry_fingerprint != d.geometry_fingerprint, (
++        "A and D geometry fingerprints must differ"
++    )
++    assert_independent_state(a, d)
++    if not geometry_sensitive_signals_differ(a, d):
++        raise AssertionError(
++            "A and D geometry-sensitive observation signatures are identical "
++            f"(count={a.vad_observation_count}, "
++            f"ts={a.vad_timestamp_sha256}, "
++            f"prob={a.vad_probability_sha256}). "
++            "The two geometries collapsed onto shared feature computation."
++        )
++
++
++def run_ad_order_smoke(audio_path: Path) -> dict[str, GeometryRun]:
++    """Run A→D, then separately D→A, on the same fixture."""
++    a_in_ad = run_one(audio_path, CURRENT_A)
++    d_in_ad = run_one(audio_path, PROPER_D)
++    d_in_da = run_one(audio_path, PROPER_D)
++    a_in_da = run_one(audio_path, CURRENT_A)
++    return {
++        "A_in_AD": a_in_ad,
++        "D_in_AD": d_in_ad,
++        "D_in_DA": d_in_da,
++        "A_in_DA": a_in_da,
++    }
++
++
++def assert_order_independence(runs: dict[str, GeometryRun]) -> None:
++    a_ad = runs["A_in_AD"].diagnostics
++    a_da = runs["A_in_DA"].diagnostics
++    d_ad = runs["D_in_AD"].diagnostics
++    d_da = runs["D_in_DA"].diagnostics
++    if not same_geometry_signatures(a_ad, a_da):
++        raise AssertionError(
++            "Geometry A signatures changed across A→D vs D→A execution order "
++            f"(AD fp={a_ad.geometry_fingerprint} count={a_ad.vad_observation_count} "
++            f"ts={a_ad.vad_timestamp_sha256} vs "
++            f"DA fp={a_da.geometry_fingerprint} count={a_da.vad_observation_count} "
++            f"ts={a_da.vad_timestamp_sha256})"
++        )
++    if not same_geometry_signatures(d_ad, d_da):
++        raise AssertionError(
++            "Geometry D signatures changed across A→D vs D→A execution order "
++            f"(AD fp={d_ad.geometry_fingerprint} count={d_ad.vad_observation_count} "
++            f"ts={d_ad.vad_timestamp_sha256} vs "
++            f"DA fp={d_da.geometry_fingerprint} count={d_da.vad_observation_count} "
++            f"ts={d_da.vad_timestamp_sha256})"
++        )
++
++
++def compact_summary(runs: dict[str, GeometryRun]) -> dict[str, dict[str, object]]:
++    out: dict[str, dict[str, object]] = {}
++    for label, run in runs.items():
++        diag = run.diagnostics
++        result = run.result
++        out[label] = {
++            "geometry_name": diag.geometry_name,
++            "geometry_canonical": diag.geometry_canonical,
++            "geometry_fingerprint": diag.geometry_fingerprint,
++            "instance_id": diag.instance_id,
++            "workdir": diag.workdir,
++            "vad_observation_count": diag.vad_observation_count,
++            "vad_timestamp_sha256": diag.vad_timestamp_sha256,
++            "vad_probability_sha256": diag.vad_probability_sha256,
++            "candidate_cutpoint_sha256": diag.candidate_cutpoint_sha256,
++            "selected_clip_sha256": diag.selected_clip_sha256,
++            "cutpoint_count": len(result.cutpoints),
++            "clip_count": len(result.clips),
++        }
++    return out
++
++
++def prepare_fixture_wav(directory: Path) -> Path:
++    return write_tiny_mono_wav(directory / "canonical_smoke_16k_mono.wav")
+diff --git a/adapter/diagnostics.py b/adapter/diagnostics.py
+new file mode 100644
+index 0000000..cf13f8e
+--- /dev/null
++++ b/adapter/diagnostics.py
+@@ -0,0 +1,210 @@
++"""Private Phase-3 execution diagnostics. Not part of SlicerResult / the evaluator.
++
++Fingerprints cover only feature-producing geometry (rate, window, hop, offsets,
++backend). Compact hashes replace full VAD/candidate arrays.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import math
++import os
++import struct
++import wave
++from dataclasses import asdict, dataclass
++from pathlib import Path
++from typing import Any, Iterable
++
++from adapter.config import GeometryConfig
++
++
++SPEAKER_TS_EVAL_SRC_ENV = "SPEAKER_TS_EVAL_SRC"
++
++
++def _lab_root() -> Path:
++    return Path(__file__).resolve().parents[1]
++
++
++def known_local_speaker_ts_eval_src() -> Path:
++    """Sibling checkout default: <projects>/speaker_ts_eval/src."""
++    return _lab_root().parent / "speaker_ts_eval" / "src"
++
++
++def resolve_speaker_ts_eval_src() -> Path:
++    """Resolve speaker_ts_eval src dir from env or a known local default.
++
++    1. ``SPEAKER_TS_EVAL_SRC`` if set (must be an existing directory);
++    2. otherwise ``<lab-parent>/speaker_ts_eval/src`` if that directory exists;
++    3. otherwise raise with what to set.
++    """
++    raw = os.environ.get(SPEAKER_TS_EVAL_SRC_ENV)
++    if raw is not None and raw.strip():
++        path = Path(raw.strip()).expanduser()
++        if not path.is_dir():
++            raise RuntimeError(
++                f"{SPEAKER_TS_EVAL_SRC_ENV}={raw!r} is not an existing directory. "
++                "Set it to the speaker_ts_eval src directory (the parent of the "
++                "speaker_ts_eval package)."
++            )
++        return path.resolve()
++
++    default = known_local_speaker_ts_eval_src()
++    if default.is_dir():
++        return default.resolve()
++
++    raise RuntimeError(
++        "Could not locate speaker_ts_eval source. Set environment variable "
++        f"{SPEAKER_TS_EVAL_SRC_ENV} to the src directory (the parent of the "
++        "speaker_ts_eval package). Looked for a local default at "
++        f"{default}."
++    )
++
++
++def geometry_canonical_payload(config: GeometryConfig) -> dict[str, Any]:
++    """Feature-producing geometry only — no packer/scoring knobs."""
++    return {
++        "hop_samples": int(config.hop_samples),
++        "offsets": [int(value) for value in config.offsets],
++        "sample_rate_hz": int(config.sample_rate_hz),
++        "vad_backend": str(config.vad_backend),
++        "window_samples": int(config.window_samples),
++    }
++
++
++def geometry_canonical_json(config: GeometryConfig) -> str:
++    return json.dumps(
++        geometry_canonical_payload(config),
++        sort_keys=True,
++        separators=(",", ":"),
++        ensure_ascii=True,
++    )
++
++
++def geometry_fingerprint(config: GeometryConfig) -> str:
++    """Deterministic SHA-256 of the canonical geometry JSON."""
++    return hashlib.sha256(geometry_canonical_json(config).encode("utf-8")).hexdigest()
++
++
++def compact_sha256(payload: Any) -> str:
++    text = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
++    return hashlib.sha256(text.encode("utf-8")).hexdigest()
++
++
++def hash_vad_timestamps(frames: Iterable[dict[str, Any]]) -> str:
++    payload = [
++        [
++            round(float(row["center_sec"]), 9),
++            round(float(row["window_start_sec"]), 9),
++            int(row["offset_samples"]),
++        ]
++        for row in frames
++    ]
++    return compact_sha256(payload)
++
++
++def hash_vad_probabilities(frames: Iterable[dict[str, Any]]) -> str:
++    payload = [round(float(row["speech_prob"]), 9) for row in frames]
++    return compact_sha256(payload)
++
++
++def hash_cutpoint_times(cuts: Iterable[Any]) -> str:
++    payload = sorted(
++        (
++            str(cut.recording_id),
++            str(cut.buffer_id),
++            round(float(cut.time_sec), 9),
++        )
++        for cut in cuts
++    )
++    return compact_sha256(payload)
++
++
++def hash_clip_intervals(clips: Iterable[Any]) -> str:
++    payload = sorted(
++        (
++            str(clip.recording_id),
++            str(clip.buffer_id),
++            round(float(clip.start_sec), 9),
++            round(float(clip.end_sec), 9),
++        )
++        for clip in clips
++    )
++    return compact_sha256(payload)
++
++
++@dataclass(frozen=True)
++class ExecutionDiagnostics:
++    """Test-only compact signatures. Never merged into SlicerResult."""
++
++    geometry_name: str
++    geometry_canonical: str
++    geometry_fingerprint: str
++    instance_id: int
++    workdir: str
++    vad_cache_dir: str
++    feature_cache_dir: str
++    vad_cache_paths: tuple[str, ...]
++    feature_cache_paths: tuple[str, ...]
++    vad_observation_count: int
++    vad_timestamp_sha256: str
++    vad_probability_sha256: str
++    candidate_cutpoint_sha256: str
++    selected_clip_sha256: str
++
++    def to_summary(self) -> dict[str, Any]:
++        data = asdict(self)
++        return data
++
++
++def geometry_sensitive_signals_differ(
++    left: ExecutionDiagnostics, right: ExecutionDiagnostics
++) -> bool:
++    """True if A/D did not collapse onto the same feature observations."""
++    return (
++        left.vad_observation_count != right.vad_observation_count
++        or left.vad_timestamp_sha256 != right.vad_timestamp_sha256
++        or left.vad_probability_sha256 != right.vad_probability_sha256
++    )
++
++
++def same_geometry_signatures(
++    left: ExecutionDiagnostics, right: ExecutionDiagnostics
++) -> bool:
++    """Order-independence: same geometry must recompute the same signatures."""
++    return (
++        left.geometry_fingerprint == right.geometry_fingerprint
++        and left.vad_observation_count == right.vad_observation_count
++        and left.vad_timestamp_sha256 == right.vad_timestamp_sha256
++        and left.vad_probability_sha256 == right.vad_probability_sha256
++        and left.candidate_cutpoint_sha256 == right.candidate_cutpoint_sha256
++        and left.selected_clip_sha256 == right.selected_clip_sha256
++    )
++
++
++def write_tiny_mono_wav(
++    path: Path,
++    *,
++    duration_sec: float = 4.0,
++    sample_rate_hz: int = 16000,
++) -> Path:
++    """Deterministic 16 kHz mono PCM WAV (tone bursts + silence). No downloads."""
++    path.parent.mkdir(parents=True, exist_ok=True)
++    n_samples = int(round(duration_sec * sample_rate_hz))
++    burst_samples = int(round(0.4 * sample_rate_hz))
++    amplitude = 0.28 * 32767.0
++    two_pi_f = 2.0 * math.pi * 440.0
++    with wave.open(str(path), "wb") as writer:
++        writer.setnchannels(1)
++        writer.setsampwidth(2)
++        writer.setframerate(sample_rate_hz)
++        frames = bytearray()
++        for index in range(n_samples):
++            in_burst = (index // burst_samples) % 2 == 0
++            if in_burst:
++                sample = int(amplitude * math.sin(two_pi_f * (index / sample_rate_hz)))
++            else:
++                sample = 0
++            frames += struct.pack("<h", sample)
++        writer.writeframes(frames)
++    return path
+diff --git a/pytest.ini b/pytest.ini
+index c7b23ec..3810fba 100644
+--- a/pytest.ini
++++ b/pytest.ini
+@@ -1,3 +1,5 @@
+ [pytest]
+ pythonpath = .
+ testpaths = tests
++markers =
++    canonical: real Silero/canonical A/D execution (needs torch/silero-vad)
+diff --git a/scripts/run_canonical_ad_smoke.py b/scripts/run_canonical_ad_smoke.py
+new file mode 100644
+index 0000000..6c11c48
+--- /dev/null
++++ b/scripts/run_canonical_ad_smoke.py
+@@ -0,0 +1,62 @@
++#!/usr/bin/env python3
++"""Real canonical A/D smoke: Silero VAD + vad_percentile_rms on a tiny local WAV.
++
++Fast unit tests do not run this. Needs numpy/torch/soundfile/silero-vad plus
++speaker_ts_eval (see SPEAKER_TS_EVAL_SRC).
++
++Example (this environment):
++
++    /home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \\
++        scripts/run_canonical_ad_smoke.py
++"""
++
++from __future__ import annotations
++
++import json
++import sys
++import tempfile
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++if str(ROOT) not in sys.path:
++    sys.path.insert(0, str(ROOT))
++
++from adapter.canonical_smoke import (  # noqa: E402
++    assert_a_d_not_collapsed,
++    assert_order_independence,
++    assert_valid_public_result,
++    compact_summary,
++    prepare_fixture_wav,
++    run_ad_order_smoke,
++)
++from adapter.diagnostics import resolve_speaker_ts_eval_src  # noqa: E402
++
++
++def main() -> int:
++    src = resolve_speaker_ts_eval_src()
++    print(f"speaker_ts_eval src: {src}")
++    with tempfile.TemporaryDirectory(prefix="buckeye_canonical_smoke_") as tmp:
++        audio_path = prepare_fixture_wav(Path(tmp))
++        print(f"fixture wav: {audio_path}")
++        runs = run_ad_order_smoke(audio_path)
++        for label, run in runs.items():
++            print(f"validating public SlicerResult for {label}")
++            assert_valid_public_result(audio_path, run.result)
++        assert_a_d_not_collapsed(
++            runs["A_in_AD"].diagnostics,
++            runs["D_in_AD"].diagnostics,
++        )
++        assert_a_d_not_collapsed(
++            runs["A_in_DA"].diagnostics,
++            runs["D_in_DA"].diagnostics,
++        )
++        assert_order_independence(runs)
++        summary = compact_summary(runs)
++        summary["passed"] = True
++        print(json.dumps(summary, indent=2, sort_keys=True))
++        print("canonical A/D smoke passed")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/test_canonical_smoke.py b/tests/test_canonical_smoke.py
+new file mode 100644
+index 0000000..f15dbb5
+--- /dev/null
++++ b/tests/test_canonical_smoke.py
+@@ -0,0 +1,140 @@
++"""Real canonical A/D smoke. Skipped unless numpy/torch/silero-vad are importable.
++
++Run the dedicated script for the recorded integration command:
++
++    /home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \\
++        scripts/run_canonical_ad_smoke.py
++"""
++
++from __future__ import annotations
++
++from dataclasses import fields
++
++import pytest
++
++from adapter.config import CURRENT_A, PROPER_D
++from adapter.diagnostics import geometry_fingerprint
++from referee.types import SlicerResult
++
++pytestmark = pytest.mark.canonical
++
++
++def _have_canonical_runtime() -> bool:
++    for name in ("numpy", "torch", "soundfile", "silero_vad"):
++        try:
++            __import__(name)
++        except ImportError:
++            return False
++    return True
++
++
++skip_without_runtime = pytest.mark.skipif(
++    not _have_canonical_runtime(),
++    reason="canonical A/D smoke needs numpy, torch, soundfile, and silero_vad",
++)
++
++
++@pytest.fixture(scope="module")
++def smoke_wav(tmp_path_factory: pytest.TempPathFactory):
++    if not _have_canonical_runtime():
++        pytest.skip("canonical A/D smoke needs numpy, torch, soundfile, and silero_vad")
++    from adapter.canonical_smoke import prepare_fixture_wav
++
++    return prepare_fixture_wav(tmp_path_factory.mktemp("canonical_wav"))
++
++
++@pytest.fixture(scope="module")
++def smoke_runs(smoke_wav):
++    if not _have_canonical_runtime():
++        pytest.skip("canonical A/D smoke needs numpy, torch, soundfile, and silero_vad")
++    from adapter.canonical_smoke import run_ad_order_smoke
++
++    return run_ad_order_smoke(smoke_wav)
++
++
++@skip_without_runtime
++def test_real_canonical_a_execution_smoke(smoke_wav, smoke_runs) -> None:
++    from adapter.canonical_smoke import assert_valid_public_result
++
++    run = smoke_runs["A_in_AD"]
++    assert run.diagnostics.geometry_name == CURRENT_A.name
++    assert run.diagnostics.geometry_fingerprint == geometry_fingerprint(CURRENT_A)
++    assert run.diagnostics.vad_observation_count > 0
++    assert_valid_public_result(smoke_wav, run.result)
++
++
++@skip_without_runtime
++def test_real_canonical_d_execution_smoke(smoke_wav, smoke_runs) -> None:
++    from adapter.canonical_smoke import assert_valid_public_result
++
++    run = smoke_runs["D_in_AD"]
++    assert run.diagnostics.geometry_name == PROPER_D.name
++    assert run.diagnostics.geometry_fingerprint == geometry_fingerprint(PROPER_D)
++    assert run.diagnostics.vad_observation_count > 0
++    assert_valid_public_result(smoke_wav, run.result)
++
++
++@skip_without_runtime
++def test_ad_geometry_sensitive_diagnostic_regression(smoke_runs) -> None:
++    from adapter.canonical_smoke import assert_a_d_not_collapsed
++
++    assert_a_d_not_collapsed(
++        smoke_runs["A_in_AD"].diagnostics,
++        smoke_runs["D_in_AD"].diagnostics,
++    )
++    assert_a_d_not_collapsed(
++        smoke_runs["A_in_DA"].diagnostics,
++        smoke_runs["D_in_DA"].diagnostics,
++    )
++
++
++@skip_without_runtime
++def test_ad_order_independence(smoke_runs) -> None:
++    from adapter.canonical_smoke import assert_order_independence
++
++    assert_order_independence(smoke_runs)
++
++
++@skip_without_runtime
++def test_no_shared_cache_or_workdir(smoke_runs) -> None:
++    from adapter.canonical_smoke import assert_independent_state
++
++    a = smoke_runs["A_in_AD"].diagnostics
++    d = smoke_runs["D_in_AD"].diagnostics
++    assert_independent_state(a, d)
++    assert "current_A" in a.workdir
++    assert "proper_D" in d.workdir
++    assert a.feature_cache_dir != d.feature_cache_dir
++
++
++@skip_without_runtime
++def test_public_result_remains_neutral_slicer_result(smoke_runs) -> None:
++    for run in smoke_runs.values():
++        assert isinstance(run.result, SlicerResult)
++        assert {f.name for f in fields(run.result)} == {"cutpoints", "clips"}
++        assert not hasattr(run.result, "geometry_fingerprint")
++        assert not hasattr(run.result, "diagnostics")
++        assert not hasattr(run.result, "vad_observation_count")
++
++
++@skip_without_runtime
++def test_request_path_still_has_no_annotations() -> None:
++    from adapter.types import SlicerRequest
++
++    request_fields = {f.name for f in fields(SlicerRequest)}
++    assert request_fields == {
++        "recording_id",
++        "audio_path",
++        "sample_rate_hz",
++        "buffers",
++        "config",
++    }
++    for forbidden in (
++        "phones",
++        "uncertainty_intervals",
++        "reference",
++        "recording_reference",
++        "words",
++        "annotations",
++    ):
++        assert forbidden not in request_fields
+diff --git a/tests/test_diagnostics.py b/tests/test_diagnostics.py
+new file mode 100644
+index 0000000..66c2690
+--- /dev/null
++++ b/tests/test_diagnostics.py
+@@ -0,0 +1,100 @@
++"""Fast tests for geometry fingerprints and speaker_ts_eval src resolution."""
++
++from __future__ import annotations
++
++from dataclasses import replace
++from pathlib import Path
++
++import pytest
++
++from adapter.canonical_executor import execute_canonical
++from adapter.config import CURRENT_A, PROPER_D, GeometryConfig
++from adapter.diagnostics import (
++    SPEAKER_TS_EVAL_SRC_ENV,
++    geometry_canonical_payload,
++    geometry_fingerprint,
++    resolve_speaker_ts_eval_src,
++)
++
++
++class TestSpeakerTsEvalSrcResolution:
++    def test_env_var_directory_wins(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++        src = tmp_path / "custom_src"
++        src.mkdir()
++        monkeypatch.setenv(SPEAKER_TS_EVAL_SRC_ENV, str(src))
++        assert resolve_speaker_ts_eval_src() == src.resolve()
++
++    def test_env_var_missing_directory_fails(
++        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++    ) -> None:
++        missing = tmp_path / "does_not_exist"
++        monkeypatch.setenv(SPEAKER_TS_EVAL_SRC_ENV, str(missing))
++        with pytest.raises(RuntimeError, match=SPEAKER_TS_EVAL_SRC_ENV):
++            resolve_speaker_ts_eval_src()
++
++    def test_known_local_default_used_when_present(
++        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++    ) -> None:
++        monkeypatch.delenv(SPEAKER_TS_EVAL_SRC_ENV, raising=False)
++        default = tmp_path / "speaker_ts_eval" / "src"
++        default.mkdir(parents=True)
++        monkeypatch.setattr(
++            "adapter.diagnostics.known_local_speaker_ts_eval_src",
++            lambda: default,
++        )
++        assert resolve_speaker_ts_eval_src() == default.resolve()
++
++    def test_neither_env_nor_default_fails(
++        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++    ) -> None:
++        monkeypatch.delenv(SPEAKER_TS_EVAL_SRC_ENV, raising=False)
++        missing = tmp_path / "missing_src"
++        monkeypatch.setattr(
++            "adapter.diagnostics.known_local_speaker_ts_eval_src",
++            lambda: missing,
++        )
++        with pytest.raises(RuntimeError, match=SPEAKER_TS_EVAL_SRC_ENV):
++            resolve_speaker_ts_eval_src()
++
++    def test_executor_does_not_hardcode_unconditional_developer_path(self) -> None:
++        text = Path(execute_canonical.__code__.co_filename).read_text(encoding="utf-8")
++        assert "resolve_speaker_ts_eval_src" in text
++        assert '_SPEAKER_TS_EVAL_SRC = Path("/home/' not in text
++        # Default is sibling-relative, not a username path constant.
++        assert "known_local_speaker_ts_eval_src" in Path(
++            resolve_speaker_ts_eval_src.__code__.co_filename
++        ).read_text(encoding="utf-8")
++
++
++class TestGeometryFingerprint:
++    def test_a_and_d_fingerprints_differ(self) -> None:
++        assert geometry_fingerprint(CURRENT_A) != geometry_fingerprint(PROPER_D)
++        assert geometry_canonical_payload(CURRENT_A)["hop_samples"] == 256
++        assert geometry_canonical_payload(PROPER_D)["hop_samples"] == 512
++        assert geometry_canonical_payload(CURRENT_A)["offsets"] == [0, 128]
++        assert geometry_canonical_payload(PROPER_D)["offsets"] == [0, 128, 256, 384]
++
++    def test_same_config_is_stable(self) -> None:
++        first = geometry_fingerprint(CURRENT_A)
++        second = geometry_fingerprint(CURRENT_A)
++        assert first == second
++        clone = GeometryConfig(
++            name="alias_A",
++            window_samples=CURRENT_A.window_samples,
++            hop_samples=CURRENT_A.hop_samples,
++            offsets=CURRENT_A.offsets,
++            sample_rate_hz=CURRENT_A.sample_rate_hz,
++            vad_backend=CURRENT_A.vad_backend,
++        )
++        assert geometry_fingerprint(clone) == first
++
++    def test_fingerprint_ignores_packer_and_scoring_knobs(self) -> None:
++        mutated = replace(
++            CURRENT_A,
++            name="other",
++            min_clip_sec=99.0,
++            preferred_min_sec=1.0,
++            vad_threshold=0.9,
++            percentile_rms_percentile=50.0,
++        )
++        assert geometry_fingerprint(mutated) == geometry_fingerprint(CURRENT_A)

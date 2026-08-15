@@ -47,13 +47,22 @@ tests/test_referee.py
 tests/test_adapter.py
 ```
 
-## Phase 1 referee / Phase 2 adapters
+## Phase 1 referee / Phase 2 adapters / Phase 3 A-D guard
 
-Neutral evaluation of slicer cutpoints/clips against annotated references. Phase 2 adds A/D execution adapters over that contract (one path, explicit geometry configs, no shared acoustic cache). See `PHASE1_REFEREE.md`. Run tests:
+Neutral evaluation of slicer cutpoints/clips against annotated references. Phase 2 adds A/D execution adapters over that contract (one path, explicit geometry configs, no shared acoustic cache). Phase 3 adds geometry fingerprints plus a real canonical A/D smoke so A and D cannot silently share feature computation. See `PHASE1_REFEREE.md`.
+
+Fast tests:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install pytest
 .venv/bin/python -m pytest tests/ -q
+```
+
+Real canonical A/D smoke (needs torch / silero-vad / soundfile; does not download Buckeye):
+
+```bash
+/home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \
+    scripts/run_canonical_ad_smoke.py
 ```
 
 ## Current Interpretation
