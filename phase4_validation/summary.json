@@ -1,0 +1,258 @@
+{
+  "ad_independence_guard": "passed on every recording",
+  "ad_observation_signatures_differed": true,
+  "cohort_fingerprint": "9043eec5a4e8846b8c4496ba5dbd7d6d1e75e4f4035dd715adcbdc20209da5ab",
+  "comparison": [
+    {
+      "A": 0.6858250849356519,
+      "D": 0.6148421004440893,
+      "D - A": -0.0709829844915626,
+      "metric": "speech coverage"
+    },
+    {
+      "A": 509.74192699999975,
+      "D": 456.9835719999998,
+      "D - A": -52.75835499999994,
+      "metric": "retained speech sec"
+    },
+    {
+      "A": 576.2240000000002,
+      "D": 520.5440000000001,
+      "D - A": -55.680000000000064,
+      "metric": "emitted sec"
+    },
+    {
+      "A": 106,
+      "D": 97,
+      "D - A": -9.0,
+      "metric": "clips"
+    },
+    {
+      "A": 198,
+      "D": 181,
+      "D - A": -17.0,
+      "metric": "selected cuts"
+    },
+    {
+      "A": 14.646464646464647,
+      "D": 10.497237569060774,
+      "D - A": -4.149227077403873,
+      "metric": "inside-phone %"
+    },
+    {
+      "A": 9.595959595959595,
+      "D": 3.867403314917127,
+      "D - A": -5.728556281042469,
+      "metric": ">20 ms %"
+    },
+    {
+      "A": 3.0303030303030303,
+      "D": 0.5524861878453038,
+      "D - A": -2.4778168424577265,
+      "metric": ">50 ms %"
+    },
+    {
+      "A": 0.0,
+      "D": 0.0,
+      "D - A": 0.0,
+      "metric": ">100 ms %"
+    },
+    {
+      "A": 16.037735849056602,
+      "D": 9.793814432989691,
+      "D - A": -6.243921416066911,
+      "metric": "final-edge inside-phone %"
+    },
+    {
+      "A": 4.245283018867925,
+      "D": 0.5154639175257731,
+      "D - A": -3.7298191013421516,
+      "metric": "final-edge >50 ms %"
+    }
+  ],
+  "determinism_checks": [
+    {
+      "A": {
+        "candidate_cutpoint_sha256": "835a283ac8a08d15a2c476ee85cc1038028df075c42b92849fa378efb48602be",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "selected_clip_sha256": "6694f87bbf9bec0d96aa648a36a3c853910f2b919a606e785e1a7ee36fa5ab25",
+        "vad_observation_count": 69829,
+        "vad_probability_sha256": "384a554710434280e25c770cc87360cb0d79a3166be9cd62ec7f621d1a8f1c9b",
+        "vad_timestamp_sha256": "b5f8a95b25d461ec3215edf05f53a64020c432b08d7f50d8cefb5751856aba9b"
+      },
+      "D": {
+        "candidate_cutpoint_sha256": "919e164726688c2b703b3f629f60ccb1d9ac0f7278041a59994a0f650f221e80",
+        "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+        "selected_clip_sha256": "e9b3e8da1848e91e41072705207748d1d321528a01ab07ccb74231c93652581c",
+        "vad_observation_count": 69829,
+        "vad_probability_sha256": "874417e3c83753978674a246cbdf37bdb8f41ee28bc6e79eb69892f80bb5a37b",
+        "vad_timestamp_sha256": "962658f962094f595f9b0cebfc00f56d83bd6d61daccfc01f6173c09c7055bc6"
+      },
+      "passed": true,
+      "recording_id": "s0101b",
+      "speaker_id": "s01"
+    }
+  ],
+  "elapsed_sec": 85.22895281000092,
+  "historical_comparison": {
+    "flags": [
+      "cohort size 4 != historical accepted 120"
+    ],
+    "historical": {
+      "A": {
+        "clip_count": 4983,
+        "depth_gt_50ms_rate": 0.0272,
+        "edge_depth_gt_50ms_rate": 0.0315,
+        "edge_inside_phone_rate": 0.136,
+        "emitted_audio_sec": 26551.0,
+        "inside_phone_rate": 0.126,
+        "mean_conditional_coverage": 0.6867,
+        "mean_end_to_end_coverage": 0.5484,
+        "unique_cutpoint_count": 9310
+      },
+      "D": {
+        "clip_count": 4518,
+        "depth_gt_50ms_rate": 0.0218,
+        "edge_depth_gt_50ms_rate": 0.0232,
+        "edge_inside_phone_rate": 0.0997,
+        "emitted_audio_sec": 24342.0,
+        "inside_phone_rate": 0.0965,
+        "mean_conditional_coverage": 0.625,
+        "mean_end_to_end_coverage": 0.5005,
+        "unique_cutpoint_count": 8557
+      },
+      "accepted_recording_count": 120,
+      "paired": {
+        "coverage_ties": 34,
+        "d_coverage_greater": 8,
+        "d_coverage_less": 111,
+        "mean_d_minus_a_coverage_pp": -4.64,
+        "median_d_minus_a_coverage_pp": -3.61
+      },
+      "recording_count_paired_table": 153
+    },
+    "historical_coverage_note": "Historical mean conditional (~68.67% / ~62.50%) and mean end-to-end (~54.84% / ~50.05%) coverage used different denominator semantics; do not treat pooled speech_coverage as the same number.",
+    "material_discrepancy": true,
+    "neighborhood": {
+      "a_higher_yield": true,
+      "d_safer": true,
+      "no_ad_collapse": true,
+      "paired_coverage_favors_a": true,
+      "same_broad_cohort": false
+    },
+    "trusted_new_coverage_metric": "pooled Phase-1 speech_coverage (eligible phones minus uncertainty union)"
+  },
+  "order_independence_recording": {
+    "A": {
+      "candidate_cutpoint_sha256": "835a283ac8a08d15a2c476ee85cc1038028df075c42b92849fa378efb48602be",
+      "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+      "selected_clip_sha256": "6694f87bbf9bec0d96aa648a36a3c853910f2b919a606e785e1a7ee36fa5ab25",
+      "vad_observation_count": 69829,
+      "vad_probability_sha256": "384a554710434280e25c770cc87360cb0d79a3166be9cd62ec7f621d1a8f1c9b",
+      "vad_timestamp_sha256": "b5f8a95b25d461ec3215edf05f53a64020c432b08d7f50d8cefb5751856aba9b"
+    },
+    "D": {
+      "candidate_cutpoint_sha256": "919e164726688c2b703b3f629f60ccb1d9ac0f7278041a59994a0f650f221e80",
+      "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+      "selected_clip_sha256": "e9b3e8da1848e91e41072705207748d1d321528a01ab07ccb74231c93652581c",
+      "vad_observation_count": 69829,
+      "vad_probability_sha256": "874417e3c83753978674a246cbdf37bdb8f41ee28bc6e79eb69892f80bb5a37b",
+      "vad_timestamp_sha256": "962658f962094f595f9b0cebfc00f56d83bd6d61daccfc01f6173c09c7055bc6"
+    },
+    "passed": true,
+    "recording_id": "s0101b",
+    "speaker_id": "s01"
+  },
+  "paired_coverage": {
+    "a_safer_gt50ms": 1,
+    "coverage_ties": 0,
+    "d_coverage_greater": 1,
+    "d_coverage_less": 3,
+    "d_safer_gt50ms": 2,
+    "gt50ms_ties": 1,
+    "mean_d_minus_a_coverage": -0.10174358231495059,
+    "mean_d_minus_a_coverage_pp": -10.17435823149506,
+    "median_d_minus_a_coverage": -0.06498358385733322,
+    "median_d_minus_a_coverage_pp": -6.498358385733321,
+    "recording_count": 4
+  },
+  "passed": true,
+  "pooled_A": {
+    "clip_count": 106,
+    "depth_gt_100ms_count": 0,
+    "depth_gt_100ms_rate": 0.0,
+    "depth_gt_20ms_count": 19,
+    "depth_gt_20ms_rate": 0.09595959595959595,
+    "depth_gt_50ms_count": 6,
+    "depth_gt_50ms_rate": 0.030303030303030304,
+    "edge_depth_gt_100ms_count": 0,
+    "edge_depth_gt_100ms_rate": 0.0,
+    "edge_depth_gt_20ms_count": 23,
+    "edge_depth_gt_20ms_rate": 0.10849056603773585,
+    "edge_depth_gt_50ms_count": 9,
+    "edge_depth_gt_50ms_rate": 0.04245283018867924,
+    "edge_inside_phone_count": 34,
+    "edge_inside_phone_rate": 0.16037735849056603,
+    "edge_occurrence_count": 212,
+    "eligible_target_speech_sec": 743.2535470000004,
+    "emitted_audio_sec": 576.2240000000002,
+    "inside_phone_count": 29,
+    "inside_phone_rate": 0.14646464646464646,
+    "mean_clip_duration_sec": 5.436075471698115,
+    "retained_target_speech_sec": 509.74192699999975,
+    "speech_coverage": 0.6858250849356519,
+    "unique_cutpoint_count": 198
+  },
+  "pooled_D": {
+    "clip_count": 97,
+    "depth_gt_100ms_count": 0,
+    "depth_gt_100ms_rate": 0.0,
+    "depth_gt_20ms_count": 7,
+    "depth_gt_20ms_rate": 0.03867403314917127,
+    "depth_gt_50ms_count": 1,
+    "depth_gt_50ms_rate": 0.0055248618784530384,
+    "edge_depth_gt_100ms_count": 0,
+    "edge_depth_gt_100ms_rate": 0.0,
+    "edge_depth_gt_20ms_count": 7,
+    "edge_depth_gt_20ms_rate": 0.03608247422680412,
+    "edge_depth_gt_50ms_count": 1,
+    "edge_depth_gt_50ms_rate": 0.005154639175257732,
+    "edge_inside_phone_count": 19,
+    "edge_inside_phone_rate": 0.0979381443298969,
+    "edge_occurrence_count": 194,
+    "eligible_target_speech_sec": 743.2535470000004,
+    "emitted_audio_sec": 520.5440000000001,
+    "inside_phone_count": 19,
+    "inside_phone_rate": 0.10497237569060773,
+    "mean_clip_duration_sec": 5.366432989690723,
+    "retained_target_speech_sec": 456.9835719999998,
+    "speech_coverage": 0.6148421004440893,
+    "unique_cutpoint_count": 181
+  },
+  "qualitative": {
+    "a_higher_yield": true,
+    "d_safer": true,
+    "historical_shape_recovered": true,
+    "note": "A generally higher yield and D generally safer"
+  },
+  "recording_count": 4,
+  "selection_rule": "First accepted recording with a target NeMo cluster mapping from each of speakers s01, s02, s03, s04 in the historical vad_geometry experiment.",
+  "subset": [
+    {
+      "recording_id": "s0101b",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0201b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0301a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0401b",
+      "speaker_id": "s04"
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+[
+  {
+    "A": {
+      "candidate_cutpoint_sha256": "835a283ac8a08d15a2c476ee85cc1038028df075c42b92849fa378efb48602be",
+      "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+      "selected_clip_sha256": "6694f87bbf9bec0d96aa648a36a3c853910f2b919a606e785e1a7ee36fa5ab25",
+      "vad_observation_count": 69829,
+      "vad_probability_sha256": "384a554710434280e25c770cc87360cb0d79a3166be9cd62ec7f621d1a8f1c9b",
+      "vad_timestamp_sha256": "b5f8a95b25d461ec3215edf05f53a64020c432b08d7f50d8cefb5751856aba9b"
+    },
+    "D": {
+      "candidate_cutpoint_sha256": "919e164726688c2b703b3f629f60ccb1d9ac0f7278041a59994a0f650f221e80",
+      "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+      "selected_clip_sha256": "e9b3e8da1848e91e41072705207748d1d321528a01ab07ccb74231c93652581c",
+      "vad_observation_count": 69829,
+      "vad_probability_sha256": "874417e3c83753978674a246cbdf37bdb8f41ee28bc6e79eb69892f80bb5a37b",
+      "vad_timestamp_sha256": "962658f962094f595f9b0cebfc00f56d83bd6d61daccfc01f6173c09c7055bc6"
+    },
+    "passed": true,
+    "recording_id": "s0101b",
+    "speaker_id": "s01"
+  },
+  {
+    "A": {
+      "candidate_cutpoint_sha256": "12146610a37051a1f8e90c287e16545143798869c501599a52ec5800badda105",
+      "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+      "selected_clip_sha256": "1d5826f7cbd90bca25da3f8fb3a9cb4538aaf3308832a004b78258ee49aa6ca9",
+      "vad_observation_count": 57721,
+      "vad_probability_sha256": "b4a19a851a7ca77c773689a0cdc345fbe7a79b1d5da1617d40f5831795941c49",
+      "vad_timestamp_sha256": "b4c680e897c85f336578d41114edafdf0eea081b9cd811ff54a34ef00b13120a"
+    },
+    "D": {
+      "candidate_cutpoint_sha256": "74b17f9d81f449282fe2823c8ebf86c347602a58fecaa8352c21b3a6f0f357e3",
+      "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+      "selected_clip_sha256": "70fd35da56ec17a3852ffdf96ff6584d8c2c15b009d7c53fc157d6636ce2244d",
+      "vad_observation_count": 57721,
+      "vad_probability_sha256": "75b2353b799c643c6a3f677fab07ade2405ec5bcdb5cefada17ef8a5ff6ed156",
+      "vad_timestamp_sha256": "22911337e67f758624b91ff7c5d809db55d97438d5fd7b669f2f623489ecb8e0"
+    },
+    "passed": true,
+    "recording_id": "s1102a",
+    "speaker_id": "s11"
+  },
+  {
+    "A": {
+      "candidate_cutpoint_sha256": "cf0399022fe28cde26b5c67cfb80530db7e5460b0dc63cb366ffdd8920c9fb0f",
+      "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+      "selected_clip_sha256": "bde5fdd0ee73fbf796c081735e7aeeac50fd717a8f8b143dc7dfc295d77526ab",
+      "vad_observation_count": 74251,
+      "vad_probability_sha256": "470a96e2d5272def8f3facb1dc5a43b9e4debe50a06d3315113f60b82acc5199",
+      "vad_timestamp_sha256": "5fefeceda9aca6045f4293fc4e362121d4d9cd9cd4cd4e046471b0414e05c4d6"
+    },
+    "D": {
+      "candidate_cutpoint_sha256": "1b4b072f3cebbaac133caf2fa892c83dca0bbce442e5efacdada7f6ab5121208",
+      "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+      "selected_clip_sha256": "b97cd95cd42efc6edc1df04ea60742e9e11aaee10697f4487ab919eb06061ddc",
+      "vad_observation_count": 74251,
+      "vad_probability_sha256": "ade227563c9ead388822bc272f805dc94ff22c53ef41c8f2337882b9154bf7e7",
+      "vad_timestamp_sha256": "447e8d8d7db8bdde0aa41f4bf8e5c33b7c29688414ddc2d087a72d7a74476be7"
+    },
+    "passed": true,
+    "recording_id": "s2403b",
+    "speaker_id": "s24"
+  },
+  {
+    "A": {
+      "candidate_cutpoint_sha256": "dde4d4ebea4b6035c99ef7c4205882606aec0cd157035d8026c3b85b16145c10",
+      "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+      "selected_clip_sha256": "73dc2afca8eeef87812891b6b8e8574cd7aa4e67ec0c52bfee3ce3ad00515eb0",
+      "vad_observation_count": 37925,
+      "vad_probability_sha256": "b48d4357b899773119aa18c4241ceceb03bfd88012510cba17618a852abac9b5",
+      "vad_timestamp_sha256": "055dbe11b7ef3f134fcb0defe4a7d5300a994180b0d3927c1f49b415625cdcb9"
+    },
+    "D": {
+      "candidate_cutpoint_sha256": "f0ed71be8bd092f54bb42e9ea90b6b91fa46b2b1adbef54b88c5cb9f802abe89",
+      "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+      "selected_clip_sha256": "e5d33a18bc4979d89a5b8349a88d62b93cd58007070b74fdddb941d7d7e65d5b",
+      "vad_observation_count": 37925,
+      "vad_probability_sha256": "ad067f00549956441919e05e0658b19fd3a90d901795f7a68ef2376a9555ce15",
+      "vad_timestamp_sha256": "572090e5cc7da395de641b63b4a83d1885882024484a82ac9876b0372327cf8c"
+    },
+    "passed": true,
+    "recording_id": "s0301a",
+    "speaker_id": "s03"
+  }
+]

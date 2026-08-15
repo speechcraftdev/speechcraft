@@ -33,6 +33,9 @@ class GeometryConfig:
     preferred_max_sec: float = 8.0
     target_clip_sec: float = 8.0
     max_clip_sec: float = 15.0
+    # Policy knobs. Not part of the geometry fingerprint.
+    min_quiet_run_ms: float | None = None
+    scoring: str | None = None
 
 
 # Current overlapping geometry (validated A baseline).
@@ -51,4 +54,31 @@ PROPER_D = GeometryConfig(
     hop_samples=512,
     offsets=(0, 128, 256, 384),
     sample_rate_hz=16000,
+)
+
+# A-geometry, 64 ms minimum quiet-run gate on detector candidates.
+MIN_QUIET_RUN_64MS = GeometryConfig(
+    name="min_quiet_run_64ms",
+    window_samples=512,
+    hop_samples=256,
+    offsets=(0, 128),
+    sample_rate_hz=16000,
+    min_quiet_run_ms=64.0,
+)
+
+# A-geometry, quiet-evidence rescoring of candidates and packer weights.
+QUIET_RUN_SCORE = GeometryConfig(
+    name="quiet_run_score",
+    window_samples=512,
+    hop_samples=256,
+    offsets=(0, 128),
+    sample_rate_hz=16000,
+    scoring="quiet_evidence",
+)
+
+PHASE6_CONTENDERS: tuple[GeometryConfig, ...] = (
+    CURRENT_A,
+    PROPER_D,
+    MIN_QUIET_RUN_64MS,
+    QUIET_RUN_SCORE,
 )

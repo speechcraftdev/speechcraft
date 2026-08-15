@@ -1,0 +1,81 @@
+{
+  "canonical_paths": {
+    "cluster_mapping_csv": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort/benchmark_cluster_mapping.csv",
+    "cohort_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort",
+    "normalized_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/normalized/corpus",
+    "speaker_cohort_summary_csv": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort/speaker_cohort_summary.csv"
+  },
+  "cohort_fingerprint": "9043eec5a4e8846b8c4496ba5dbd7d6d1e75e4f4035dd715adcbdc20209da5ab",
+  "config_A": {
+    "hop_samples": 256,
+    "max_clip_sec": 15.0,
+    "min_clip_sec": 3.0,
+    "name": "current_A",
+    "offsets": [
+      0,
+      128
+    ],
+    "percentile_rms_margin_db": 3.0,
+    "percentile_rms_percentile": 10.0,
+    "preferred_max_sec": 8.0,
+    "preferred_min_sec": 6.0,
+    "sample_rate_hz": 16000,
+    "target_clip_sec": 8.0,
+    "vad_backend": "silero_official_onnx",
+    "vad_min_run_ms": 40.0,
+    "vad_threshold": 0.2,
+    "window_samples": 512
+  },
+  "config_D": {
+    "hop_samples": 512,
+    "max_clip_sec": 15.0,
+    "min_clip_sec": 3.0,
+    "name": "proper_D",
+    "offsets": [
+      0,
+      128,
+      256,
+      384
+    ],
+    "percentile_rms_margin_db": 3.0,
+    "percentile_rms_percentile": 10.0,
+    "preferred_max_sec": 8.0,
+    "preferred_min_sec": 6.0,
+    "sample_rate_hz": 16000,
+    "target_clip_sec": 8.0,
+    "vad_backend": "silero_official_onnx",
+    "vad_min_run_ms": 40.0,
+    "vad_threshold": 0.2,
+    "window_samples": 512
+  },
+  "geometry_fingerprint_A": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+  "geometry_fingerprint_D": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+  "git_commit": "dd601ebcdbc83c1b87830723ea7b57c15fbc07c5",
+  "paths": {
+    "cohort_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort",
+    "normalized_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/normalized/corpus"
+  },
+  "public_cutpoint_population": "selected_schedule",
+  "recording_count": 4,
+  "run_timestamp": "2026-08-15T16:14:45.351906+00:00",
+  "selection_rule": "First accepted recording with a target NeMo cluster mapping from each of speakers s01, s02, s03, s04 in the historical vad_geometry experiment.",
+  "subset": [
+    {
+      "recording_id": "s0101b",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0201b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0301a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0401b",
+      "speaker_id": "s04"
+    }
+  ],
+  "vad_backend": "silero_official_onnx"
+}

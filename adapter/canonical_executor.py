@@ -19,11 +19,13 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from adapter.config import GeometryConfig
+from adapter.contender_policy import apply_candidate_weight_policy, apply_cut_policy
 from adapter.diagnostics import (
     ExecutionDiagnostics,
     SPEAKER_TS_EVAL_SRC_ENV,
@@ -33,6 +35,8 @@ from adapter.diagnostics import (
     hash_cutpoint_times,
     hash_vad_probabilities,
     hash_vad_timestamps,
+    policy_canonical_json,
+    policy_fingerprint,
     resolve_speaker_ts_eval_src,
 )
 from adapter.types import RawClip, RawCutpoint, RawSlicerOutput, SlicerRequest
@@ -62,6 +66,31 @@ class CanonicalExecution:
 
     raw: RawSlicerOutput
     diagnostics: ExecutionDiagnostics
+
+
+def cutpoints_used_by_selected_schedule(
+    cutpoints: Sequence[Any],
+    selected_candidates: Sequence[Any],
+) -> tuple[Any, ...]:
+    """Historical primary population: unique cutpoints used as selected-clip endpoints.
+
+    The detector candidate pool is larger. Public ``SlicerResult.cutpoints`` must be
+    this selected-schedule subset, not the full candidate pool. Diagnostics may still
+    hash the candidate pool separately.
+    """
+    selected_ids = {str(candidate.start_cutpoint_id) for candidate in selected_candidates} | {
+        str(candidate.end_cutpoint_id) for candidate in selected_candidates
+    }
+    selected = tuple(cut for cut in cutpoints if str(cut.cutpoint_id) in selected_ids)
+    found_ids = {str(cut.cutpoint_id) for cut in selected}
+    missing = selected_ids - found_ids
+    if missing:
+        preview = ", ".join(sorted(missing)[:8])
+        raise RuntimeError(
+            "selected schedule references cutpoint ids missing from the detector pool: "
+            f"{preview}"
+        )
+    return selected
 
 
 _NEXT_INSTANCE_ID = 1
@@ -308,6 +337,7 @@ def execute_canonical_diagnosed(request: SlicerRequest) -> CanonicalExecution:
         detector = canon["VadPercentileRmsDetector"]()
         detector_result = detector.find_cutpoints(contexts)
         cutpoints = canon["dedupe_cutpoints"](detector_result.cutpoints)
+        cutpoints = apply_cut_policy(cutpoints, config)
 
         packing = canon["PackingConstraints"](
             min_clip_sec=benchmark_config.min_clip_sec,
@@ -324,10 +354,14 @@ def execute_canonical_diagnosed(request: SlicerRequest) -> CanonicalExecution:
             cutpoints=cutpoints,
             constraints=packing,
         )
+        candidates = apply_candidate_weight_policy(candidates, cutpoints, config)
         selected = canon["schedule_candidates_by_buffer"](candidates, max_overlap_sec=0.0)
         clips = canon["clips_from_candidates"](
             selected, packer_name="optimal_weighted_interval"
         )
+        selected_cuts = cutpoints_used_by_selected_schedule(cutpoints, selected)
+        if clips and not selected_cuts:
+            raise RuntimeError("emitted clips but selected schedule has no cutpoints")
 
         raw_cuts = tuple(
             RawCutpoint(
@@ -335,7 +369,7 @@ def execute_canonical_diagnosed(request: SlicerRequest) -> CanonicalExecution:
                 buffer_id=cut.buffer_id,
                 time_sec=float(cut.time_sec),
             )
-            for cut in cutpoints
+            for cut in selected_cuts
         )
         raw_clips = tuple(
             RawClip(
@@ -365,5 +399,9 @@ def execute_canonical_diagnosed(request: SlicerRequest) -> CanonicalExecution:
             vad_probability_sha256=vad_probability_sha256,
             candidate_cutpoint_sha256=hash_cutpoint_times(cutpoints),
             selected_clip_sha256=hash_clip_intervals(raw_clips),
+            policy_name=config.name,
+            policy_canonical=policy_canonical_json(config),
+            policy_fingerprint=policy_fingerprint(config),
+            selected_cutpoint_sha256=hash_cutpoint_times(selected_cuts),
         )
         return CanonicalExecution(raw=raw, diagnostics=diagnostics)

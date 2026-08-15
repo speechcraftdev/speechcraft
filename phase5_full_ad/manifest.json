@@ -1,0 +1,582 @@
+{
+  "canonical_paths": {
+    "cluster_mapping_csv": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort/benchmark_cluster_mapping.csv",
+    "cohort_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort",
+    "normalized_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/normalized/corpus",
+    "speaker_cohort_summary_csv": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort/speaker_cohort_summary.csv"
+  },
+  "cohort": {
+    "allowed_buffer_duration_sec": 39984.79068700001,
+    "canonical_paths": {
+      "cluster_mapping_csv": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort/benchmark_cluster_mapping.csv",
+      "cohort_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort",
+      "normalized_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/normalized/corpus",
+      "speaker_cohort_summary_csv": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort/speaker_cohort_summary.csv"
+    },
+    "fingerprint": "f3177a2fd9b69434a0cc91856bd13da45d9b0a1f4a8a6b240b7fa16e213644dd",
+    "recording_count": 120,
+    "speaker_count": 23,
+    "speaker_ids": [
+      "s01",
+      "s02",
+      "s03",
+      "s04",
+      "s05",
+      "s06",
+      "s07",
+      "s08",
+      "s09",
+      "s10",
+      "s11",
+      "s12",
+      "s13",
+      "s14",
+      "s15",
+      "s16",
+      "s17",
+      "s18",
+      "s19",
+      "s20",
+      "s21",
+      "s22",
+      "s24"
+    ]
+  },
+  "cohort_fingerprint": "f3177a2fd9b69434a0cc91856bd13da45d9b0a1f4a8a6b240b7fa16e213644dd",
+  "config_A": {
+    "hop_samples": 256,
+    "max_clip_sec": 15.0,
+    "min_clip_sec": 3.0,
+    "name": "current_A",
+    "offsets": [
+      0,
+      128
+    ],
+    "percentile_rms_margin_db": 3.0,
+    "percentile_rms_percentile": 10.0,
+    "preferred_max_sec": 8.0,
+    "preferred_min_sec": 6.0,
+    "sample_rate_hz": 16000,
+    "target_clip_sec": 8.0,
+    "vad_backend": "silero_official_onnx",
+    "vad_min_run_ms": 40.0,
+    "vad_threshold": 0.2,
+    "window_samples": 512
+  },
+  "config_D": {
+    "hop_samples": 512,
+    "max_clip_sec": 15.0,
+    "min_clip_sec": 3.0,
+    "name": "proper_D",
+    "offsets": [
+      0,
+      128,
+      256,
+      384
+    ],
+    "percentile_rms_margin_db": 3.0,
+    "percentile_rms_percentile": 10.0,
+    "preferred_max_sec": 8.0,
+    "preferred_min_sec": 6.0,
+    "sample_rate_hz": 16000,
+    "target_clip_sec": 8.0,
+    "vad_backend": "silero_official_onnx",
+    "vad_min_run_ms": 40.0,
+    "vad_threshold": 0.2,
+    "window_samples": 512
+  },
+  "geometry_fingerprint_A": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+  "geometry_fingerprint_D": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+  "git_commit": "dd601ebcdbc83c1b87830723ea7b57c15fbc07c5",
+  "paths": {
+    "cohort_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort",
+    "normalized_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/normalized/corpus"
+  },
+  "public_cutpoint_population": "selected_schedule",
+  "recording_count": 120,
+  "run_timestamp": "2026-08-15T16:16:39.365306+00:00",
+  "selection_rule": "Every recording from speakers with accepted_recording_count > 0 in canonical/acoustic_matrix/cohort/speaker_cohort_summary.csv that is in the frozen reconciliation, not excluded, and has at least one raw NeMo target buffer. Review-required and excluded recordings are not added.",
+  "subset": [
+    {
+      "recording_id": "s0101b",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0102a",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0102b",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0103a",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0201b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0202b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0203a",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0203b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0204a",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0204b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0205b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0206a",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0301a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0301b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0302a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0302b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0303a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0303b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0304a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0304b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0305a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0305b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0306a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0401b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0402a",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0402b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0403a",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0403b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0501a",
+      "speaker_id": "s05"
+    },
+    {
+      "recording_id": "s0503a",
+      "speaker_id": "s05"
+    },
+    {
+      "recording_id": "s0504a",
+      "speaker_id": "s05"
+    },
+    {
+      "recording_id": "s0601a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0602a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0602b",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0603a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0701a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0701b",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0702a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0702b",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0703a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0703b",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0704a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0801a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0801b",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0802b",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0803a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0803b",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0804a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0901a",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0901b",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0902a",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0902b",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0903a",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0903b",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s1001a",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1001b",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1002a",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1002b",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1003b",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1101a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1102a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1102b",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1103a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1103b",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1104a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1104b",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1201a",
+      "speaker_id": "s12"
+    },
+    {
+      "recording_id": "s1202b",
+      "speaker_id": "s12"
+    },
+    {
+      "recording_id": "s1203a",
+      "speaker_id": "s12"
+    },
+    {
+      "recording_id": "s1301a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1301b",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1302a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1302b",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1303a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1303b",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1304a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1401a",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1401b",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1402a",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1402b",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1403a",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1403b",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1501a",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1501b",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1502a",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1502b",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1601a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1601b",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1602a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1602b",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1603a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1604a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1701a",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1702a",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1703a",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1703b",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1801a",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1801b",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1803a",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1803b",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1901a",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1902a",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1902b",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1904a",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1904b",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s2002b",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2003a",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2003b",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2004a",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2101b",
+      "speaker_id": "s21"
+    },
+    {
+      "recording_id": "s2102b",
+      "speaker_id": "s21"
+    },
+    {
+      "recording_id": "s2201a",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2201b",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2202b",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2203b",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2401b",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2402a",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2402b",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2403a",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2403b",
+      "speaker_id": "s24"
+    }
+  ],
+  "vad_backend": "silero_official_onnx"
+}

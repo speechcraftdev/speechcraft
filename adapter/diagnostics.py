@@ -86,6 +86,29 @@ def geometry_fingerprint(config: GeometryConfig) -> str:
     return hashlib.sha256(geometry_canonical_json(config).encode("utf-8")).hexdigest()
 
 
+def policy_canonical_payload(config: GeometryConfig) -> dict[str, Any]:
+    """Candidate/selection policy only — not window/hop/offsets."""
+    return {
+        "min_quiet_run_ms": (
+            None if config.min_quiet_run_ms is None else float(config.min_quiet_run_ms)
+        ),
+        "scoring": None if not config.scoring else str(config.scoring),
+    }
+
+
+def policy_canonical_json(config: GeometryConfig) -> str:
+    return json.dumps(
+        policy_canonical_payload(config),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+
+
+def policy_fingerprint(config: GeometryConfig) -> str:
+    return hashlib.sha256(policy_canonical_json(config).encode("utf-8")).hexdigest()
+
+
 def compact_sha256(payload: Any) -> str:
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -151,6 +174,10 @@ class ExecutionDiagnostics:
     vad_probability_sha256: str
     candidate_cutpoint_sha256: str
     selected_clip_sha256: str
+    policy_name: str = "baseline"
+    policy_canonical: str = "{}"
+    policy_fingerprint: str = ""
+    selected_cutpoint_sha256: str = ""
 
     def to_summary(self) -> dict[str, Any]:
         data = asdict(self)
@@ -179,6 +206,17 @@ def same_geometry_signatures(
         and left.vad_probability_sha256 == right.vad_probability_sha256
         and left.candidate_cutpoint_sha256 == right.candidate_cutpoint_sha256
         and left.selected_clip_sha256 == right.selected_clip_sha256
+    )
+
+
+def same_contender_signatures(
+    left: ExecutionDiagnostics, right: ExecutionDiagnostics
+) -> bool:
+    """Order-independence for one contender: geometry, policy, and outputs match."""
+    return (
+        same_geometry_signatures(left, right)
+        and left.policy_fingerprint == right.policy_fingerprint
+        and left.selected_cutpoint_sha256 == right.selected_cutpoint_sha256
     )
 
 

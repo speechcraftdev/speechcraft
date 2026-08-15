@@ -1,0 +1,1293 @@
+{
+  "ad_independence_guard": "passed on every recording",
+  "ad_observation_signatures_differed": true,
+  "cohort_fingerprint": "f3177a2fd9b69434a0cc91856bd13da45d9b0a1f4a8a6b240b7fa16e213644dd",
+  "comparison": [
+    {
+      "A": 0.6935342093978665,
+      "D": 0.6345371521964369,
+      "D - A": -0.05899705720142956,
+      "metric": "speech coverage"
+    },
+    {
+      "A": 23494.988464000002,
+      "D": 21496.33409400001,
+      "D - A": -1998.654369999993,
+      "metric": "retained speech sec"
+    },
+    {
+      "A": 26551.248,
+      "D": 24342.472,
+      "D - A": -2208.775999999998,
+      "metric": "emitted sec"
+    },
+    {
+      "A": 4983,
+      "D": 4518,
+      "D - A": -465.0,
+      "metric": "clips"
+    },
+    {
+      "A": 9310,
+      "D": 8557,
+      "D - A": -753.0,
+      "metric": "selected cuts"
+    },
+    {
+      "A": 11.203007518796992,
+      "D": 8.57777258384948,
+      "D - A": -2.625234934947512,
+      "metric": "inside-phone %"
+    },
+    {
+      "A": 6.885069817400645,
+      "D": 4.335631646605119,
+      "D - A": -2.5494381707955256,
+      "metric": ">20 ms %"
+    },
+    {
+      "A": 1.4607948442534908,
+      "D": 0.993338786958046,
+      "D - A": -0.4674560572954448,
+      "metric": ">50 ms %"
+    },
+    {
+      "A": 0.1611170784103115,
+      "D": 0.21035409606170388,
+      "D - A": 0.04923701765139238,
+      "metric": ">100 ms %"
+    },
+    {
+      "A": 12.181416817178405,
+      "D": 8.908809207613988,
+      "D - A": -3.2726076095644174,
+      "metric": "final-edge inside-phone %"
+    },
+    {
+      "A": 1.926550270921132,
+      "D": 1.1730854360336431,
+      "D - A": -0.7534648348874888,
+      "metric": "final-edge >50 ms %"
+    }
+  ],
+  "contender_names": [
+    "current_A",
+    "proper_D",
+    "min_quiet_run_64ms",
+    "quiet_run_score"
+  ],
+  "delta_vs_A": [
+    {
+      "metric": "speech coverage",
+      "min_quiet_run_64ms": -0.026641417279416157,
+      "proper_D": -0.05899705720142956,
+      "quiet_run_score": -0.00997153706430376
+    },
+    {
+      "metric": "emitted sec",
+      "min_quiet_run_64ms": -1043.2719999999936,
+      "proper_D": -2208.775999999998,
+      "quiet_run_score": -496.59200000000055
+    },
+    {
+      "metric": "inside-phone %",
+      "min_quiet_run_64ms": -1.270196768517037,
+      "proper_D": -2.625234934947512,
+      "quiet_run_score": -1.307669745247992
+    },
+    {
+      "metric": ">50 ms %",
+      "min_quiet_run_64ms": 0.11815252416756183,
+      "proper_D": -0.4674560572954448,
+      "quiet_run_score": 0.124996465610131
+    },
+    {
+      "metric": ">100 ms %",
+      "min_quiet_run_64ms": 0.07404529560984527,
+      "proper_D": 0.04923701765139238,
+      "quiet_run_score": 0.1560411835624129
+    }
+  ],
+  "determinism_checks": [
+    {
+      "current_A": {
+        "candidate_cutpoint_sha256": "835a283ac8a08d15a2c476ee85cc1038028df075c42b92849fa378efb48602be",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "6694f87bbf9bec0d96aa648a36a3c853910f2b919a606e785e1a7ee36fa5ab25",
+        "selected_cutpoint_sha256": "fde371348ffd3e0de0343f96160d7e7ec8b17b02029203168bb09da0d9d03b61",
+        "vad_observation_count": 69829,
+        "vad_probability_sha256": "384a554710434280e25c770cc87360cb0d79a3166be9cd62ec7f621d1a8f1c9b",
+        "vad_timestamp_sha256": "b5f8a95b25d461ec3215edf05f53a64020c432b08d7f50d8cefb5751856aba9b"
+      },
+      "forward_order": [
+        "current_A",
+        "min_quiet_run_64ms",
+        "quiet_run_score",
+        "proper_D"
+      ],
+      "min_quiet_run_64ms": {
+        "candidate_cutpoint_sha256": "867ab3632f38513f45c2a5751f354a431737676121d5729d8ed1a8cd68b45692",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "147296b66139fb1e25f990a73fc8504c73dcc082cbd7ad0e1f082f2cacec28a9",
+        "selected_clip_sha256": "163f29bbdb6bc7ec70daa61d42a9bf3daef199b7f83c6c09af57638253c35821",
+        "selected_cutpoint_sha256": "189e58aef454025630d3c23d2c27c00bd8fa25d5c7ffbbb371c5d64890633999",
+        "vad_observation_count": 69829,
+        "vad_probability_sha256": "384a554710434280e25c770cc87360cb0d79a3166be9cd62ec7f621d1a8f1c9b",
+        "vad_timestamp_sha256": "b5f8a95b25d461ec3215edf05f53a64020c432b08d7f50d8cefb5751856aba9b"
+      },
+      "passed": true,
+      "proper_D": {
+        "candidate_cutpoint_sha256": "919e164726688c2b703b3f629f60ccb1d9ac0f7278041a59994a0f650f221e80",
+        "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "e9b3e8da1848e91e41072705207748d1d321528a01ab07ccb74231c93652581c",
+        "selected_cutpoint_sha256": "fc3091eebbf3ed5a9c717b82cd53e2fabbfd40bd8b92f8b184bea9a27ac54b93",
+        "vad_observation_count": 69829,
+        "vad_probability_sha256": "874417e3c83753978674a246cbdf37bdb8f41ee28bc6e79eb69892f80bb5a37b",
+        "vad_timestamp_sha256": "962658f962094f595f9b0cebfc00f56d83bd6d61daccfc01f6173c09c7055bc6"
+      },
+      "quiet_run_score": {
+        "candidate_cutpoint_sha256": "835a283ac8a08d15a2c476ee85cc1038028df075c42b92849fa378efb48602be",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "9f81ddd3e1ece099fb5400ba14ba18280c8818346149f168c5660056e4c18f56",
+        "selected_clip_sha256": "edd561e4e91cce05fecf4c4a66394e3d94ce55621d5c52bd0f1f345b5a21e00d",
+        "selected_cutpoint_sha256": "971bae581d4642b28016f24099763095fbaa90515782a93589416702cbf93a07",
+        "vad_observation_count": 69829,
+        "vad_probability_sha256": "384a554710434280e25c770cc87360cb0d79a3166be9cd62ec7f621d1a8f1c9b",
+        "vad_timestamp_sha256": "b5f8a95b25d461ec3215edf05f53a64020c432b08d7f50d8cefb5751856aba9b"
+      },
+      "recording_id": "s0101b",
+      "reverse_order": [
+        "proper_D",
+        "quiet_run_score",
+        "min_quiet_run_64ms",
+        "current_A"
+      ],
+      "speaker_id": "s01"
+    },
+    {
+      "current_A": {
+        "candidate_cutpoint_sha256": "12146610a37051a1f8e90c287e16545143798869c501599a52ec5800badda105",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "1d5826f7cbd90bca25da3f8fb3a9cb4538aaf3308832a004b78258ee49aa6ca9",
+        "selected_cutpoint_sha256": "66ec8fd13ca9fc9ee607f6ac334afab37e69b91ce2ece79e7a2cace6037778ef",
+        "vad_observation_count": 57721,
+        "vad_probability_sha256": "b4a19a851a7ca77c773689a0cdc345fbe7a79b1d5da1617d40f5831795941c49",
+        "vad_timestamp_sha256": "b4c680e897c85f336578d41114edafdf0eea081b9cd811ff54a34ef00b13120a"
+      },
+      "forward_order": [
+        "current_A",
+        "min_quiet_run_64ms",
+        "quiet_run_score",
+        "proper_D"
+      ],
+      "min_quiet_run_64ms": {
+        "candidate_cutpoint_sha256": "7e1c788ede8b1cb01ddfae4732b985795c1ac411f2b3b31eac700c6927c7ebda",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "147296b66139fb1e25f990a73fc8504c73dcc082cbd7ad0e1f082f2cacec28a9",
+        "selected_clip_sha256": "1f3ec5263ab10a04fcfc9d448e2aeed05d209eecbbdae852f582462711c84026",
+        "selected_cutpoint_sha256": "516d677a6783d58b7a86b8f1c959d85cb9d0862b2d739367d2c02af30065fbe2",
+        "vad_observation_count": 57721,
+        "vad_probability_sha256": "b4a19a851a7ca77c773689a0cdc345fbe7a79b1d5da1617d40f5831795941c49",
+        "vad_timestamp_sha256": "b4c680e897c85f336578d41114edafdf0eea081b9cd811ff54a34ef00b13120a"
+      },
+      "passed": true,
+      "proper_D": {
+        "candidate_cutpoint_sha256": "74b17f9d81f449282fe2823c8ebf86c347602a58fecaa8352c21b3a6f0f357e3",
+        "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "70fd35da56ec17a3852ffdf96ff6584d8c2c15b009d7c53fc157d6636ce2244d",
+        "selected_cutpoint_sha256": "8a29575685e9457a0db55a850b25e7f834ff0fc2674d89d48e2dde3c5d900183",
+        "vad_observation_count": 57721,
+        "vad_probability_sha256": "75b2353b799c643c6a3f677fab07ade2405ec5bcdb5cefada17ef8a5ff6ed156",
+        "vad_timestamp_sha256": "22911337e67f758624b91ff7c5d809db55d97438d5fd7b669f2f623489ecb8e0"
+      },
+      "quiet_run_score": {
+        "candidate_cutpoint_sha256": "12146610a37051a1f8e90c287e16545143798869c501599a52ec5800badda105",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "9f81ddd3e1ece099fb5400ba14ba18280c8818346149f168c5660056e4c18f56",
+        "selected_clip_sha256": "a5a26ec18353381b542fb32a499d8510d009ec066c6756ff0d43ef938441a457",
+        "selected_cutpoint_sha256": "b244ad2e316feba0b70530b36162f2ffd34c6a08fbca5e74ac0266a7d47a88c7",
+        "vad_observation_count": 57721,
+        "vad_probability_sha256": "b4a19a851a7ca77c773689a0cdc345fbe7a79b1d5da1617d40f5831795941c49",
+        "vad_timestamp_sha256": "b4c680e897c85f336578d41114edafdf0eea081b9cd811ff54a34ef00b13120a"
+      },
+      "recording_id": "s1102a",
+      "reverse_order": [
+        "proper_D",
+        "quiet_run_score",
+        "min_quiet_run_64ms",
+        "current_A"
+      ],
+      "speaker_id": "s11"
+    },
+    {
+      "current_A": {
+        "candidate_cutpoint_sha256": "cf0399022fe28cde26b5c67cfb80530db7e5460b0dc63cb366ffdd8920c9fb0f",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "bde5fdd0ee73fbf796c081735e7aeeac50fd717a8f8b143dc7dfc295d77526ab",
+        "selected_cutpoint_sha256": "8e3b8a614e154dd8287a18b7fccfa5f25cb50050f6384abdc8a5b6519ccd1c55",
+        "vad_observation_count": 74251,
+        "vad_probability_sha256": "470a96e2d5272def8f3facb1dc5a43b9e4debe50a06d3315113f60b82acc5199",
+        "vad_timestamp_sha256": "5fefeceda9aca6045f4293fc4e362121d4d9cd9cd4cd4e046471b0414e05c4d6"
+      },
+      "forward_order": [
+        "current_A",
+        "min_quiet_run_64ms",
+        "quiet_run_score",
+        "proper_D"
+      ],
+      "min_quiet_run_64ms": {
+        "candidate_cutpoint_sha256": "baa36f20915f26751c8b441d7a18a4bfbf63eb14b9d04277668c7321f5ed52e5",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "147296b66139fb1e25f990a73fc8504c73dcc082cbd7ad0e1f082f2cacec28a9",
+        "selected_clip_sha256": "ef4c60f8232a0cc8128c9d94d433f7569e77727ab4877bdc5ba4128c35dca8a7",
+        "selected_cutpoint_sha256": "b7aca328507f3a1100878c760222b81a1fc3c9af77eaafbc31c0ed0898183dfb",
+        "vad_observation_count": 74251,
+        "vad_probability_sha256": "470a96e2d5272def8f3facb1dc5a43b9e4debe50a06d3315113f60b82acc5199",
+        "vad_timestamp_sha256": "5fefeceda9aca6045f4293fc4e362121d4d9cd9cd4cd4e046471b0414e05c4d6"
+      },
+      "passed": true,
+      "proper_D": {
+        "candidate_cutpoint_sha256": "1b4b072f3cebbaac133caf2fa892c83dca0bbce442e5efacdada7f6ab5121208",
+        "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "b97cd95cd42efc6edc1df04ea60742e9e11aaee10697f4487ab919eb06061ddc",
+        "selected_cutpoint_sha256": "8e478ffb1f9612d048ef7c2e38e707184160d745a262e820a1195ec4bc54bbc9",
+        "vad_observation_count": 74251,
+        "vad_probability_sha256": "ade227563c9ead388822bc272f805dc94ff22c53ef41c8f2337882b9154bf7e7",
+        "vad_timestamp_sha256": "447e8d8d7db8bdde0aa41f4bf8e5c33b7c29688414ddc2d087a72d7a74476be7"
+      },
+      "quiet_run_score": {
+        "candidate_cutpoint_sha256": "cf0399022fe28cde26b5c67cfb80530db7e5460b0dc63cb366ffdd8920c9fb0f",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "9f81ddd3e1ece099fb5400ba14ba18280c8818346149f168c5660056e4c18f56",
+        "selected_clip_sha256": "d0f2dbdc6ca5d69f1deb19e68a8c9745022a1df5a6d94b5b92e44ae4fc53306c",
+        "selected_cutpoint_sha256": "d09809a62db92b884dc28f2c1b5c5b60c8169ee0cc6b19c9d41a8ea611f9adef",
+        "vad_observation_count": 74251,
+        "vad_probability_sha256": "470a96e2d5272def8f3facb1dc5a43b9e4debe50a06d3315113f60b82acc5199",
+        "vad_timestamp_sha256": "5fefeceda9aca6045f4293fc4e362121d4d9cd9cd4cd4e046471b0414e05c4d6"
+      },
+      "recording_id": "s2403b",
+      "reverse_order": [
+        "proper_D",
+        "quiet_run_score",
+        "min_quiet_run_64ms",
+        "current_A"
+      ],
+      "speaker_id": "s24"
+    },
+    {
+      "current_A": {
+        "candidate_cutpoint_sha256": "dde4d4ebea4b6035c99ef7c4205882606aec0cd157035d8026c3b85b16145c10",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "73dc2afca8eeef87812891b6b8e8574cd7aa4e67ec0c52bfee3ce3ad00515eb0",
+        "selected_cutpoint_sha256": "c4f6fba77c6054440da4bd4d43e8fdf7c24e7be0f8758187c0ce1f5de5315a6b",
+        "vad_observation_count": 37925,
+        "vad_probability_sha256": "b48d4357b899773119aa18c4241ceceb03bfd88012510cba17618a852abac9b5",
+        "vad_timestamp_sha256": "055dbe11b7ef3f134fcb0defe4a7d5300a994180b0d3927c1f49b415625cdcb9"
+      },
+      "forward_order": [
+        "current_A",
+        "min_quiet_run_64ms",
+        "quiet_run_score",
+        "proper_D"
+      ],
+      "min_quiet_run_64ms": {
+        "candidate_cutpoint_sha256": "3cbc917e2afc2f5d5fb966ee8ad98eb6297ec9c67f9a1760527d1df090609f8e",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "147296b66139fb1e25f990a73fc8504c73dcc082cbd7ad0e1f082f2cacec28a9",
+        "selected_clip_sha256": "73dc2afca8eeef87812891b6b8e8574cd7aa4e67ec0c52bfee3ce3ad00515eb0",
+        "selected_cutpoint_sha256": "c4f6fba77c6054440da4bd4d43e8fdf7c24e7be0f8758187c0ce1f5de5315a6b",
+        "vad_observation_count": 37925,
+        "vad_probability_sha256": "b48d4357b899773119aa18c4241ceceb03bfd88012510cba17618a852abac9b5",
+        "vad_timestamp_sha256": "055dbe11b7ef3f134fcb0defe4a7d5300a994180b0d3927c1f49b415625cdcb9"
+      },
+      "passed": true,
+      "proper_D": {
+        "candidate_cutpoint_sha256": "f0ed71be8bd092f54bb42e9ea90b6b91fa46b2b1adbef54b88c5cb9f802abe89",
+        "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "e5d33a18bc4979d89a5b8349a88d62b93cd58007070b74fdddb941d7d7e65d5b",
+        "selected_cutpoint_sha256": "5fc92299aeb26c2e0161c6e361e7951965ce1a18577ece6428db6245b5aabf85",
+        "vad_observation_count": 37925,
+        "vad_probability_sha256": "ad067f00549956441919e05e0658b19fd3a90d901795f7a68ef2376a9555ce15",
+        "vad_timestamp_sha256": "572090e5cc7da395de641b63b4a83d1885882024484a82ac9876b0372327cf8c"
+      },
+      "quiet_run_score": {
+        "candidate_cutpoint_sha256": "dde4d4ebea4b6035c99ef7c4205882606aec0cd157035d8026c3b85b16145c10",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "9f81ddd3e1ece099fb5400ba14ba18280c8818346149f168c5660056e4c18f56",
+        "selected_clip_sha256": "5229f351b11349b19f783c7d9bbe78b129fdf1b06ae49a7f6c1f8b4288aa6e55",
+        "selected_cutpoint_sha256": "45caa9722c4159c5ad2f7f70773680d1ddb3e4bd807613c6b60afbd2f70e3fe1",
+        "vad_observation_count": 37925,
+        "vad_probability_sha256": "b48d4357b899773119aa18c4241ceceb03bfd88012510cba17618a852abac9b5",
+        "vad_timestamp_sha256": "055dbe11b7ef3f134fcb0defe4a7d5300a994180b0d3927c1f49b415625cdcb9"
+      },
+      "recording_id": "s0301a",
+      "reverse_order": [
+        "proper_D",
+        "quiet_run_score",
+        "min_quiet_run_64ms",
+        "current_A"
+      ],
+      "speaker_id": "s03"
+    }
+  ],
+  "elapsed_sec": 3649.2513589589944,
+  "four_way": [
+    {
+      "A": 0.6935342093978665,
+      "D": 0.6345371521964369,
+      "metric": "speech coverage",
+      "min_quiet_64": 0.6668927921184503,
+      "quiet_run_score": 0.6835626723335627
+    },
+    {
+      "A": 26551.248,
+      "D": 24342.472,
+      "metric": "emitted sec",
+      "min_quiet_64": 25507.976000000006,
+      "quiet_run_score": 26054.656
+    },
+    {
+      "A": 4983,
+      "D": 4518,
+      "metric": "clips",
+      "min_quiet_64": 4780,
+      "quiet_run_score": 5142
+    },
+    {
+      "A": 9310,
+      "D": 8557,
+      "metric": "selected cuts",
+      "min_quiet_64": 8930,
+      "quiet_run_score": 9459
+    },
+    {
+      "A": 11.203007518796992,
+      "D": 8.57777258384948,
+      "metric": "inside-phone %",
+      "min_quiet_64": 9.932810750279955,
+      "quiet_run_score": 9.895337773549
+    },
+    {
+      "A": 6.885069817400645,
+      "D": 4.335631646605119,
+      "metric": ">20 ms %",
+      "min_quiet_64": 6.25979843225084,
+      "quiet_run_score": 6.311449413257216
+    },
+    {
+      "A": 1.4607948442534908,
+      "D": 0.993338786958046,
+      "metric": ">50 ms %",
+      "min_quiet_64": 1.5789473684210527,
+      "quiet_run_score": 1.5857913098636218
+    },
+    {
+      "A": 0.1611170784103115,
+      "D": 0.21035409606170388,
+      "metric": ">100 ms %",
+      "min_quiet_64": 0.23516237402015677,
+      "quiet_run_score": 0.3171582619727244
+    },
+    {
+      "A": 12.181416817178405,
+      "D": 8.908809207613988,
+      "metric": "final-edge inside-phone %",
+      "min_quiet_64": 10.627615062761505,
+      "quiet_run_score": 10.375340334500196
+    },
+    {
+      "A": 1.926550270921132,
+      "D": 1.1730854360336431,
+      "metric": "final-edge >50 ms %",
+      "min_quiet_64": 1.9456066945606694,
+      "quiet_run_score": 1.8669778296382729
+    }
+  ],
+  "historical_comparison": {
+    "flags": [],
+    "historical": {
+      "A": {
+        "clip_count": 4983,
+        "depth_gt_50ms_rate": 0.0272,
+        "edge_depth_gt_50ms_rate": 0.0315,
+        "edge_inside_phone_rate": 0.136,
+        "emitted_audio_sec": 26551.0,
+        "inside_phone_rate": 0.126,
+        "mean_conditional_coverage": 0.6867,
+        "mean_end_to_end_coverage": 0.5484,
+        "unique_cutpoint_count": 9310
+      },
+      "D": {
+        "clip_count": 4518,
+        "depth_gt_50ms_rate": 0.0218,
+        "edge_depth_gt_50ms_rate": 0.0232,
+        "edge_inside_phone_rate": 0.0997,
+        "emitted_audio_sec": 24342.0,
+        "inside_phone_rate": 0.0965,
+        "mean_conditional_coverage": 0.625,
+        "mean_end_to_end_coverage": 0.5005,
+        "unique_cutpoint_count": 8557
+      },
+      "accepted_recording_count": 120,
+      "paired": {
+        "coverage_ties": 34,
+        "d_coverage_greater": 8,
+        "d_coverage_less": 111,
+        "mean_d_minus_a_coverage_pp": -4.64,
+        "median_d_minus_a_coverage_pp": -3.61
+      },
+      "recording_count_paired_table": 153
+    },
+    "historical_coverage_note": "Historical mean conditional (~68.67% / ~62.50%) and mean end-to-end (~54.84% / ~50.05%) coverage used different denominator semantics; do not treat pooled speech_coverage as the same number.",
+    "material_discrepancy": false,
+    "neighborhood": {
+      "a_higher_yield": true,
+      "d_safer": true,
+      "no_ad_collapse": true,
+      "paired_coverage_favors_a": true,
+      "same_broad_cohort": true
+    },
+    "trusted_new_coverage_metric": "pooled Phase-1 speech_coverage (eligible phones minus uncertainty union)"
+  },
+  "order_independence_recording": {
+    "current_A": {
+      "candidate_cutpoint_sha256": "835a283ac8a08d15a2c476ee85cc1038028df075c42b92849fa378efb48602be",
+      "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+      "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+      "selected_clip_sha256": "6694f87bbf9bec0d96aa648a36a3c853910f2b919a606e785e1a7ee36fa5ab25",
+      "selected_cutpoint_sha256": "fde371348ffd3e0de0343f96160d7e7ec8b17b02029203168bb09da0d9d03b61",
+      "vad_observation_count": 69829,
+      "vad_probability_sha256": "384a554710434280e25c770cc87360cb0d79a3166be9cd62ec7f621d1a8f1c9b",
+      "vad_timestamp_sha256": "b5f8a95b25d461ec3215edf05f53a64020c432b08d7f50d8cefb5751856aba9b"
+    },
+    "forward_order": [
+      "current_A",
+      "min_quiet_run_64ms",
+      "quiet_run_score",
+      "proper_D"
+    ],
+    "min_quiet_run_64ms": {
+      "candidate_cutpoint_sha256": "867ab3632f38513f45c2a5751f354a431737676121d5729d8ed1a8cd68b45692",
+      "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+      "policy_fingerprint": "147296b66139fb1e25f990a73fc8504c73dcc082cbd7ad0e1f082f2cacec28a9",
+      "selected_clip_sha256": "163f29bbdb6bc7ec70daa61d42a9bf3daef199b7f83c6c09af57638253c35821",
+      "selected_cutpoint_sha256": "189e58aef454025630d3c23d2c27c00bd8fa25d5c7ffbbb371c5d64890633999",
+      "vad_observation_count": 69829,
+      "vad_probability_sha256": "384a554710434280e25c770cc87360cb0d79a3166be9cd62ec7f621d1a8f1c9b",
+      "vad_timestamp_sha256": "b5f8a95b25d461ec3215edf05f53a64020c432b08d7f50d8cefb5751856aba9b"
+    },
+    "passed": true,
+    "proper_D": {
+      "candidate_cutpoint_sha256": "919e164726688c2b703b3f629f60ccb1d9ac0f7278041a59994a0f650f221e80",
+      "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+      "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+      "selected_clip_sha256": "e9b3e8da1848e91e41072705207748d1d321528a01ab07ccb74231c93652581c",
+      "selected_cutpoint_sha256": "fc3091eebbf3ed5a9c717b82cd53e2fabbfd40bd8b92f8b184bea9a27ac54b93",
+      "vad_observation_count": 69829,
+      "vad_probability_sha256": "874417e3c83753978674a246cbdf37bdb8f41ee28bc6e79eb69892f80bb5a37b",
+      "vad_timestamp_sha256": "962658f962094f595f9b0cebfc00f56d83bd6d61daccfc01f6173c09c7055bc6"
+    },
+    "quiet_run_score": {
+      "candidate_cutpoint_sha256": "835a283ac8a08d15a2c476ee85cc1038028df075c42b92849fa378efb48602be",
+      "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+      "policy_fingerprint": "9f81ddd3e1ece099fb5400ba14ba18280c8818346149f168c5660056e4c18f56",
+      "selected_clip_sha256": "edd561e4e91cce05fecf4c4a66394e3d94ce55621d5c52bd0f1f345b5a21e00d",
+      "selected_cutpoint_sha256": "971bae581d4642b28016f24099763095fbaa90515782a93589416702cbf93a07",
+      "vad_observation_count": 69829,
+      "vad_probability_sha256": "384a554710434280e25c770cc87360cb0d79a3166be9cd62ec7f621d1a8f1c9b",
+      "vad_timestamp_sha256": "b5f8a95b25d461ec3215edf05f53a64020c432b08d7f50d8cefb5751856aba9b"
+    },
+    "recording_id": "s0101b",
+    "reverse_order": [
+      "proper_D",
+      "quiet_run_score",
+      "min_quiet_run_64ms",
+      "current_A"
+    ],
+    "speaker_id": "s01"
+  },
+  "paired_coverage": {
+    "a_safer_gt50ms": 41,
+    "baseline_safer_gt50ms": 41,
+    "contender_safer_gt50ms": 45,
+    "coverage_greater": 8,
+    "coverage_less": 111,
+    "coverage_ties": 1,
+    "d_coverage_greater": 8,
+    "d_coverage_less": 111,
+    "d_safer_gt50ms": 45,
+    "gt50ms_ties": 34,
+    "gt50ms_undefined": 0,
+    "left": "current_A",
+    "mean_d_minus_a_coverage": -0.05913443139729775,
+    "mean_d_minus_a_coverage_pp": -5.913443139729775,
+    "mean_delta_coverage": -0.05913443139729775,
+    "mean_delta_coverage_pp": -5.913443139729775,
+    "median_d_minus_a_coverage": -0.04670551747275781,
+    "median_d_minus_a_coverage_pp": -4.6705517472757805,
+    "median_delta_coverage": -0.04670551747275781,
+    "median_delta_coverage_pp": -4.6705517472757805,
+    "recording_count": 120,
+    "right": "proper_D"
+  },
+  "paired_vs_A": {
+    "min_quiet_run_64ms": {
+      "a_safer_gt50ms": null,
+      "baseline_safer_gt50ms": 51,
+      "contender_safer_gt50ms": 21,
+      "coverage_greater": 4,
+      "coverage_less": 108,
+      "coverage_ties": 8,
+      "d_coverage_greater": null,
+      "d_coverage_less": null,
+      "d_safer_gt50ms": null,
+      "gt50ms_ties": 48,
+      "gt50ms_undefined": 0,
+      "left": "current_A",
+      "mean_d_minus_a_coverage": null,
+      "mean_d_minus_a_coverage_pp": null,
+      "mean_delta_coverage": -0.025779198379344993,
+      "mean_delta_coverage_pp": -2.577919837934499,
+      "median_d_minus_a_coverage": null,
+      "median_d_minus_a_coverage_pp": null,
+      "median_delta_coverage": -0.02042336113311327,
+      "median_delta_coverage_pp": -2.042336113311327,
+      "recording_count": 120,
+      "right": "min_quiet_run_64ms"
+    },
+    "proper_D": {
+      "a_safer_gt50ms": 41,
+      "baseline_safer_gt50ms": 41,
+      "contender_safer_gt50ms": 45,
+      "coverage_greater": 8,
+      "coverage_less": 111,
+      "coverage_ties": 1,
+      "d_coverage_greater": 8,
+      "d_coverage_less": 111,
+      "d_safer_gt50ms": 45,
+      "gt50ms_ties": 34,
+      "gt50ms_undefined": 0,
+      "left": "current_A",
+      "mean_d_minus_a_coverage": -0.05913443139729775,
+      "mean_d_minus_a_coverage_pp": -5.913443139729775,
+      "mean_delta_coverage": -0.05913443139729775,
+      "mean_delta_coverage_pp": -5.913443139729775,
+      "median_d_minus_a_coverage": -0.04670551747275781,
+      "median_d_minus_a_coverage_pp": -4.6705517472757805,
+      "median_delta_coverage": -0.04670551747275781,
+      "median_delta_coverage_pp": -4.6705517472757805,
+      "recording_count": 120,
+      "right": "proper_D"
+    },
+    "quiet_run_score": {
+      "a_safer_gt50ms": null,
+      "baseline_safer_gt50ms": 32,
+      "contender_safer_gt50ms": 50,
+      "coverage_greater": 33,
+      "coverage_less": 86,
+      "coverage_ties": 1,
+      "d_coverage_greater": null,
+      "d_coverage_less": null,
+      "d_safer_gt50ms": null,
+      "gt50ms_ties": 38,
+      "gt50ms_undefined": 0,
+      "left": "current_A",
+      "mean_d_minus_a_coverage": null,
+      "mean_d_minus_a_coverage_pp": null,
+      "mean_delta_coverage": -0.009456558960849687,
+      "mean_delta_coverage_pp": -0.9456558960849687,
+      "median_d_minus_a_coverage": null,
+      "median_d_minus_a_coverage_pp": null,
+      "median_delta_coverage": -0.01092903469091655,
+      "median_delta_coverage_pp": -1.092903469091655,
+      "recording_count": 120,
+      "right": "quiet_run_score"
+    }
+  },
+  "pareto": [
+    {
+      "contender": "min_quiet_run_64ms",
+      "coverage_minus_A": -0.026641417279416157,
+      "coverage_minus_D": 0.0323556399220134,
+      "dominated_by_A": true,
+      "dominated_by_D": false,
+      "gt100_minus_A": 0.0007404529560984527,
+      "gt50_minus_A": 0.001181525241675618,
+      "note": "Deep errors (>50 / >100 ms) matter more than shallow inside-phone overlap. No composite winner score.",
+      "status": "dominated by A"
+    },
+    {
+      "contender": "quiet_run_score",
+      "coverage_minus_A": -0.00997153706430376,
+      "coverage_minus_D": 0.0490255201371258,
+      "dominated_by_A": true,
+      "dominated_by_D": false,
+      "gt100_minus_A": 0.001560411835624129,
+      "gt50_minus_A": 0.0012499646561013097,
+      "note": "Deep errors (>50 / >100 ms) matter more than shallow inside-phone overlap. No composite winner score.",
+      "status": "dominated by A"
+    }
+  ],
+  "passed": true,
+  "pooled": {
+    "current_A": {
+      "clip_count": 4983,
+      "depth_gt_100ms_count": 15,
+      "depth_gt_100ms_rate": 0.001611170784103115,
+      "depth_gt_20ms_count": 641,
+      "depth_gt_20ms_rate": 0.06885069817400645,
+      "depth_gt_50ms_count": 136,
+      "depth_gt_50ms_rate": 0.014607948442534909,
+      "edge_depth_gt_100ms_count": 26,
+      "edge_depth_gt_100ms_rate": 0.0026088701585390327,
+      "edge_depth_gt_20ms_count": 776,
+      "edge_depth_gt_20ms_rate": 0.07786474011639574,
+      "edge_depth_gt_50ms_count": 192,
+      "edge_depth_gt_50ms_rate": 0.01926550270921132,
+      "edge_inside_phone_count": 1214,
+      "edge_inside_phone_rate": 0.12181416817178406,
+      "edge_occurrence_count": 9966,
+      "eligible_target_speech_sec": 33877.187521,
+      "emitted_audio_sec": 26551.248,
+      "inside_phone_count": 1043,
+      "inside_phone_rate": 0.11203007518796992,
+      "mean_clip_duration_sec": 5.328366044551475,
+      "retained_target_speech_sec": 23494.988464000002,
+      "speech_coverage": 0.6935342093978665,
+      "unique_cutpoint_count": 9310
+    },
+    "min_quiet_run_64ms": {
+      "clip_count": 4780,
+      "depth_gt_100ms_count": 21,
+      "depth_gt_100ms_rate": 0.0023516237402015677,
+      "depth_gt_20ms_count": 559,
+      "depth_gt_20ms_rate": 0.0625979843225084,
+      "depth_gt_50ms_count": 141,
+      "depth_gt_50ms_rate": 0.015789473684210527,
+      "edge_depth_gt_100ms_count": 29,
+      "edge_depth_gt_100ms_rate": 0.0030334728033472804,
+      "edge_depth_gt_20ms_count": 661,
+      "edge_depth_gt_20ms_rate": 0.06914225941422594,
+      "edge_depth_gt_50ms_count": 186,
+      "edge_depth_gt_50ms_rate": 0.019456066945606695,
+      "edge_inside_phone_count": 1016,
+      "edge_inside_phone_rate": 0.10627615062761506,
+      "edge_occurrence_count": 9560,
+      "eligible_target_speech_sec": 33877.187521,
+      "emitted_audio_sec": 25507.976000000006,
+      "inside_phone_count": 887,
+      "inside_phone_rate": 0.09932810750279955,
+      "mean_clip_duration_sec": 5.3363966527196665,
+      "retained_target_speech_sec": 22592.452175000013,
+      "speech_coverage": 0.6668927921184503,
+      "unique_cutpoint_count": 8930
+    },
+    "proper_D": {
+      "clip_count": 4518,
+      "depth_gt_100ms_count": 18,
+      "depth_gt_100ms_rate": 0.0021035409606170387,
+      "depth_gt_20ms_count": 371,
+      "depth_gt_20ms_rate": 0.04335631646605119,
+      "depth_gt_50ms_count": 85,
+      "depth_gt_50ms_rate": 0.00993338786958046,
+      "edge_depth_gt_100ms_count": 25,
+      "edge_depth_gt_100ms_rate": 0.0027667109340416113,
+      "edge_depth_gt_20ms_count": 414,
+      "edge_depth_gt_20ms_rate": 0.045816733067729085,
+      "edge_depth_gt_50ms_count": 106,
+      "edge_depth_gt_50ms_rate": 0.011730854360336431,
+      "edge_inside_phone_count": 805,
+      "edge_inside_phone_rate": 0.08908809207613988,
+      "edge_occurrence_count": 9036,
+      "eligible_target_speech_sec": 33877.187521,
+      "emitted_audio_sec": 24342.472,
+      "inside_phone_count": 734,
+      "inside_phone_rate": 0.0857777258384948,
+      "mean_clip_duration_sec": 5.387886675520142,
+      "retained_target_speech_sec": 21496.33409400001,
+      "speech_coverage": 0.6345371521964369,
+      "unique_cutpoint_count": 8557
+    },
+    "quiet_run_score": {
+      "clip_count": 5142,
+      "depth_gt_100ms_count": 30,
+      "depth_gt_100ms_rate": 0.003171582619727244,
+      "depth_gt_20ms_count": 597,
+      "depth_gt_20ms_rate": 0.06311449413257215,
+      "depth_gt_50ms_count": 150,
+      "depth_gt_50ms_rate": 0.01585791309863622,
+      "edge_depth_gt_100ms_count": 39,
+      "edge_depth_gt_100ms_rate": 0.003792298716452742,
+      "edge_depth_gt_20ms_count": 702,
+      "edge_depth_gt_20ms_rate": 0.06826137689614936,
+      "edge_depth_gt_50ms_count": 192,
+      "edge_depth_gt_50ms_rate": 0.01866977829638273,
+      "edge_inside_phone_count": 1067,
+      "edge_inside_phone_rate": 0.10375340334500195,
+      "edge_occurrence_count": 10284,
+      "eligible_target_speech_sec": 33877.187521,
+      "emitted_audio_sec": 26054.656,
+      "inside_phone_count": 936,
+      "inside_phone_rate": 0.09895337773549001,
+      "mean_clip_duration_sec": 5.06702761571373,
+      "retained_target_speech_sec": 23157.180832999984,
+      "speech_coverage": 0.6835626723335627,
+      "unique_cutpoint_count": 9459
+    }
+  },
+  "pooled_A": {
+    "clip_count": 4983,
+    "depth_gt_100ms_count": 15,
+    "depth_gt_100ms_rate": 0.001611170784103115,
+    "depth_gt_20ms_count": 641,
+    "depth_gt_20ms_rate": 0.06885069817400645,
+    "depth_gt_50ms_count": 136,
+    "depth_gt_50ms_rate": 0.014607948442534909,
+    "edge_depth_gt_100ms_count": 26,
+    "edge_depth_gt_100ms_rate": 0.0026088701585390327,
+    "edge_depth_gt_20ms_count": 776,
+    "edge_depth_gt_20ms_rate": 0.07786474011639574,
+    "edge_depth_gt_50ms_count": 192,
+    "edge_depth_gt_50ms_rate": 0.01926550270921132,
+    "edge_inside_phone_count": 1214,
+    "edge_inside_phone_rate": 0.12181416817178406,
+    "edge_occurrence_count": 9966,
+    "eligible_target_speech_sec": 33877.187521,
+    "emitted_audio_sec": 26551.248,
+    "inside_phone_count": 1043,
+    "inside_phone_rate": 0.11203007518796992,
+    "mean_clip_duration_sec": 5.328366044551475,
+    "retained_target_speech_sec": 23494.988464000002,
+    "speech_coverage": 0.6935342093978665,
+    "unique_cutpoint_count": 9310
+  },
+  "pooled_D": {
+    "clip_count": 4518,
+    "depth_gt_100ms_count": 18,
+    "depth_gt_100ms_rate": 0.0021035409606170387,
+    "depth_gt_20ms_count": 371,
+    "depth_gt_20ms_rate": 0.04335631646605119,
+    "depth_gt_50ms_count": 85,
+    "depth_gt_50ms_rate": 0.00993338786958046,
+    "edge_depth_gt_100ms_count": 25,
+    "edge_depth_gt_100ms_rate": 0.0027667109340416113,
+    "edge_depth_gt_20ms_count": 414,
+    "edge_depth_gt_20ms_rate": 0.045816733067729085,
+    "edge_depth_gt_50ms_count": 106,
+    "edge_depth_gt_50ms_rate": 0.011730854360336431,
+    "edge_inside_phone_count": 805,
+    "edge_inside_phone_rate": 0.08908809207613988,
+    "edge_occurrence_count": 9036,
+    "eligible_target_speech_sec": 33877.187521,
+    "emitted_audio_sec": 24342.472,
+    "inside_phone_count": 734,
+    "inside_phone_rate": 0.0857777258384948,
+    "mean_clip_duration_sec": 5.387886675520142,
+    "retained_target_speech_sec": 21496.33409400001,
+    "speech_coverage": 0.6345371521964369,
+    "unique_cutpoint_count": 8557
+  },
+  "qualitative": {
+    "a_higher_yield": true,
+    "d_safer": true,
+    "historical_shape_recovered": true,
+    "note": "A generally higher yield and D generally safer"
+  },
+  "recording_count": 120,
+  "schedule_differed_from_A_recordings": {
+    "min_quiet_run_64ms": 120,
+    "proper_D": 120,
+    "quiet_run_score": 120
+  },
+  "selection_rule": "Every recording from speakers with accepted_recording_count > 0 in canonical/acoustic_matrix/cohort/speaker_cohort_summary.csv that is in the frozen reconciliation, not excluded, and has at least one raw NeMo target buffer. Review-required and excluded recordings are not added.",
+  "subset": [
+    {
+      "recording_id": "s0101b",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0102a",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0102b",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0103a",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0201b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0202b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0203a",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0203b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0204a",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0204b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0205b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0206a",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0301a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0301b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0302a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0302b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0303a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0303b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0304a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0304b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0305a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0305b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0306a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0401b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0402a",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0402b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0403a",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0403b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0501a",
+      "speaker_id": "s05"
+    },
+    {
+      "recording_id": "s0503a",
+      "speaker_id": "s05"
+    },
+    {
+      "recording_id": "s0504a",
+      "speaker_id": "s05"
+    },
+    {
+      "recording_id": "s0601a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0602a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0602b",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0603a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0701a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0701b",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0702a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0702b",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0703a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0703b",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0704a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0801a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0801b",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0802b",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0803a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0803b",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0804a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0901a",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0901b",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0902a",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0902b",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0903a",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0903b",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s1001a",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1001b",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1002a",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1002b",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1003b",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1101a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1102a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1102b",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1103a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1103b",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1104a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1104b",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1201a",
+      "speaker_id": "s12"
+    },
+    {
+      "recording_id": "s1202b",
+      "speaker_id": "s12"
+    },
+    {
+      "recording_id": "s1203a",
+      "speaker_id": "s12"
+    },
+    {
+      "recording_id": "s1301a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1301b",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1302a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1302b",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1303a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1303b",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1304a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1401a",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1401b",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1402a",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1402b",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1403a",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1403b",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1501a",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1501b",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1502a",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1502b",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1601a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1601b",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1602a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1602b",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1603a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1604a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1701a",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1702a",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1703a",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1703b",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1801a",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1801b",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1803a",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1803b",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1901a",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1902a",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1902b",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1904a",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1904b",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s2002b",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2003a",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2003b",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2004a",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2101b",
+      "speaker_id": "s21"
+    },
+    {
+      "recording_id": "s2102b",
+      "speaker_id": "s21"
+    },
+    {
+      "recording_id": "s2201a",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2201b",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2202b",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2203b",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2401b",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2402a",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2402b",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2403a",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2403b",
+      "speaker_id": "s24"
+    }
+  ]
+}
