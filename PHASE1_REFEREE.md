@@ -78,6 +78,7 @@ Pure types, validation, interval arithmetic, and synthetic unit tests only.
 
 - Seven geometry-only configs: `A_O50_8`, `D_O0_8`, `O75_8`, `O25_8`, `O50_4`, `O25_4`, `O0_4`. Detector/RMS/packer/evaluator unchanged.
 - `A_O50_8` / `D_O0_8` keep the trusted A/D fingerprints; names differ from `current_A` / `proper_D`.
-- Optional recording-level `--workers N` (default 1, spawn for real Silero). No cross-geometry feature reuse; `GeometryKeyedStore` refuses A→D payload reuse.
+- Optional recording-level `--workers N` (default 1, spawn for real Silero). No VAD/RMS feature cache. Parallel mode commits each finished recording to CSV immediately.
+- Distinct requested geometries must not collapse onto identical VAD observation signatures; diagnostics fingerprints must match the requested config.
 - `RESET-8` (per-window Silero reset) is omitted: the canonical path resets once per offset stream, not per window.
 - Smoke and full runners exist but the expensive Silero geometry tournament is **not** launched in this prep.

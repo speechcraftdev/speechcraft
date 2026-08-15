@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,6 @@ from adapter.config import (
     resolve_geometries,
 )
 from adapter.diagnostics import geometry_fingerprint
-from adapter.feature_store import GeometryFingerprintMismatch, GeometryKeyedStore
 from referee import BufferScope, Clip, Cutpoint, RecordingReference, SlicerResult, evaluate
 from referee.types import EvaluationResult
 
@@ -181,19 +181,6 @@ class TestPhase7GeometryDefinitions:
             resolve_geometries("OpenVPI")
 
 
-class TestFeatureStoreGuard:
-    def test_same_geometry_reuse_ok_and_a_for_d_fails(self) -> None:
-        store = GeometryKeyedStore()
-        store.put(A_O50_8, {"frames": [1, 2, 3]})
-        assert store.get(A_O50_8) == {"frames": [1, 2, 3]}
-        assert store.get(CURRENT_A) == {"frames": [1, 2, 3]}
-        assert store.get(D_O0_8) is None
-        with pytest.raises(GeometryFingerprintMismatch, match="refusing to reuse"):
-            store.reuse(source=A_O50_8, dest=D_O0_8)
-        with pytest.raises(GeometryFingerprintMismatch, match="refusing to reuse"):
-            store.reuse(source=CURRENT_A, dest=PROPER_D)
-
-
 class TestSmokeSubset:
     def test_smoke_subset_is_frozen_and_in_cohort(self) -> None:
         assert len(PHASE7_SMOKE_SUBSET) == 10
@@ -233,3 +220,49 @@ class TestWorkersDeterminism:
         assert two["geometry_delta_vs_A"]
         assert one["workers"] == 1
         assert two["workers"] == 2
+
+
+class TestGeometryCollapseGuard:
+    def test_identical_vad_observations_abort(self, tmp_path: Path) -> None:
+        def run(loaded: LoadedRecording, config: GeometryConfig) -> GeometryRun:
+            base = fake_run(loaded, config)
+            return GeometryRun(
+                result=base.result,
+                diagnostics=replace(
+                    base.diagnostics,
+                    vad_observation_count=7,
+                    vad_timestamp_sha256="same-ts",
+                    vad_probability_sha256="same-pr",
+                ),
+            )
+
+        with pytest.raises(RuntimeError, match="collapsed onto identical VAD"):
+            run_validation(
+                output_dir=tmp_path / "out",
+                subset=(("s01", "s0101b"),),
+                load_fn=fake_load,
+                run_fn=run,
+                eval_fn=fake_eval,
+                contenders=(A_O50_8, O25_8),
+                spot_check_ids=(("s01", "s0101b"),),
+            )
+        assert not (tmp_path / "out" / "summary.json").exists()
+
+    def test_diagnostics_fingerprint_must_match_config(self, tmp_path: Path) -> None:
+        def run(loaded: LoadedRecording, config: GeometryConfig) -> GeometryRun:
+            base = fake_run(loaded, config)
+            return GeometryRun(
+                result=base.result,
+                diagnostics=replace(base.diagnostics, geometry_fingerprint="not-the-config"),
+            )
+
+        with pytest.raises(RuntimeError, match="diagnostics fingerprint"):
+            run_validation(
+                output_dir=tmp_path / "out",
+                subset=(("s01", "s0101b"),),
+                load_fn=fake_load,
+                run_fn=run,
+                eval_fn=fake_eval,
+                contenders=(A_O50_8, D_O0_8),
+                spot_check_ids=(("s01", "s0101b"),),
+            )

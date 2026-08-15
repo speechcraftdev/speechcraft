@@ -36,7 +36,7 @@ from adapter.buckeye_metrics import (
 from adapter.canonical_executor import execute_canonical_diagnosed
 from adapter.canonical_smoke import (
     GeometryRun,
-    assert_a_d_not_collapsed,
+    assert_independent_state,
     assert_order_independence,
 )
 from adapter.config import CURRENT_A, PROPER_D, GeometryConfig
@@ -44,6 +44,7 @@ from adapter.convert import to_slicer_result
 from adapter.diagnostics import (
     ExecutionDiagnostics,
     geometry_fingerprint,
+    geometry_sensitive_signals_differ,
     policy_fingerprint,
     same_contender_signatures,
     same_geometry_signatures,
@@ -338,19 +339,71 @@ def _count_schedule_diffs_from_a(
 
 def _assert_independence(a_run: GeometryRun, d_run: GeometryRun, *, speaker_id: str, recording_id: str) -> None:
     try:
-        assert_a_d_not_collapsed(a_run.diagnostics, d_run.diagnostics)
+        if a_run.diagnostics.geometry_fingerprint == d_run.diagnostics.geometry_fingerprint:
+            raise AssertionError("A and D geometry fingerprints must differ")
+        assert_independent_state(a_run.diagnostics, d_run.diagnostics)
+        if not geometry_sensitive_signals_differ(a_run.diagnostics, d_run.diagnostics):
+            raise AssertionError(
+                "A and D geometry-sensitive observation signatures are identical "
+                f"(count={a_run.diagnostics.vad_observation_count}, "
+                f"ts={a_run.diagnostics.vad_timestamp_sha256}, "
+                f"prob={a_run.diagnostics.vad_probability_sha256})"
+            )
     except AssertionError as exc:
         raise RuntimeError(
-            f"A/D independence failed on {speaker_id}/{recording_id}: {exc}"
+            f"geometry independence failed on {speaker_id}/{recording_id}: {exc}"
         ) from exc
 
 
-def _baseline_runs(runs: dict[str, GeometryRun]) -> tuple[GeometryRun, GeometryRun] | None:
-    a_run = runs.get("current_A") or runs.get("A_O50_8")
-    d_run = runs.get("proper_D") or runs.get("D_O0_8")
-    if a_run is None or d_run is None:
-        return None
-    return a_run, d_run
+def _assert_requested_geometries_independent(
+    runs: dict[str, GeometryRun],
+    contenders: tuple[GeometryConfig, ...],
+    *,
+    speaker_id: str,
+    recording_id: str,
+) -> None:
+    """Abort if any requested geometry is miswired onto another geometry's VAD stream."""
+    by_name = {config.name: config for config in contenders}
+    missing = [config.name for config in contenders if config.name not in runs]
+    if missing:
+        raise RuntimeError(
+            f"geometry independence failed on {speaker_id}/{recording_id}: "
+            f"missing runs {missing}"
+        )
+    for config in contenders:
+        executed = runs[config.name]
+        expected = geometry_fingerprint(config)
+        observed = executed.diagnostics.geometry_fingerprint
+        if observed != expected:
+            raise RuntimeError(
+                f"geometry independence failed on {speaker_id}/{recording_id}: "
+                f"{config.name} diagnostics fingerprint {observed} != config {expected}"
+            )
+    names = [config.name for config in contenders]
+    for index, left_name in enumerate(names):
+        for right_name in names[index + 1 :]:
+            left_fp = geometry_fingerprint(by_name[left_name])
+            right_fp = geometry_fingerprint(by_name[right_name])
+            if left_fp == right_fp:
+                continue
+            left = runs[left_name]
+            right = runs[right_name]
+            try:
+                assert_independent_state(left.diagnostics, right.diagnostics)
+            except AssertionError as exc:
+                raise RuntimeError(
+                    f"geometry independence failed on {speaker_id}/{recording_id}: "
+                    f"{left_name} vs {right_name}: {exc}"
+                ) from exc
+            if not geometry_sensitive_signals_differ(left.diagnostics, right.diagnostics):
+                raise RuntimeError(
+                    f"geometry independence failed on {speaker_id}/{recording_id}: "
+                    f"{left_name} and {right_name} collapsed onto identical VAD "
+                    "observations "
+                    f"(count={left.diagnostics.vad_observation_count}, "
+                    f"ts={left.diagnostics.vad_timestamp_sha256}, "
+                    f"prob={left.diagnostics.vad_probability_sha256})"
+                )
 
 
 def _run_one_recording(
@@ -390,14 +443,12 @@ def _run_one_recording(
             new_unsafe.extend(
                 _unsafe_cut_rows(geometry=config.name, loaded=loaded, result=executed.result)
             )
-        pair = _baseline_runs(runs)
-        if pair is not None:
-            _assert_independence(
-                pair[0],
-                pair[1],
-                speaker_id=speaker_id,
-                recording_id=recording_id,
-            )
+        _assert_requested_geometries_independent(
+            runs,
+            contenders,
+            speaker_id=speaker_id,
+            recording_id=recording_id,
+        )
     finally:
         del loaded
     geom_elapsed["recording"] = time.monotonic() - rec_started
@@ -561,20 +612,18 @@ def _run_contender_order_spot_check(
         for config in reverse:
             executed = run(loaded, config)
             reverse_runs[config.name] = (executed, score_fn(loaded, executed.result))
-        if "current_A" in forward_runs and "proper_D" in forward_runs:
-            _assert_independence(
-                forward_runs["current_A"][0],
-                forward_runs["proper_D"][0],
-                speaker_id=speaker_id,
-                recording_id=recording_id,
-            )
-        elif "A_O50_8" in forward_runs and "D_O0_8" in forward_runs:
-            _assert_independence(
-                forward_runs["A_O50_8"][0],
-                forward_runs["D_O0_8"][0],
-                speaker_id=speaker_id,
-                recording_id=recording_id,
-            )
+        _assert_requested_geometries_independent(
+            {name: pair[0] for name, pair in forward_runs.items()},
+            contenders,
+            speaker_id=speaker_id,
+            recording_id=recording_id,
+        )
+        _assert_requested_geometries_independent(
+            {name: pair[0] for name, pair in reverse_runs.items()},
+            contenders,
+            speaker_id=speaker_id,
+            recording_id=recording_id,
+        )
         compact: dict[str, object] = {
             "speaker_id": speaker_id,
             "recording_id": recording_id,
@@ -796,21 +845,31 @@ def run_validation(
             "spawn" if load_fn is None and run_fn is None and eval_fn is None else "fork"
         )
         with ctx.Pool(processes=workers) as pool:
-            results = pool.map(_parallel_recording_job, jobs)
-        by_key = {(str(item["speaker_id"]), str(item["recording_id"])): item for item in results}
-        if set(by_key) != set(pending):
-            raise RuntimeError("parallel worker results do not match pending recordings")
-        for speaker_id, recording_id in pending:
-            item = by_key[(speaker_id, recording_id)]
-            new_rows = list(item["rows"])  # type: ignore[arg-type]
-            new_unsafe = list(item["unsafe"])  # type: ignore[arg-type]
-            completed[(speaker_id, recording_id)] = {
-                str(row["geometry"]): row for row in new_rows
-            }
-            unsafe_by_rec[(speaker_id, recording_id)] = new_unsafe
-        _rows_from_completed(require_all=True)
-        _write_csv_atomic(recordings_path, recording_rows)
-        _write_csv_atomic(unsafe_path, unsafe_rows)
+            received: set[tuple[str, str]] = set()
+            for item in pool.imap_unordered(_parallel_recording_job, jobs):
+                speaker_id = str(item["speaker_id"])
+                recording_id = str(item["recording_id"])
+                key = (speaker_id, recording_id)
+                if key in received:
+                    raise RuntimeError(f"duplicate parallel result for {speaker_id}/{recording_id}")
+                received.add(key)
+                new_rows = list(item["rows"])  # type: ignore[arg-type]
+                new_unsafe = list(item["unsafe"])  # type: ignore[arg-type]
+                completed[key] = {str(row["geometry"]): row for row in new_rows}
+                unsafe_by_rec[key] = new_unsafe
+                print(
+                    f"  committed {speaker_id}/{recording_id}  "
+                    f"done={len(received)}/{len(pending)}",
+                    flush=True,
+                )
+                _rows_from_completed(require_all=False)
+                _write_csv_atomic(recordings_path, recording_rows)
+                _write_csv_atomic(unsafe_path, unsafe_rows)
+        if received != set(pending):
+            raise RuntimeError(
+                f"parallel worker results do not match pending recordings: "
+                f"got {sorted(received)} expected {sorted(pending)}"
+            )
     else:
         _rows_from_completed(require_all=True)
     _rows_from_completed(require_all=True)

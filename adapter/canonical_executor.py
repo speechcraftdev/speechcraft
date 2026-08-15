@@ -12,8 +12,7 @@ Speechcraft scripts (e.g. run_personal_vad_percentile_rms.py) call the same stac
 Every invocation uses a fresh workdir and fresh feature computation —
 no shared acoustic cache or reusable detector context between geometries.
 RMS features are computed on VAD-frame windows, so they are geometry-dependent
-and must not be reused across different fingerprints. Optional in-memory reuse
-goes through GeometryKeyedStore only.
+and must not be reused across different fingerprints.
 Phase 3 still does not add a cross-geometry cache; A computes A, D computes D.
 """
 

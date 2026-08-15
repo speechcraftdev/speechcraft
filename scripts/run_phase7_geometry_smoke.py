@@ -37,6 +37,17 @@ def main() -> int:
         default=",".join(config.name for config in PHASE7_GEOMETRIES),
         help="Comma-separated geometry names",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="If >0, run only the first N smoke recordings",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=str(ROOT / "phase7_geometry_smoke"),
+    )
+    parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args()
     src = resolve_speaker_ts_eval_src()
     print(f"speaker_ts_eval src: {src}")
@@ -50,26 +61,34 @@ def main() -> int:
     missing = [item for item in PHASE7_SMOKE_SUBSET if item not in set(cohort.recordings)]
     if missing:
         raise RuntimeError(f"smoke subset recordings are not in the accepted cohort: {missing}")
+    subset = PHASE7_SMOKE_SUBSET
+    if args.limit:
+        if args.limit < 1:
+            raise RuntimeError("--limit must be >= 1")
+        subset = PHASE7_SMOKE_SUBSET[: args.limit]
+    spot_candidates = (subset[0], ("s03", "s0301a"))
+    spot_ids = tuple(item for item in spot_candidates if item in subset)
     print("geometries:")
     for config in geometries:
         print(f"  {config.name}: {geometry_fingerprint(config)}")
     print(f"workers: {args.workers}")
     print("smoke subset:")
-    for speaker_id, recording_id in PHASE7_SMOKE_SUBSET:
+    for speaker_id, recording_id in subset:
         print(f"  {speaker_id}/{recording_id}")
-    output_dir = ROOT / "phase7_geometry_smoke"
+    output_dir = Path(args.output_dir)
     summary = run_validation(
         output_dir=output_dir,
-        subset=PHASE7_SMOKE_SUBSET,
-        resume=True,
+        subset=subset,
+        resume=not args.no_resume,
         selection_rule=PHASE7_SMOKE_SELECTION_RULE,
-        spot_check_ids=(PHASE7_SMOKE_SUBSET[0], ("s03", "s0301a")),
+        spot_check_ids=spot_ids,
         contenders=geometries,
         workers=args.workers,
         cohort_info={
             "mode": "smoke",
             "fingerprint": cohort.fingerprint,
-            "smoke_recording_count": len(PHASE7_SMOKE_SUBSET),
+            "smoke_recording_count": len(subset),
+            "smoke_subset_limit": args.limit or len(PHASE7_SMOKE_SUBSET),
         },
     )
     if summary.get("geometry_table"):

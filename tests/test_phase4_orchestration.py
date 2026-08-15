@@ -22,7 +22,7 @@ from adapter.buckeye_metrics import (
 from adapter.buckeye_validate import run_validation
 from adapter.canonical_smoke import GeometryRun
 from adapter.config import CURRENT_A, GeometryConfig
-from adapter.diagnostics import ExecutionDiagnostics
+from adapter.diagnostics import ExecutionDiagnostics, geometry_fingerprint
 from adapter.types import SlicerRequest
 from referee import (
     BufferScope,
@@ -103,11 +103,18 @@ def _score(
     )
 
 
-def _diag(name: str, instance_id: int, workdir: str, ts_hash: str, prob_hash: str) -> ExecutionDiagnostics:
+def _diag(
+    name: str,
+    instance_id: int,
+    workdir: str,
+    ts_hash: str,
+    prob_hash: str,
+    fingerprint: str,
+) -> ExecutionDiagnostics:
     return ExecutionDiagnostics(
         geometry_name=name,
         geometry_canonical="{}",
-        geometry_fingerprint="fp-" + name,
+        geometry_fingerprint=fingerprint,
         instance_id=instance_id,
         workdir=workdir,
         vad_cache_dir=workdir + "/vad",
@@ -268,7 +275,14 @@ class TestRunDoesNotSkip:
             name = config.name
             ts = "ts-A" if config is CURRENT_A else "ts-D"
             prob = "pr-A" if config is CURRENT_A else "pr-D"
-            diag = _diag(name, instance_id=hash((loaded.recording_id, name)) % 10000, workdir=f"/tmp/{loaded.recording_id}_{name}", ts_hash=ts, prob_hash=prob)
+            diag = _diag(
+                name,
+                instance_id=hash((loaded.recording_id, name)) % 10000,
+                workdir=f"/tmp/{loaded.recording_id}_{name}",
+                ts_hash=ts,
+                prob_hash=prob,
+                fingerprint=geometry_fingerprint(config),
+            )
             return GeometryRun(result=result, diagnostics=diag)
 
         def eval_fn(loaded: LoadedRecording, result: SlicerResult) -> EvaluationResult:

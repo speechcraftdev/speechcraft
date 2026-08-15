@@ -234,7 +234,7 @@ class TestNoSilentSkip:
         def eval_fn(loaded: LoadedRecording, result: SlicerResult) -> EvaluationResult:
             return evaluate(loaded.reference, result)
 
-        with pytest.raises(RuntimeError, match="A/D independence failed on s01/s0101b"):
+        with pytest.raises(RuntimeError, match="independence failed on s01/s0101b"):
             run_validation(
                 output_dir=tmp_path / "out",
                 subset=VALIDATION_SUBSET,
