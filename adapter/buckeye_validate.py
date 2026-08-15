@@ -1,9 +1,10 @@
-"""Phase 4/5 Buckeye A/D validation loop. Not a second benchmark engine."""
+"""Phase 4/5/6/7 Buckeye validation loop. Not a second benchmark engine."""
 
 from __future__ import annotations
 
 import csv
 import json
+import multiprocessing
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -26,6 +27,7 @@ from adapter.buckeye_metrics import (
     delta_vs_a_table,
     evaluation_signature,
     four_way_comparison_table,
+    geometry_comparison_table,
     interpret_pareto,
     metrics_from_evaluation,
     paired_recording_comparison,
@@ -138,6 +140,7 @@ def _recording_row(
     geometry: str,
     score: EvaluationResult,
     diagnostics: ExecutionDiagnostics,
+    elapsed_sec: float | None = None,
 ) -> dict[str, object]:
     metrics = metrics_from_evaluation(score)
     return {
@@ -153,6 +156,7 @@ def _recording_row(
         "candidate_cutpoint_sha256": diagnostics.candidate_cutpoint_sha256,
         "selected_cutpoint_sha256": diagnostics.selected_cutpoint_sha256,
         "selected_clip_sha256": diagnostics.selected_clip_sha256,
+        "elapsed_sec": elapsed_sec,
         "workdir": diagnostics.workdir,
     }
 
@@ -341,6 +345,100 @@ def _assert_independence(a_run: GeometryRun, d_run: GeometryRun, *, speaker_id: 
         ) from exc
 
 
+def _baseline_runs(runs: dict[str, GeometryRun]) -> tuple[GeometryRun, GeometryRun] | None:
+    a_run = runs.get("current_A") or runs.get("A_O50_8")
+    d_run = runs.get("proper_D") or runs.get("D_O0_8")
+    if a_run is None or d_run is None:
+        return None
+    return a_run, d_run
+
+
+def _run_one_recording(
+    *,
+    speaker_id: str,
+    recording_id: str,
+    contenders: tuple[GeometryConfig, ...],
+    load: LoadFn,
+    run: RunFn,
+    score_fn: EvalFn,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, float]]:
+    loaded = load(speaker_id, recording_id)
+    new_rows: list[dict[str, object]] = []
+    new_unsafe: list[dict[str, object]] = []
+    runs: dict[str, GeometryRun] = {}
+    geom_elapsed: dict[str, float] = {}
+    rec_started = time.monotonic()
+    try:
+        for config in contenders:
+            print(f"  running {config.name}", flush=True)
+            geom_started = time.monotonic()
+            executed = run(loaded, config)
+            score = score_fn(loaded, executed.result)
+            elapsed = time.monotonic() - geom_started
+            geom_elapsed[config.name] = elapsed
+            runs[config.name] = executed
+            new_rows.append(
+                _recording_row(
+                    speaker_id=speaker_id,
+                    recording_id=recording_id,
+                    geometry=config.name,
+                    score=score,
+                    diagnostics=executed.diagnostics,
+                    elapsed_sec=round(elapsed, 6),
+                )
+            )
+            new_unsafe.extend(
+                _unsafe_cut_rows(geometry=config.name, loaded=loaded, result=executed.result)
+            )
+        pair = _baseline_runs(runs)
+        if pair is not None:
+            _assert_independence(
+                pair[0],
+                pair[1],
+                speaker_id=speaker_id,
+                recording_id=recording_id,
+            )
+    finally:
+        del loaded
+    geom_elapsed["recording"] = time.monotonic() - rec_started
+    return new_rows, new_unsafe, geom_elapsed
+
+
+def _parallel_recording_job(job: dict[str, object]) -> dict[str, object]:
+    """Spawn-worker entry. Each process owns Silero/temp/detector state."""
+    speaker_id = str(job["speaker_id"])
+    recording_id = str(job["recording_id"])
+    contenders = tuple(job["contenders"])  # type: ignore[arg-type]
+    paths = job.get("paths")
+    load_fn = job.get("load_fn")
+    run_fn = job.get("run_fn")
+    eval_fn = job.get("eval_fn")
+    load: LoadFn
+    if load_fn is not None:
+        load = load_fn  # type: ignore[assignment]
+    else:
+        load = lambda speaker, recording: load_recording(
+            speaker, recording, paths=paths  # type: ignore[arg-type]
+        )
+    run = run_fn if run_fn is not None else run_geometry_isolated
+    score_fn = eval_fn if eval_fn is not None else evaluate_loaded
+    rows, unsafe, elapsed = _run_one_recording(
+        speaker_id=speaker_id,
+        recording_id=recording_id,
+        contenders=contenders,
+        load=load,
+        run=run,  # type: ignore[arg-type]
+        score_fn=score_fn,  # type: ignore[arg-type]
+    )
+    return {
+        "speaker_id": speaker_id,
+        "recording_id": recording_id,
+        "rows": rows,
+        "unsafe": unsafe,
+        "elapsed": elapsed,
+    }
+
+
 def _run_order_spot_check(
     *,
     speaker_id: str,
@@ -470,6 +568,13 @@ def _run_contender_order_spot_check(
                 speaker_id=speaker_id,
                 recording_id=recording_id,
             )
+        elif "A_O50_8" in forward_runs and "D_O0_8" in forward_runs:
+            _assert_independence(
+                forward_runs["A_O50_8"][0],
+                forward_runs["D_O0_8"][0],
+                speaker_id=speaker_id,
+                recording_id=recording_id,
+            )
         compact: dict[str, object] = {
             "speaker_id": speaker_id,
             "recording_id": recording_id,
@@ -516,6 +621,7 @@ def run_validation(
     selection_rule: str = SUBSET_SELECTION_RULE,
     cohort_info: dict[str, object] | None = None,
     contenders: tuple[GeometryConfig, ...] | None = None,
+    workers: int = 1,
 ) -> dict[str, object]:
     """Process one recording at a time. Exceptions abort the run."""
     load = load_fn if load_fn is not None else (
@@ -527,6 +633,8 @@ def run_validation(
     contender_names = tuple(config.name for config in active_contenders)
     if len(set(contender_names)) != len(contender_names):
         raise RuntimeError(f"duplicate contender names: {contender_names}")
+    if workers < 1:
+        raise RuntimeError(f"workers must be >= 1, got {workers}")
     if not subset:
         raise RuntimeError("validation subset is empty")
     subset_set = set(subset)
@@ -596,14 +704,17 @@ def run_validation(
             "subset": [{"speaker_id": s, "recording_id": r} for s, r in subset],
             "contender_names": list(contender_names),
             "contender_configs": config_payloads,
-            "config_A": config_payloads.get("current_A"),
-            "config_D": config_payloads.get("proper_D"),
+            "config_A": config_payloads.get("current_A") or config_payloads.get("A_O50_8"),
+            "config_D": config_payloads.get("proper_D") or config_payloads.get("D_O0_8"),
             "vad_backend": CURRENT_A.vad_backend,
             "public_cutpoint_population": PUBLIC_CUTPOINT_POPULATION,
             "geometry_fingerprints": expected_fingerprints,
             "policy_fingerprints": expected_policy,
-            "geometry_fingerprint_A": expected_fingerprints.get("current_A"),
-            "geometry_fingerprint_D": expected_fingerprints.get("proper_D"),
+            "geometry_fingerprint_A": expected_fingerprints.get("current_A")
+            or expected_fingerprints.get("A_O50_8"),
+            "geometry_fingerprint_D": expected_fingerprints.get("proper_D")
+            or expected_fingerprints.get("D_O0_8"),
+            "workers": workers,
             "canonical_paths": {
                 "normalized_root": str(active_paths.normalized_root),
                 "cohort_root": str(active_paths.cohort_root),
@@ -626,52 +737,83 @@ def run_validation(
     unsafe_rows: list[dict[str, object]] = []
     total = len(subset)
     started = time.monotonic()
-    for index, (speaker_id, recording_id) in enumerate(subset, start=1):
-        key = (speaker_id, recording_id)
+    pending = [item for item in subset if item not in completed]
+    for key in [item for item in subset if item in completed]:
+        index = subset.index(key) + 1
         elapsed = time.monotonic() - started
-        prefix = f"[{index}/{total}] {speaker_id}/{recording_id}"
-        if key in completed:
-            print(f"{prefix}  reused completed row  elapsed={elapsed:.1f}s", flush=True)
+        print(
+            f"[{index}/{total}] {key[0]}/{key[1]}  reused completed row  elapsed={elapsed:.1f}s",
+            flush=True,
+        )
+
+    def _rows_from_completed(*, require_all: bool) -> None:
+        recording_rows.clear()
+        unsafe_rows.clear()
+        for speaker_id, recording_id in subset:
+            key = (speaker_id, recording_id)
+            if key not in completed:
+                if require_all:
+                    raise RuntimeError(f"missing completed rows for {speaker_id}/{recording_id}")
+                continue
             for name in contender_names:
                 recording_rows.append(completed[key][name])
             unsafe_rows.extend(unsafe_by_rec.get(key, []))
-            continue
-        print(f"{prefix}  elapsed={elapsed:.1f}s", flush=True)
-        loaded = load(speaker_id, recording_id)
-        new_rows: list[dict[str, object]] = []
-        new_unsafe: list[dict[str, object]] = []
-        runs: dict[str, GeometryRun] = {}
-        try:
-            for config in active_contenders:
-                print(f"  running {config.name}", flush=True)
-                executed = run(loaded, config)
-                score = score_fn(loaded, executed.result)
-                runs[config.name] = executed
-                new_rows.append(
-                    _recording_row(
-                        speaker_id=speaker_id,
-                        recording_id=recording_id,
-                        geometry=config.name,
-                        score=score,
-                        diagnostics=executed.diagnostics,
-                    )
-                )
-                new_unsafe.extend(
-                    _unsafe_cut_rows(geometry=config.name, loaded=loaded, result=executed.result)
-                )
-            if "current_A" in runs and "proper_D" in runs:
-                _assert_independence(
-                    runs["current_A"],
-                    runs["proper_D"],
-                    speaker_id=speaker_id,
-                    recording_id=recording_id,
-                )
-        finally:
-            del loaded
-        recording_rows.extend(new_rows)
-        unsafe_rows.extend(new_unsafe)
+
+    if pending and workers == 1:
+        for speaker_id, recording_id in pending:
+            key = (speaker_id, recording_id)
+            index = subset.index(key) + 1
+            elapsed = time.monotonic() - started
+            print(f"[{index}/{total}] {speaker_id}/{recording_id}  elapsed={elapsed:.1f}s", flush=True)
+            new_rows, new_unsafe, _elapsed = _run_one_recording(
+                speaker_id=speaker_id,
+                recording_id=recording_id,
+                contenders=active_contenders,
+                load=load,
+                run=run,
+                score_fn=score_fn,
+            )
+            completed[key] = {str(row["geometry"]): row for row in new_rows}
+            unsafe_by_rec[key] = new_unsafe
+            _rows_from_completed(require_all=False)
+            _write_csv_atomic(recordings_path, recording_rows)
+            _write_csv_atomic(unsafe_path, unsafe_rows)
+    elif pending:
+        print(f"parallel workers={workers} recordings={len(pending)}", flush=True)
+        jobs = [
+            {
+                "speaker_id": speaker_id,
+                "recording_id": recording_id,
+                "contenders": active_contenders,
+                "paths": active_paths if load_fn is None else None,
+                "load_fn": load_fn,
+                "run_fn": run_fn,
+                "eval_fn": eval_fn,
+            }
+            for speaker_id, recording_id in pending
+        ]
+        ctx = multiprocessing.get_context(
+            "spawn" if load_fn is None and run_fn is None and eval_fn is None else "fork"
+        )
+        with ctx.Pool(processes=workers) as pool:
+            results = pool.map(_parallel_recording_job, jobs)
+        by_key = {(str(item["speaker_id"]), str(item["recording_id"])): item for item in results}
+        if set(by_key) != set(pending):
+            raise RuntimeError("parallel worker results do not match pending recordings")
+        for speaker_id, recording_id in pending:
+            item = by_key[(speaker_id, recording_id)]
+            new_rows = list(item["rows"])  # type: ignore[arg-type]
+            new_unsafe = list(item["unsafe"])  # type: ignore[arg-type]
+            completed[(speaker_id, recording_id)] = {
+                str(row["geometry"]): row for row in new_rows
+            }
+            unsafe_by_rec[(speaker_id, recording_id)] = new_unsafe
+        _rows_from_completed(require_all=True)
         _write_csv_atomic(recordings_path, recording_rows)
         _write_csv_atomic(unsafe_path, unsafe_rows)
+    else:
+        _rows_from_completed(require_all=True)
+    _rows_from_completed(require_all=True)
 
     output_ids = [
         (str(row["speaker_id"]), str(row["recording_id"]))
@@ -704,8 +846,8 @@ def run_validation(
         for speaker_id, recording_id in spot_ids
     ]
 
-    pooled_a = pooled_by_name.get("current_A")
-    pooled_d = pooled_by_name.get("proper_D")
+    pooled_a = pooled_by_name.get("current_A") or pooled_by_name.get("A_O50_8")
+    pooled_d = pooled_by_name.get("proper_D") or pooled_by_name.get("D_O0_8")
     table = None
     qualitative = None
     paired = None
@@ -713,14 +855,19 @@ def run_validation(
     if pooled_a is not None and pooled_d is not None:
         table = comparison_table(pooled_a, pooled_d)
         qualitative = assess_qualitative_shape(pooled_a, pooled_d)
-        paired = paired_recording_comparison(recording_rows)
-        historical = compare_to_historical(
-            recording_count=len(subset),
-            pooled_a=pooled_a,
-            pooled_d=pooled_d,
-            paired=paired,
-            qualitative=qualitative,
-        )
+        if "current_A" in contender_names and "proper_D" in contender_names:
+            paired = paired_recording_comparison(recording_rows)
+            historical = compare_to_historical(
+                recording_count=len(subset),
+                pooled_a=pooled_a,
+                pooled_d=pooled_d,
+                paired=paired,
+                qualitative=qualitative,
+            )
+        elif "A_O50_8" in contender_names and "D_O0_8" in contender_names:
+            paired = paired_recording_comparison(
+                recording_rows, left="A_O50_8", right="D_O0_8"
+            )
     four_way = None
     deltas = None
     paired_vs_a = None
@@ -748,7 +895,36 @@ def run_validation(
                 "A-derived policies were identical to A on every recording: "
                 f"{silent}. Policy config is probably not wired."
             )
+    geometry_table = None
+    geometry_deltas = None
+    paired_vs_baseline = None
+    baseline_name = "A_O50_8" if "A_O50_8" in contender_names else None
+    if baseline_name is not None and len(contender_names) >= 2:
+        geometry_table = geometry_comparison_table(pooled_by_name, contender_names)  # type: ignore[arg-type]
+        geometry_deltas = delta_vs_a_table(
+            pooled_by_name,  # type: ignore[arg-type]
+            baseline=baseline_name,
+            contender_names=list(contender_names),
+        )
+        paired_vs_baseline = {
+            name: paired_recording_comparison(recording_rows, left=baseline_name, right=name)
+            for name in contender_names
+            if name != baseline_name
+        }
     elapsed_sec = time.monotonic() - started
+    elapsed_by_geometry = {
+        name: sum(
+            float(row["elapsed_sec"])
+            for row in recording_rows
+            if str(row["geometry"]) == name and row.get("elapsed_sec") not in (None, "")
+        )
+        for name in contender_names
+    }
+
+    has_ad = (
+        ("current_A" in contender_names and "proper_D" in contender_names)
+        or ("A_O50_8" in contender_names and "D_O0_8" in contender_names)
+    )
 
     summary = {
         "subset": [{"speaker_id": s, "recording_id": r} for s, r in subset],
@@ -757,12 +933,12 @@ def run_validation(
         "recording_count": len(subset),
         "contender_names": list(contender_names),
         "elapsed_sec": elapsed_sec,
+        "elapsed_by_geometry": elapsed_by_geometry,
+        "workers": workers,
         "order_independence_recording": determinism_checks[0],
         "determinism_checks": determinism_checks,
         "ad_observation_signatures_differed": True,
-        "ad_independence_guard": "passed on every recording"
-        if "current_A" in contender_names and "proper_D" in contender_names
-        else "n/a",
+        "ad_independence_guard": "passed on every recording" if has_ad else "n/a",
         "schedule_differed_from_A_recordings": differed_from_a,
         "pooled": {name: metrics.to_dict() for name, metrics in pooled_by_name.items()},
         "pooled_A": None if pooled_a is None else pooled_a.to_dict(),
@@ -771,6 +947,9 @@ def run_validation(
         "paired_vs_A": paired_vs_a,
         "comparison": table,
         "four_way": four_way,
+        "geometry_table": geometry_table,
+        "geometry_delta_vs_A": geometry_deltas,
+        "paired_vs_baseline": paired_vs_baseline,
         "delta_vs_A": deltas,
         "pareto": pareto,
         "qualitative": qualitative,

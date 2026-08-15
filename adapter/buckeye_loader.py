@@ -31,6 +31,26 @@ SUBSET_SELECTION_RULE = (
     "speakers s01, s02, s03, s04 in the historical vad_geometry experiment."
 )
 
+# Fixed Phase-7 smoke subset. First accepted recording from several speakers in
+# the frozen Phase-5 cohort, plus historical s0301a. Not chosen from geometry scores.
+PHASE7_SMOKE_SUBSET: tuple[tuple[str, str], ...] = (
+    ("s01", "s0101b"),
+    ("s02", "s0201b"),
+    ("s03", "s0301a"),
+    ("s04", "s0401b"),
+    ("s06", "s0601a"),
+    ("s08", "s0801a"),
+    ("s11", "s1101a"),
+    ("s16", "s1601a"),
+    ("s22", "s2201a"),
+    ("s24", "s2401b"),
+)
+PHASE7_SMOKE_SELECTION_RULE = (
+    "First accepted recording from speakers s01, s02, s04, s06, s08, s11, s16, "
+    "s22, s24 in the frozen Phase-5 accepted cohort, plus historical s0301a. "
+    "Not chosen from Phase-7 geometry scores."
+)
+
 FULL_COHORT_SELECTION_RULE = (
     "Every recording from speakers with accepted_recording_count > 0 in "
     "canonical/acoustic_matrix/cohort/speaker_cohort_summary.csv that is in "

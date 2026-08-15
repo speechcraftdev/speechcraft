@@ -54,7 +54,7 @@ phase6_finalists/
 
 ## Phase 1 referee / Phase 2 adapters / Phase 3–4 A-D validation
 
-Neutral evaluation of slicer cutpoints/clips against annotated references. Phase 2 adds A/D execution adapters over that contract (one path, explicit geometry configs, no shared acoustic cache). Phase 3 adds geometry fingerprints plus a real canonical A/D smoke so A and D cannot silently share feature computation. Phase 4 runs that path on a frozen 4-recording Buckeye subset. Phase 5 scales the same loop to the full accepted Buckeye cohort. Phase 6 adds two A-derived policies (`min_quiet_run_64ms`, `quiet_run_score`) on that same cohort. See `PHASE1_REFEREE.md`.
+Neutral evaluation of slicer cutpoints/clips against annotated references. Phase 2 adds A/D execution adapters over that contract (one path, explicit geometry configs, no shared acoustic cache). Phase 3 adds geometry fingerprints plus a real canonical A/D smoke so A and D cannot silently share feature computation. Phase 4 runs that path on a frozen 4-recording Buckeye subset. Phase 5 scales the same loop to the full accepted Buckeye cohort. Phase 6 adds two A-derived policies (`min_quiet_run_64ms`, `quiet_run_score`) on that same cohort. Phase 7 prep adds a geometry-only sweep harness; do not launch the expensive Silero geometry tournament yet. See `PHASE1_REFEREE.md`.
 
 Fast tests:
 
@@ -89,6 +89,13 @@ Real Phase 6 four-contender comparison (A, D, min_quiet_run_64ms, quiet_run_scor
 ```bash
 /home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \
     scripts/run_phase6_finalists.py
+```
+
+Phase 7 geometry smoke (prepared; do not run until reviewed):
+
+```bash
+/home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \
+    scripts/run_phase7_geometry_smoke.py --workers 1
 ```
 
 ## Current Interpretation

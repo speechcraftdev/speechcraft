@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from referee.evaluate import _rate
@@ -604,10 +605,15 @@ def format_four_way_table(rows: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
-def delta_vs_a_table(pooled: dict[str, PooledMetrics]) -> list[dict[str, object]]:
-    if "current_A" not in pooled:
-        raise RuntimeError("delta_vs_a_table requires current_A")
-    baseline = pooled["current_A"]
+def delta_vs_a_table(
+    pooled: dict[str, PooledMetrics],
+    *,
+    baseline: str = "current_A",
+    contender_names: list[str] | None = None,
+) -> list[dict[str, object]]:
+    if baseline not in pooled:
+        raise RuntimeError(f"delta_vs_a_table requires {baseline}")
+    baseline_metrics = pooled[baseline]
 
     def pct(rate: float | None) -> float | None:
         return None if rate is None else rate * 100.0
@@ -619,11 +625,18 @@ def delta_vs_a_table(pooled: dict[str, PooledMetrics]) -> list[dict[str, object]
         (">50 ms %", lambda m: pct(m.depth_gt_50ms_rate), True),
         (">100 ms %", lambda m: pct(m.depth_gt_100ms_rate), True),
     ]
-    contenders = [name for name, _col in FOUR_WAY_COLUMNS if name != "current_A" and name in pooled]
+    if contender_names is None:
+        contenders = [
+            name for name, _col in FOUR_WAY_COLUMNS if name != baseline and name in pooled
+        ]
+        if not contenders:
+            contenders = [name for name in pooled if name != baseline]
+    else:
+        contenders = [name for name in contender_names if name != baseline and name in pooled]
     rows: list[dict[str, object]] = []
     for label, getter, _lower_is_safer in specs:
         row: dict[str, object] = {"metric": label}
-        base_val = getter(baseline)
+        base_val = getter(baseline_metrics)
         for name in contenders:
             other = getter(pooled[name])
             if base_val is None or other is None:
@@ -632,6 +645,60 @@ def delta_vs_a_table(pooled: dict[str, PooledMetrics]) -> list[dict[str, object]
                 row[name] = float(other) - float(base_val)
         rows.append(row)
     return rows
+
+
+def geometry_comparison_table(
+    pooled: dict[str, PooledMetrics],
+    names: Sequence[str],
+) -> list[dict[str, object]]:
+    def pct(rate: float | None) -> float | None:
+        return None if rate is None else rate * 100.0
+
+    metric_specs = [
+        ("speech coverage", lambda m: m.speech_coverage),
+        ("retained speech sec", lambda m: m.retained_target_speech_sec),
+        ("emitted sec", lambda m: m.emitted_audio_sec),
+        ("clips", lambda m: m.clip_count),
+        ("selected cuts", lambda m: m.unique_cutpoint_count),
+        ("inside-phone %", lambda m: pct(m.inside_phone_rate)),
+        (">20 ms %", lambda m: pct(m.depth_gt_20ms_rate)),
+        (">50 ms %", lambda m: pct(m.depth_gt_50ms_rate)),
+        (">100 ms %", lambda m: pct(m.depth_gt_100ms_rate)),
+        ("final-edge inside-phone %", lambda m: pct(m.edge_inside_phone_rate)),
+        ("final-edge >20 ms %", lambda m: pct(m.edge_depth_gt_20ms_rate)),
+        ("final-edge >50 ms %", lambda m: pct(m.edge_depth_gt_50ms_rate)),
+        ("final-edge >100 ms %", lambda m: pct(m.edge_depth_gt_100ms_rate)),
+    ]
+    rows: list[dict[str, object]] = []
+    for label, getter in metric_specs:
+        row: dict[str, object] = {"metric": label}
+        for name in names:
+            if name in pooled:
+                row[name] = getter(pooled[name])
+        rows.append(row)
+    return rows
+
+
+def format_geometry_table(rows: list[dict[str, object]], names: Sequence[str]) -> str:
+    def cell(value: object, width: int, numeric: bool) -> str:
+        if value is None:
+            text = "n/a"
+        elif isinstance(value, float):
+            text = f"{value:.6f}"
+        else:
+            text = str(value)
+        return text.rjust(width) if numeric else text.ljust(width)
+
+    width = 12
+    header = f"| {'metric':<26} |" + "".join(f" {name:>{width}} |" for name in names)
+    rule = f"| {'-' * 26} |" + "".join(f" {'-' * width} |" for _ in names)
+    lines = [header, rule]
+    for row in rows:
+        line = f"| {cell(row['metric'], 26, False)} |"
+        for name in names:
+            line += f" {cell(row.get(name), width, True)} |"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def interpret_pareto(
