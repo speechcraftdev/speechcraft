@@ -98,19 +98,38 @@ def apply_candidate_weight_policy(
     config: GeometryConfig,
 ) -> list[Any]:
     """Historical quiet_run_score packer: add boundary-score delta to clip weight."""
-    if config.scoring != "quiet_evidence":
+    if config.scoring == "quiet_evidence":
+        by_id = {str(cut.cutpoint_id): cut for cut in cuts}
+        weighted: list[Any] = []
+        for candidate in candidates:
+            start = by_id[str(candidate.start_cutpoint_id)]
+            end = by_id[str(candidate.end_cutpoint_id)]
+            start_meta = getattr(start, "metadata", None) or {}
+            end_meta = getattr(end, "metadata", None) or {}
+            original_boundary_score = float(start_meta.get("original_score", start.score)) + float(
+                end_meta.get("original_score", end.score)
+            )
+            adjusted_boundary_score = float(start.score) + float(end.score)
+            weight_delta = adjusted_boundary_score - original_boundary_score
+            weighted.append(_replace_obj(candidate, weight=round(float(candidate.weight) + weight_delta, 6)))
+        return weighted
+    spec = config.rms_policy
+    if spec is None or spec.kind == "current":
         return candidates
     by_id = {str(cut.cutpoint_id): cut for cut in cuts}
-    weighted: list[Any] = []
+    weighted = []
     for candidate in candidates:
         start = by_id[str(candidate.start_cutpoint_id)]
         end = by_id[str(candidate.end_cutpoint_id)]
-        start_meta = getattr(start, "metadata", None) or {}
-        end_meta = getattr(end, "metadata", None) or {}
-        original_boundary_score = float(start_meta.get("original_score", start.score)) + float(
-            end_meta.get("original_score", end.score)
+        start_delta = float((getattr(start, "metadata", None) or {}).get("score_delta", 0.0))
+        end_delta = float((getattr(end, "metadata", None) or {}).get("score_delta", 0.0))
+        if start_delta == 0.0 and end_delta == 0.0:
+            weighted.append(candidate)
+            continue
+        weighted.append(
+            _replace_obj(
+                candidate,
+                weight=round(float(candidate.weight) + start_delta + end_delta, 6),
+            )
         )
-        adjusted_boundary_score = float(start.score) + float(end.score)
-        weight_delta = adjusted_boundary_score - original_boundary_score
-        weighted.append(_replace_obj(candidate, weight=round(float(candidate.weight) + weight_delta, 6)))
     return weighted

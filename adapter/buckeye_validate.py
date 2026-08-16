@@ -33,7 +33,7 @@ from adapter.buckeye_metrics import (
     paired_recording_comparison,
     pool_metric_dicts,
 )
-from adapter.canonical_executor import execute_canonical_diagnosed
+from adapter.canonical_executor import execute_canonical_diagnosed, execute_shared_geometry_family
 from adapter.canonical_smoke import (
     GeometryRun,
     assert_independent_state,
@@ -90,6 +90,20 @@ def geometry_config_payload(config: GeometryConfig) -> dict[str, object]:
             None if config.min_quiet_run_ms is None else float(config.min_quiet_run_ms)
         ),
         "scoring": None if not config.scoring else str(config.scoring),
+        "rms_policy": None
+        if config.rms_policy is None
+        else {
+            "kind": config.rms_policy.kind,
+            "center_ms": config.rms_policy.center_ms,
+            "shoulder_ms": config.rms_policy.shoulder_ms,
+            "long_ms": config.rms_policy.long_ms,
+            "prominence_db": config.rms_policy.prominence_db,
+            "valley_width_ref_ms": config.rms_policy.valley_width_ref_ms,
+            "valley_margin_db": config.rms_policy.valley_margin_db,
+            "score_scale": config.rms_policy.score_scale,
+            "placement_window_ms": config.rms_policy.placement_window_ms,
+            "placement_hop_ms": config.rms_policy.placement_hop_ms,
+        },
     }
 
 
@@ -130,6 +144,63 @@ def run_geometry_isolated(loaded: LoadedRecording, config: GeometryConfig) -> Ge
     return GeometryRun(result=result, diagnostics=execution.diagnostics)
 
 
+def _slicer_request(loaded: LoadedRecording, config: GeometryConfig) -> SlicerRequest:
+    return SlicerRequest(
+        recording_id=loaded.recording_id,
+        audio_path=loaded.audio_path,
+        sample_rate_hz=loaded.sample_rate_hz,
+        buffers=loaded.buffers,
+        config=config,
+    )
+
+
+def execute_recording_contenders(
+    loaded: LoadedRecording,
+    contenders: tuple[GeometryConfig, ...],
+) -> dict[str, GeometryRun]:
+    """Run controls independently; share one VAD bundle per RMS geometry family."""
+    groups: list[list[GeometryConfig]] = []
+    family_index: dict[str, int] = {}
+    for config in contenders:
+        fingerprint = geometry_fingerprint(config)
+        if config.rms_policy is None:
+            groups.append([config])
+            continue
+        if fingerprint in family_index:
+            groups[family_index[fingerprint]].append(config)
+            continue
+        family_index[fingerprint] = len(groups)
+        groups.append([config])
+    runs: dict[str, GeometryRun] = {}
+    for group in groups:
+        if len(group) == 1 and group[0].rms_policy is None:
+            runs[group[0].name] = run_geometry_isolated(loaded, group[0])
+            continue
+        executions = execute_shared_geometry_family(
+            [_slicer_request(loaded, config) for config in group]
+        )
+        vad_total = sum(item.diagnostics.vad_compute_count for item in executions.values())
+        if vad_total != 1:
+            raise RuntimeError(
+                f"{loaded.recording_id} O25_4-family VAD computation count {vad_total} != 1"
+            )
+        bundle_ids = {item.diagnostics.feature_bundle_id for item in executions.values()}
+        if len(bundle_ids) != 1:
+            raise RuntimeError(
+                f"{loaded.recording_id} RMS family used multiple feature bundles: {bundle_ids}"
+            )
+        for config in group:
+            execution = executions[config.name]
+            result = to_slicer_result(execution.raw)
+            if {f.name for f in fields(result)} != {"cutpoints", "clips"}:
+                raise RuntimeError("public result is not a neutral SlicerResult")
+            runs[config.name] = GeometryRun(result=result, diagnostics=execution.diagnostics)
+    missing = [config.name for config in contenders if config.name not in runs]
+    if missing:
+        raise RuntimeError(f"missing contender runs: {missing}")
+    return runs
+
+
 def evaluate_loaded(loaded: LoadedRecording, result: SlicerResult) -> EvaluationResult:
     return evaluate(loaded.reference, result)
 
@@ -159,6 +230,10 @@ def _recording_row(
         "selected_clip_sha256": diagnostics.selected_clip_sha256,
         "elapsed_sec": elapsed_sec,
         "workdir": diagnostics.workdir,
+        "vad_compute_count": diagnostics.vad_compute_count,
+        "feature_bundle_id": diagnostics.feature_bundle_id,
+        "vad_compute_sec": diagnostics.vad_compute_sec,
+        "policy_eval_sec": diagnostics.policy_eval_sec,
     }
 
 
@@ -313,25 +388,37 @@ def _count_schedule_diffs_from_a(
     differed = {name: 0 for name in contender_names if name != "current_A"}
     if "current_A" not in contender_names:
         return differed
+    return _count_schedule_diffs(recording_rows, contender_names, baseline="current_A")
+
+
+def _count_schedule_diffs(
+    recording_rows: list[dict[str, object]],
+    contender_names: tuple[str, ...],
+    *,
+    baseline: str,
+) -> dict[str, int]:
+    differed = {name: 0 for name in contender_names if name != baseline}
+    if baseline not in contender_names:
+        return differed
     by_rec: dict[tuple[str, str], dict[str, dict[str, object]]] = {}
     for row in recording_rows:
         key = (str(row["speaker_id"]), str(row["recording_id"]))
         by_rec.setdefault(key, {})[str(row["geometry"])] = row
     for geos in by_rec.values():
-        a_row = geos.get("current_A")
-        if a_row is None:
+        base_row = geos.get(baseline)
+        if base_row is None:
             continue
-        a_cands = _hash_field(a_row, "candidate_cutpoint_sha256")
-        a_cuts = _hash_field(a_row, "selected_cutpoint_sha256")
-        a_clips = _hash_field(a_row, "selected_clip_sha256")
+        base_cands = _hash_field(base_row, "candidate_cutpoint_sha256")
+        base_cuts = _hash_field(base_row, "selected_cutpoint_sha256")
+        base_clips = _hash_field(base_row, "selected_clip_sha256")
         for name in differed:
             other = geos.get(name)
             if other is None:
                 continue
             if (
-                _hash_field(other, "candidate_cutpoint_sha256") != a_cands
-                or _hash_field(other, "selected_cutpoint_sha256") != a_cuts
-                or _hash_field(other, "selected_clip_sha256") != a_clips
+                _hash_field(other, "candidate_cutpoint_sha256") != base_cands
+                or _hash_field(other, "selected_cutpoint_sha256") != base_cuts
+                or _hash_field(other, "selected_clip_sha256") != base_clips
             ):
                 differed[name] += 1
     return differed
@@ -385,6 +472,24 @@ def _assert_requested_geometries_independent(
             left_fp = geometry_fingerprint(by_name[left_name])
             right_fp = geometry_fingerprint(by_name[right_name])
             if left_fp == right_fp:
+                left_cfg = by_name[left_name]
+                right_cfg = by_name[right_name]
+                if left_cfg.rms_policy is not None and right_cfg.rms_policy is not None:
+                    left = runs[left_name]
+                    right = runs[right_name]
+                    if (
+                        left.diagnostics.vad_observation_count
+                        != right.diagnostics.vad_observation_count
+                        or left.diagnostics.vad_timestamp_sha256
+                        != right.diagnostics.vad_timestamp_sha256
+                        or left.diagnostics.vad_probability_sha256
+                        != right.diagnostics.vad_probability_sha256
+                    ):
+                        raise RuntimeError(
+                            f"geometry independence failed on {speaker_id}/{recording_id}: "
+                            f"{left_name} and {right_name} share geometry fingerprint "
+                            f"{left_fp} but VAD observations differ"
+                        )
                 continue
             left = runs[left_name]
             right = runs[right_name]
@@ -414,6 +519,7 @@ def _run_one_recording(
     load: LoadFn,
     run: RunFn,
     score_fn: EvalFn,
+    reuse_shared_geometry: bool = False,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, float]]:
     loaded = load(speaker_id, recording_id)
     new_rows: list[dict[str, object]] = []
@@ -422,37 +528,91 @@ def _run_one_recording(
     geom_elapsed: dict[str, float] = {}
     rec_started = time.monotonic()
     try:
-        for config in contenders:
-            print(f"  running {config.name}", flush=True)
+        if reuse_shared_geometry:
+            print(
+                "  running "
+                + ", ".join(config.name for config in contenders),
+                flush=True,
+            )
             geom_started = time.monotonic()
-            executed = run(loaded, config)
-            score = score_fn(loaded, executed.result)
-            elapsed = time.monotonic() - geom_started
-            geom_elapsed[config.name] = elapsed
-            runs[config.name] = executed
-            new_rows.append(
-                _recording_row(
-                    speaker_id=speaker_id,
-                    recording_id=recording_id,
-                    geometry=config.name,
-                    score=score,
-                    diagnostics=executed.diagnostics,
-                    elapsed_sec=round(elapsed, 6),
+            runs = execute_recording_contenders(loaded, contenders)
+            family_elapsed = time.monotonic() - geom_started
+            for config in contenders:
+                executed = runs[config.name]
+                score = score_fn(loaded, executed.result)
+                vad = float(executed.diagnostics.vad_compute_sec or 0.0)
+                pol = float(executed.diagnostics.policy_eval_sec or 0.0)
+                elapsed = vad + pol
+                geom_elapsed[config.name] = elapsed
+                new_rows.append(
+                    _recording_row(
+                        speaker_id=speaker_id,
+                        recording_id=recording_id,
+                        geometry=config.name,
+                        score=score,
+                        diagnostics=executed.diagnostics,
+                        elapsed_sec=round(float(elapsed), 6),
+                    )
                 )
-            )
-            new_unsafe.extend(
-                _unsafe_cut_rows(geometry=config.name, loaded=loaded, result=executed.result)
-            )
+                new_unsafe.extend(
+                    _unsafe_cut_rows(geometry=config.name, loaded=loaded, result=executed.result)
+                )
+        else:
+            for config in contenders:
+                print(f"  running {config.name}", flush=True)
+                geom_started = time.monotonic()
+                executed = run(loaded, config)
+                score = score_fn(loaded, executed.result)
+                elapsed = time.monotonic() - geom_started
+                geom_elapsed[config.name] = elapsed
+                runs[config.name] = executed
+                new_rows.append(
+                    _recording_row(
+                        speaker_id=speaker_id,
+                        recording_id=recording_id,
+                        geometry=config.name,
+                        score=score,
+                        diagnostics=executed.diagnostics,
+                        elapsed_sec=round(elapsed, 6),
+                    )
+                )
+                new_unsafe.extend(
+                    _unsafe_cut_rows(geometry=config.name, loaded=loaded, result=executed.result)
+                )
         _assert_requested_geometries_independent(
             runs,
             contenders,
             speaker_id=speaker_id,
             recording_id=recording_id,
         )
+        if reuse_shared_geometry:
+            _assert_o25_family_vad_once(runs, contenders, recording_id=recording_id)
     finally:
         del loaded
     geom_elapsed["recording"] = time.monotonic() - rec_started
     return new_rows, new_unsafe, geom_elapsed
+
+
+def _assert_o25_family_vad_once(
+    runs: dict[str, GeometryRun],
+    contenders: tuple[GeometryConfig, ...],
+    *,
+    recording_id: str,
+) -> None:
+    family = [config for config in contenders if config.rms_policy is not None]
+    if not family:
+        return
+    total = sum(runs[config.name].diagnostics.vad_compute_count for config in family)
+    if total != 1:
+        raise RuntimeError(
+            f"{recording_id} RMS family VAD computation count {total} != 1 "
+            f"({[config.name for config in family]})"
+        )
+    bundle_ids = {runs[config.name].diagnostics.feature_bundle_id for config in family}
+    if len(bundle_ids) != 1 or not next(iter(bundle_ids)):
+        raise RuntimeError(
+            f"{recording_id} RMS family did not share one feature bundle: {bundle_ids}"
+        )
 
 
 def _parallel_recording_job(job: dict[str, object]) -> dict[str, object]:
@@ -480,6 +640,7 @@ def _parallel_recording_job(job: dict[str, object]) -> dict[str, object]:
         load=load,
         run=run,  # type: ignore[arg-type]
         score_fn=score_fn,  # type: ignore[arg-type]
+        reuse_shared_geometry=bool(job.get("reuse_shared_geometry")),
     )
     return {
         "speaker_id": speaker_id,
@@ -590,6 +751,7 @@ def _run_contender_order_spot_check(
     run: RunFn,
     score_fn: EvalFn,
     contenders: tuple[GeometryConfig, ...],
+    reuse_shared_geometry: bool = False,
 ) -> dict[str, object]:
     loaded = load(speaker_id, recording_id)
     try:
@@ -599,19 +761,27 @@ def _run_contender_order_spot_check(
             + " → ".join(cfg.name for cfg in forward),
             flush=True,
         )
-        forward_runs: dict[str, tuple[GeometryRun, EvaluationResult]] = {}
-        for config in forward:
-            executed = run(loaded, config)
-            forward_runs[config.name] = (executed, score_fn(loaded, executed.result))
+
+        def _runs_for(order: tuple[GeometryConfig, ...]) -> dict[str, GeometryRun]:
+            if reuse_shared_geometry:
+                return execute_recording_contenders(loaded, order)
+            return {config.name: run(loaded, config) for config in order}
+
+        forward_executed = _runs_for(forward)
+        forward_runs = {
+            name: (executed, score_fn(loaded, executed.result))
+            for name, executed in forward_executed.items()
+        }
         print(
             f"  order {speaker_id}/{recording_id}: "
             + " → ".join(cfg.name for cfg in reverse),
             flush=True,
         )
-        reverse_runs: dict[str, tuple[GeometryRun, EvaluationResult]] = {}
-        for config in reverse:
-            executed = run(loaded, config)
-            reverse_runs[config.name] = (executed, score_fn(loaded, executed.result))
+        reverse_executed = _runs_for(reverse)
+        reverse_runs = {
+            name: (executed, score_fn(loaded, executed.result))
+            for name, executed in reverse_executed.items()
+        }
         _assert_requested_geometries_independent(
             {name: pair[0] for name, pair in forward_runs.items()},
             contenders,
@@ -624,6 +794,32 @@ def _run_contender_order_spot_check(
             speaker_id=speaker_id,
             recording_id=recording_id,
         )
+        if reuse_shared_geometry:
+            _assert_o25_family_vad_once(
+                {name: pair[0] for name, pair in forward_runs.items()},
+                contenders,
+                recording_id=recording_id,
+            )
+            family = [config for config in contenders if config.rms_policy is not None]
+            if family:
+                forward_ids = {forward_runs[c.name][0].diagnostics.feature_bundle_id for c in family}
+                reverse_ids = {reverse_runs[c.name][0].diagnostics.feature_bundle_id for c in family}
+                if len(forward_ids) != 1 or len(reverse_ids) != 1:
+                    raise RuntimeError(
+                        f"{recording_id} policy-order check did not keep a shared O25_4 bundle"
+                    )
+                hashes = {
+                    (
+                        pair[0].diagnostics.vad_timestamp_sha256,
+                        pair[0].diagnostics.vad_probability_sha256,
+                    )
+                    for name, pair in forward_runs.items()
+                    if name in {c.name for c in family}
+                }
+                if len(hashes) != 1:
+                    raise RuntimeError(
+                        f"{recording_id} shared O25_4 VAD hashes diverged across policies"
+                    )
         compact: dict[str, object] = {
             "speaker_id": speaker_id,
             "recording_id": recording_id,
@@ -679,6 +875,8 @@ def run_validation(
     run = run_fn if run_fn is not None else run_geometry_isolated
     score_fn = eval_fn if eval_fn is not None else evaluate_loaded
     active_contenders = contenders if contenders is not None else (CURRENT_A, PROPER_D)
+    reuse_shared_geometry = run_fn is None
+    rms_family = tuple(config.name for config in active_contenders if config.rms_policy is not None)
     contender_names = tuple(config.name for config in active_contenders)
     if len(set(contender_names)) != len(contender_names):
         raise RuntimeError(f"duplicate contender names: {contender_names}")
@@ -773,6 +971,9 @@ def run_validation(
                 ),
             },
             "git_commit": git_head(output_dir.parent),
+            "O25_4_feature_reuse": bool(rms_family) and reuse_shared_geometry,
+            "O25_4_vad_computations_per_recording": 1 if rms_family else None,
+            "model_backend_identity": CURRENT_A.vad_backend,
             "paths": {
                 "normalized_root": str(active_paths.normalized_root),
                 "cohort_root": str(active_paths.cohort_root),
@@ -821,6 +1022,7 @@ def run_validation(
                 load=load,
                 run=run,
                 score_fn=score_fn,
+                reuse_shared_geometry=reuse_shared_geometry,
             )
             completed[key] = {str(row["geometry"]): row for row in new_rows}
             unsafe_by_rec[key] = new_unsafe
@@ -838,6 +1040,7 @@ def run_validation(
                 "load_fn": load_fn,
                 "run_fn": run_fn,
                 "eval_fn": eval_fn,
+                "reuse_shared_geometry": reuse_shared_geometry,
             }
             for speaker_id, recording_id in pending
         ]
@@ -901,6 +1104,7 @@ def run_validation(
             run=run,
             score_fn=score_fn,
             contenders=active_contenders,
+            reuse_shared_geometry=reuse_shared_geometry,
         )
         for speaker_id, recording_id in spot_ids
     ]
@@ -954,12 +1158,28 @@ def run_validation(
                 "A-derived policies were identical to A on every recording: "
                 f"{silent}. Policy config is probably not wired."
             )
+    if "O25_4_CURRENT" in contender_names and len(rms_family) > 1:
+        differed_from_current = _count_schedule_diffs(
+            recording_rows, contender_names, baseline="O25_4_CURRENT"
+        )
+        silent_rms = [
+            name
+            for name in rms_family
+            if name != "O25_4_CURRENT" and differed_from_current.get(name, 0) == 0
+        ]
+        if silent_rms:
+            raise RuntimeError(
+                "O25_4 RMS variants were identical to O25_4_CURRENT on every recording: "
+                f"{silent_rms}. Policy config is probably not wired."
+            )
     geometry_table = None
     geometry_deltas = None
     paired_vs_baseline = None
+    paired_vs_o25_current = None
     baseline_name = "A_O50_8" if "A_O50_8" in contender_names else None
-    if baseline_name is not None and len(contender_names) >= 2:
+    if len(contender_names) >= 2:
         geometry_table = geometry_comparison_table(pooled_by_name, contender_names)  # type: ignore[arg-type]
+    if baseline_name is not None and len(contender_names) >= 2:
         geometry_deltas = delta_vs_a_table(
             pooled_by_name,  # type: ignore[arg-type]
             baseline=baseline_name,
@@ -969,6 +1189,14 @@ def run_validation(
             name: paired_recording_comparison(recording_rows, left=baseline_name, right=name)
             for name in contender_names
             if name != baseline_name
+        }
+    if "O25_4_CURRENT" in contender_names:
+        paired_vs_o25_current = {
+            name: paired_recording_comparison(
+                recording_rows, left="O25_4_CURRENT", right=name
+            )
+            for name in contender_names
+            if name != "O25_4_CURRENT"
         }
     elapsed_sec = time.monotonic() - started
     elapsed_by_geometry = {
@@ -1009,10 +1237,43 @@ def run_validation(
         "geometry_table": geometry_table,
         "geometry_delta_vs_A": geometry_deltas,
         "paired_vs_baseline": paired_vs_baseline,
+        "paired_vs_o25_current": paired_vs_o25_current,
         "delta_vs_A": deltas,
         "pareto": pareto,
         "qualitative": qualitative,
         "historical_comparison": historical,
+        "O25_4_feature_reuse": bool(rms_family) and reuse_shared_geometry,
+        "O25_4_vad_computations_per_recording": 1 if rms_family and reuse_shared_geometry else None,
+        "runtime": {
+            "whole_run_sec": elapsed_sec,
+            "O25_4_vad_compute_sec": sum(
+                float(row["vad_compute_sec"])
+                for row in recording_rows
+                if str(row["geometry"]) in rms_family
+                and row.get("vad_compute_sec") not in (None, "")
+            ),
+            "O25_4_policy_eval_sec": sum(
+                float(row["policy_eval_sec"])
+                for row in recording_rows
+                if str(row["geometry"]) in rms_family
+                and row.get("policy_eval_sec") not in (None, "")
+            ),
+            "A_O50_8_sec": sum(
+                float(row["vad_compute_sec"] or 0) + float(row["policy_eval_sec"] or 0)
+                for row in recording_rows
+                if str(row["geometry"]) == "A_O50_8"
+            ),
+            "O0_4_sec": sum(
+                float(row["vad_compute_sec"] or 0) + float(row["policy_eval_sec"] or 0)
+                for row in recording_rows
+                if str(row["geometry"]) == "O0_4"
+            ),
+            "O0_2_sec": sum(
+                float(row["vad_compute_sec"] or 0) + float(row["policy_eval_sec"] or 0)
+                for row in recording_rows
+                if str(row["geometry"]) == "O0_2"
+            ),
+        },
         "passed": True,
     }
     _write_json(output_dir / "manifest.json", manifest)

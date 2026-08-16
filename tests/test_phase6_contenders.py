@@ -364,9 +364,9 @@ class TestNoSilentSkipFourWay:
 def test_canonical_executor_wires_policy_hooks() -> None:
     import inspect
 
-    from adapter.canonical_executor import execute_canonical_diagnosed
+    from adapter import canonical_executor
 
-    source = inspect.getsource(execute_canonical_diagnosed)
+    source = inspect.getsource(canonical_executor)
     assert "apply_cut_policy(cutpoints, config)" in source
     assert "apply_candidate_weight_policy(candidates, cutpoints, config)" in source
 

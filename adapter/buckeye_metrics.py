@@ -689,7 +689,7 @@ def format_geometry_table(rows: list[dict[str, object]], names: Sequence[str]) -
             text = str(value)
         return text.rjust(width) if numeric else text.ljust(width)
 
-    width = 12
+    width = max(12, max((len(name) for name in names), default=12))
     header = f"| {'metric':<26} |" + "".join(f" {name:>{width}} |" for name in names)
     rule = f"| {'-' * 26} |" + "".join(f" {'-' * width} |" for _ in names)
     lines = [header, rule]

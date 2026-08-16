@@ -8,7 +8,35 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+
+@dataclass(frozen=True)
+class RmsPolicySpec:
+    """Soft RMS/pause evidence knobs. Not part of the geometry fingerprint.
+
+    Windows are fixed for this experiment; this is not a parameter sweep.
+    """
+
+    kind: str
+    center_ms: float = 24.0
+    shoulder_ms: float = 80.0
+    long_ms: float = 120.0
+    prominence_db: float = 3.0
+    valley_width_ref_ms: float = 80.0
+    valley_margin_db: float = 3.0
+    score_scale: float = 0.25
+    placement_window_ms: float = 24.0
+    placement_hop_ms: float = 4.0
+
+
+RMS_CURRENT = RmsPolicySpec(kind="current")
+RMS_PROMINENCE = RmsPolicySpec(kind="prominence")
+RMS_MULTISCALE = RmsPolicySpec(kind="multiscale")
+RMS_VALLEY = RmsPolicySpec(kind="valley")
+RMS_BILATERAL = RmsPolicySpec(kind="bilateral")
+RMS_MIN_PLACEMENT = RmsPolicySpec(kind="min_placement")
+RMS_MULTISCALE_MIN = RmsPolicySpec(kind="multiscale_min")
 
 
 @dataclass(frozen=True)
@@ -39,6 +67,7 @@ class GeometryConfig:
     # Policy knobs. Not part of the geometry fingerprint.
     min_quiet_run_ms: float | None = None
     scoring: str | None = None
+    rms_policy: RmsPolicySpec | None = None
 
 
 # Current overlapping geometry (validated A baseline).
@@ -173,8 +202,45 @@ PHASE7_FINALISTS: tuple[GeometryConfig, ...] = (
     O12_5_4,
     O0_2,
 )
+
+def _o25_rms(name: str, spec: RmsPolicySpec) -> GeometryConfig:
+    """O25_4 geometry with a different RMS/evidence policy only."""
+    return replace(O25_4, name=name, rms_policy=spec)
+
+
+O25_4_CURRENT = _o25_rms("O25_4_CURRENT", RMS_CURRENT)
+O25_4_RMS_PROMINENCE = _o25_rms("O25_4_RMS_PROMINENCE", RMS_PROMINENCE)
+O25_4_MULTISCALE_RMS = _o25_rms("O25_4_MULTISCALE_RMS", RMS_MULTISCALE)
+O25_4_VALLEY_WIDTH_DEPTH = _o25_rms("O25_4_VALLEY_WIDTH_DEPTH", RMS_VALLEY)
+O25_4_BILATERAL_CONTRAST = _o25_rms("O25_4_BILATERAL_CONTRAST", RMS_BILATERAL)
+O25_4_RMS_MIN_PLACEMENT = _o25_rms("O25_4_RMS_MIN_PLACEMENT", RMS_MIN_PLACEMENT)
+O25_4_MULTISCALE_MIN = _o25_rms("O25_4_MULTISCALE_MIN", RMS_MULTISCALE_MIN)
+
+PHASE8_RMS_VARIANTS: tuple[GeometryConfig, ...] = (
+    O25_4_CURRENT,
+    O25_4_RMS_PROMINENCE,
+    O25_4_MULTISCALE_RMS,
+    O25_4_VALLEY_WIDTH_DEPTH,
+    O25_4_BILATERAL_CONTRAST,
+    O25_4_RMS_MIN_PLACEMENT,
+    O25_4_MULTISCALE_MIN,
+)
+PHASE8_SMOKE_CONTENDERS: tuple[GeometryConfig, ...] = (
+    A_O50_8,
+    *PHASE8_RMS_VARIANTS,
+    O0_4,
+    O0_2,
+)
+PHASE8_FROZEN_GEOMETRIES: tuple[GeometryConfig, ...] = (
+    A_O50_8,
+    O25_4,
+    O0_4,
+    O0_2,
+)
+
 PHASE7_GEOMETRIES_BY_NAME: dict[str, GeometryConfig] = {
-    config.name: config for config in (*PHASE7_GEOMETRIES, O12_5_4, O0_2)
+    config.name: config
+    for config in (*PHASE7_GEOMETRIES, O12_5_4, O0_2, *PHASE8_RMS_VARIANTS)
 }
 
 # RESET-8 (per-window Silero state reset at hop=128) is intentionally omitted.

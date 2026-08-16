@@ -101,6 +101,13 @@ Phase 7 geometry smoke (10 recordings, original seven geometries) and full final
     --geometries A_O50_8,D_O0_8,O25_4,O0_4,O12.5_4,O0_2 --workers 2
 ```
 
+Phase 8 RMS evidence smoke (10 recordings; do not run the full 120-recording RMS tournament yet):
+
+```bash
+/home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \
+    scripts/run_phase8_rms_smoke.py --workers 2
+```
+
 ## Current Interpretation
 
 Use the completed fast 16-way run for A-derived policy variants. Do not use it to compare A against D.

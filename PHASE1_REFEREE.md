@@ -82,3 +82,10 @@ Pure types, validation, interval arithmetic, and synthetic unit tests only.
 - Optional recording-level `--workers N` (default 1, spawn for real Silero). No VAD/RMS feature cache. Parallel mode commits each finished recording to CSV immediately.
 - Distinct requested geometries must not collapse onto identical VAD observation signatures; diagnostics fingerprints must match the requested config.
 - `RESET-8` (per-window Silero reset) is omitted: the canonical path resets once per offset stream, not per window.
+
+## Phase 8 prep (O25_4 RMS evidence)
+
+- Geometry is frozen: `A_O50_8`, `O25_4`, `O0_4`, `O0_2`. New work is RMS/pause evidence on `O25_4` only.
+- All O25_4 RMS variants share one immutable in-memory VAD/RMS bundle per recording. Cross-geometry bundle reuse is rejected.
+- Public `SlicerResult.cutpoints` remains selected-schedule. Evaluator unchanged.
+- Smoke: `scripts/run_phase8_rms_smoke.py`. Do not run the 120-recording RMS tournament until smoke is reviewed.

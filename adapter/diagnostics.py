@@ -88,12 +88,27 @@ def geometry_fingerprint(config: GeometryConfig) -> str:
 
 def policy_canonical_payload(config: GeometryConfig) -> dict[str, Any]:
     """Candidate/selection policy only — not window/hop/offsets."""
-    return {
+    payload: dict[str, Any] = {
         "min_quiet_run_ms": (
             None if config.min_quiet_run_ms is None else float(config.min_quiet_run_ms)
         ),
         "scoring": None if not config.scoring else str(config.scoring),
     }
+    spec = getattr(config, "rms_policy", None)
+    if spec is not None:
+        payload["rms_policy"] = {
+            "kind": str(spec.kind),
+            "center_ms": float(spec.center_ms),
+            "shoulder_ms": float(spec.shoulder_ms),
+            "long_ms": float(spec.long_ms),
+            "prominence_db": float(spec.prominence_db),
+            "valley_width_ref_ms": float(spec.valley_width_ref_ms),
+            "valley_margin_db": float(spec.valley_margin_db),
+            "score_scale": float(spec.score_scale),
+            "placement_window_ms": float(spec.placement_window_ms),
+            "placement_hop_ms": float(spec.placement_hop_ms),
+        }
+    return payload
 
 
 def policy_canonical_json(config: GeometryConfig) -> str:
@@ -178,6 +193,10 @@ class ExecutionDiagnostics:
     policy_canonical: str = "{}"
     policy_fingerprint: str = ""
     selected_cutpoint_sha256: str = ""
+    vad_compute_count: int = 1
+    feature_bundle_id: str = ""
+    vad_compute_sec: float | None = None
+    policy_eval_sec: float | None = None
 
     def to_summary(self) -> dict[str, Any]:
         data = asdict(self)
