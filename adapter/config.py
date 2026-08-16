@@ -138,6 +138,22 @@ O0_4 = GeometryConfig(
     offsets=(0, 64, 128, 192, 256, 320, 384, 448),
     sample_rate_hz=16000,
 )
+# 12.5% recurrent overlap, ~4 ms aggregate spacing. Between O25_4 and O0_4.
+O12_5_4 = GeometryConfig(
+    name="O12.5_4",
+    window_samples=512,
+    hop_samples=448,
+    offsets=(0, 64, 128, 192, 256, 320, 384),
+    sample_rate_hz=16000,
+)
+# Proper non-overlapping recurrence, ~2 ms aggregate spacing.
+O0_2 = GeometryConfig(
+    name="O0_2",
+    window_samples=512,
+    hop_samples=512,
+    offsets=tuple(range(0, 512, 32)),
+    sample_rate_hz=16000,
+)
 
 PHASE7_GEOMETRIES: tuple[GeometryConfig, ...] = (
     A_O50_8,
@@ -148,8 +164,17 @@ PHASE7_GEOMETRIES: tuple[GeometryConfig, ...] = (
     O25_4,
     O0_4,
 )
+# Post-smoke full-run set. Not another 7-way sweep.
+PHASE7_FINALISTS: tuple[GeometryConfig, ...] = (
+    A_O50_8,
+    D_O0_8,
+    O25_4,
+    O0_4,
+    O12_5_4,
+    O0_2,
+)
 PHASE7_GEOMETRIES_BY_NAME: dict[str, GeometryConfig] = {
-    config.name: config for config in PHASE7_GEOMETRIES
+    config.name: config for config in (*PHASE7_GEOMETRIES, O12_5_4, O0_2)
 }
 
 # RESET-8 (per-window Silero state reset at hop=128) is intentionally omitted.

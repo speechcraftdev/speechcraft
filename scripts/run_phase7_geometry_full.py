@@ -7,7 +7,7 @@ Example (not run during prep):
 
     /home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \\
         scripts/run_phase7_geometry_full.py \\
-        --geometries A_O50_8,D_O0_8,O25_8,O0_4 --workers 1
+        --geometries A_O50_8,D_O0_8,O25_4,O0_4,O12.5_4,O0_2 --workers 2
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument(
         "--geometries",
         required=True,
-        help="Comma-separated geometry names, e.g. A_O50_8,D_O0_8,O25_8,O0_4",
+        help="Comma-separated geometry names, e.g. A_O50_8,D_O0_8,O25_4,O0_4,O12.5_4,O0_2",
     )
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument(

@@ -19,11 +19,14 @@ from adapter.config import (
     A_O50_8,
     CURRENT_A,
     D_O0_8,
+    O0_2,
     O0_4,
+    O12_5_4,
     O25_4,
     O25_8,
     O50_4,
     O75_8,
+    PHASE7_FINALISTS,
     PHASE7_GEOMETRIES,
     PROPER_D,
     GeometryConfig,
@@ -155,10 +158,36 @@ class TestPhase7GeometryDefinitions:
         assert aggregate_spacing_samples(O0_4) == 64
         assert aggregate_spacing_samples(A_O50_8) / A_O50_8.sample_rate_hz == pytest.approx(0.008)
         assert aggregate_spacing_samples(O0_4) / O0_4.sample_rate_hz == pytest.approx(0.004)
+        assert recurrent_overlap_fraction(O12_5_4) == pytest.approx(0.125)
+        assert recurrent_overlap_fraction(O0_2) == pytest.approx(0.0)
+        assert O12_5_4.window_samples == 512
+        assert O12_5_4.hop_samples == 448
+        assert O12_5_4.offsets == (0, 64, 128, 192, 256, 320, 384)
+        assert O0_2.window_samples == 512
+        assert O0_2.hop_samples == 512
+        assert O0_2.offsets == tuple(range(0, 512, 32))
+        assert aggregate_spacing_samples(O12_5_4) == 64
+        assert aggregate_spacing_samples(O0_2) == 32
+        assert aggregate_spacing_samples(O12_5_4) / O12_5_4.sample_rate_hz == pytest.approx(0.004)
+        assert aggregate_spacing_samples(O0_2) / O0_2.sample_rate_hz == pytest.approx(0.002)
 
     def test_fingerprints_unique_and_a_d_unchanged(self) -> None:
         fingerprints = [geometry_fingerprint(config) for config in PHASE7_GEOMETRIES]
         assert len(set(fingerprints)) == 7
+        extra = [geometry_fingerprint(O12_5_4), geometry_fingerprint(O0_2)]
+        assert extra[0] not in fingerprints
+        assert extra[1] not in fingerprints
+        assert extra[0] != extra[1]
+        finalist_fps = [geometry_fingerprint(config) for config in PHASE7_FINALISTS]
+        assert len(set(finalist_fps)) == 6
+        assert tuple(config.name for config in PHASE7_FINALISTS) == (
+            "A_O50_8",
+            "D_O0_8",
+            "O25_4",
+            "O0_4",
+            "O12.5_4",
+            "O0_2",
+        )
         assert geometry_fingerprint(CURRENT_A) == TRUSTED_A_GEOMETRY_FINGERPRINT
         assert geometry_fingerprint(PROPER_D) == TRUSTED_D_GEOMETRY_FINGERPRINT
         assert geometry_fingerprint(A_O50_8) == geometry_fingerprint(CURRENT_A)
@@ -166,16 +195,18 @@ class TestPhase7GeometryDefinitions:
         assert geometry_fingerprint(A_O50_8) != geometry_fingerprint(D_O0_8)
 
     def test_offsets_are_strictly_inside_hop(self) -> None:
-        for config in PHASE7_GEOMETRIES:
+        for config in (*PHASE7_GEOMETRIES, O12_5_4, O0_2):
             assert all(0 <= offset < config.hop_samples for offset in config.offsets)
 
     def test_resolve_geometries_subset(self) -> None:
-        resolved = resolve_geometries("A_O50_8,D_O0_8,O25_8,O0_4")
+        resolved = resolve_geometries("A_O50_8,D_O0_8,O25_4,O0_4,O12.5_4,O0_2")
         assert tuple(config.name for config in resolved) == (
             "A_O50_8",
             "D_O0_8",
-            "O25_8",
+            "O25_4",
             "O0_4",
+            "O12.5_4",
+            "O0_2",
         )
         with pytest.raises(RuntimeError, match="unknown geometry"):
             resolve_geometries("OpenVPI")

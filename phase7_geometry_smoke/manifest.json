@@ -1,0 +1,313 @@
+{
+  "canonical_paths": {
+    "cluster_mapping_csv": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort/benchmark_cluster_mapping.csv",
+    "cohort_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort",
+    "normalized_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/normalized/corpus",
+    "speaker_cohort_summary_csv": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort/speaker_cohort_summary.csv"
+  },
+  "cohort": {
+    "fingerprint": "f3177a2fd9b69434a0cc91856bd13da45d9b0a1f4a8a6b240b7fa16e213644dd",
+    "mode": "smoke",
+    "smoke_recording_count": 10,
+    "smoke_subset_limit": 10
+  },
+  "cohort_fingerprint": "40d257603786eeddcfc294a5168ef25f838ad96294669bfd647ae2ed9eda8d92",
+  "config_A": {
+    "hop_samples": 256,
+    "max_clip_sec": 15.0,
+    "min_clip_sec": 3.0,
+    "min_quiet_run_ms": null,
+    "name": "A_O50_8",
+    "offsets": [
+      0,
+      128
+    ],
+    "percentile_rms_margin_db": 3.0,
+    "percentile_rms_percentile": 10.0,
+    "preferred_max_sec": 8.0,
+    "preferred_min_sec": 6.0,
+    "sample_rate_hz": 16000,
+    "scoring": null,
+    "target_clip_sec": 8.0,
+    "vad_backend": "silero_official_onnx",
+    "vad_min_run_ms": 40.0,
+    "vad_threshold": 0.2,
+    "window_samples": 512
+  },
+  "config_D": {
+    "hop_samples": 512,
+    "max_clip_sec": 15.0,
+    "min_clip_sec": 3.0,
+    "min_quiet_run_ms": null,
+    "name": "D_O0_8",
+    "offsets": [
+      0,
+      128,
+      256,
+      384
+    ],
+    "percentile_rms_margin_db": 3.0,
+    "percentile_rms_percentile": 10.0,
+    "preferred_max_sec": 8.0,
+    "preferred_min_sec": 6.0,
+    "sample_rate_hz": 16000,
+    "scoring": null,
+    "target_clip_sec": 8.0,
+    "vad_backend": "silero_official_onnx",
+    "vad_min_run_ms": 40.0,
+    "vad_threshold": 0.2,
+    "window_samples": 512
+  },
+  "contender_configs": {
+    "A_O50_8": {
+      "hop_samples": 256,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "A_O50_8",
+      "offsets": [
+        0,
+        128
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "D_O0_8": {
+      "hop_samples": 512,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "D_O0_8",
+      "offsets": [
+        0,
+        128,
+        256,
+        384
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "O0_4": {
+      "hop_samples": 512,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "O0_4",
+      "offsets": [
+        0,
+        64,
+        128,
+        192,
+        256,
+        320,
+        384,
+        448
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "O25_4": {
+      "hop_samples": 384,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "O25_4",
+      "offsets": [
+        0,
+        64,
+        128,
+        192,
+        256,
+        320
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "O25_8": {
+      "hop_samples": 384,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "O25_8",
+      "offsets": [
+        0,
+        128,
+        256
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "O50_4": {
+      "hop_samples": 256,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "O50_4",
+      "offsets": [
+        0,
+        64,
+        128,
+        192
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "O75_8": {
+      "hop_samples": 128,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "O75_8",
+      "offsets": [
+        0
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    }
+  },
+  "contender_names": [
+    "A_O50_8",
+    "D_O0_8",
+    "O75_8",
+    "O25_8",
+    "O50_4",
+    "O25_4",
+    "O0_4"
+  ],
+  "geometry_fingerprint_A": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+  "geometry_fingerprint_D": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+  "geometry_fingerprints": {
+    "A_O50_8": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+    "D_O0_8": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+    "O0_4": "87130029b5443647ed1f1febd32ab768bf957a0a1698217eb3cf14b2d00c6ecf",
+    "O25_4": "5c718a3fdc193cf92e8babe55085d9a6c49c09e1bb11c69c0d3e71192acf39c2",
+    "O25_8": "f3dacc6d02c6a2fd8381c8a61319b8af6361c86e0ac1d1b5ebaf6e1d7b96eaec",
+    "O50_4": "663af3576597e4bfc82d3a4a28767d0d007bba5bc57790ca6cbea3de5be4a0ad",
+    "O75_8": "fb0d6f897d9dcf0b7e0660df48ca28e01a7ed3c98bca74d8793f14eba515dc41"
+  },
+  "git_commit": "1c0f79cbf0869f0b40cea63979d936f5bcc4daba",
+  "paths": {
+    "cohort_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort",
+    "normalized_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/normalized/corpus"
+  },
+  "policy_fingerprints": {
+    "A_O50_8": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+    "D_O0_8": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+    "O0_4": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+    "O25_4": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+    "O25_8": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+    "O50_4": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+    "O75_8": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d"
+  },
+  "public_cutpoint_population": "selected_schedule",
+  "recording_count": 10,
+  "run_timestamp": "2026-08-15T19:23:16.041797+00:00",
+  "selection_rule": "First accepted recording from speakers s01, s02, s04, s06, s08, s11, s16, s22, s24 in the frozen Phase-5 accepted cohort, plus historical s0301a. Not chosen from Phase-7 geometry scores.",
+  "subset": [
+    {
+      "recording_id": "s0101b",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0201b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0301a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0401b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0601a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0801a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s1101a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1601a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s2201a",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2401b",
+      "speaker_id": "s24"
+    }
+  ],
+  "vad_backend": "silero_official_onnx",
+  "workers": 2
+}

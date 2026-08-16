@@ -1,0 +1,1357 @@
+{
+  "ad_independence_guard": "passed on every recording",
+  "ad_observation_signatures_differed": true,
+  "cohort_fingerprint": "f3177a2fd9b69434a0cc91856bd13da45d9b0a1f4a8a6b240b7fa16e213644dd",
+  "comparison": [
+    {
+      "A": 0.6935342093978664,
+      "D": 0.6345371521964369,
+      "D - A": -0.05899705720142945,
+      "metric": "speech coverage"
+    },
+    {
+      "A": 23494.988464,
+      "D": 21496.33409400001,
+      "D - A": -1998.6543699999893,
+      "metric": "retained speech sec"
+    },
+    {
+      "A": 26551.248,
+      "D": 24342.472,
+      "D - A": -2208.775999999998,
+      "metric": "emitted sec"
+    },
+    {
+      "A": 4983,
+      "D": 4518,
+      "D - A": -465.0,
+      "metric": "clips"
+    },
+    {
+      "A": 9310,
+      "D": 8557,
+      "D - A": -753.0,
+      "metric": "selected cuts"
+    },
+    {
+      "A": 11.203007518796992,
+      "D": 8.57777258384948,
+      "D - A": -2.625234934947512,
+      "metric": "inside-phone %"
+    },
+    {
+      "A": 6.885069817400645,
+      "D": 4.335631646605119,
+      "D - A": -2.5494381707955256,
+      "metric": ">20 ms %"
+    },
+    {
+      "A": 1.4607948442534908,
+      "D": 0.993338786958046,
+      "D - A": -0.4674560572954448,
+      "metric": ">50 ms %"
+    },
+    {
+      "A": 0.1611170784103115,
+      "D": 0.21035409606170388,
+      "D - A": 0.04923701765139238,
+      "metric": ">100 ms %"
+    },
+    {
+      "A": 12.181416817178405,
+      "D": 8.908809207613988,
+      "D - A": -3.2726076095644174,
+      "metric": "final-edge inside-phone %"
+    },
+    {
+      "A": 1.926550270921132,
+      "D": 1.1730854360336431,
+      "D - A": -0.7534648348874888,
+      "metric": "final-edge >50 ms %"
+    }
+  ],
+  "contender_names": [
+    "A_O50_8",
+    "D_O0_8",
+    "O25_4",
+    "O0_4",
+    "O12.5_4",
+    "O0_2"
+  ],
+  "delta_vs_A": null,
+  "determinism_checks": [
+    {
+      "A_O50_8": {
+        "candidate_cutpoint_sha256": "835a283ac8a08d15a2c476ee85cc1038028df075c42b92849fa378efb48602be",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "6694f87bbf9bec0d96aa648a36a3c853910f2b919a606e785e1a7ee36fa5ab25",
+        "selected_cutpoint_sha256": "fde371348ffd3e0de0343f96160d7e7ec8b17b02029203168bb09da0d9d03b61",
+        "vad_observation_count": 69829,
+        "vad_probability_sha256": "384a554710434280e25c770cc87360cb0d79a3166be9cd62ec7f621d1a8f1c9b",
+        "vad_timestamp_sha256": "b5f8a95b25d461ec3215edf05f53a64020c432b08d7f50d8cefb5751856aba9b"
+      },
+      "D_O0_8": {
+        "candidate_cutpoint_sha256": "919e164726688c2b703b3f629f60ccb1d9ac0f7278041a59994a0f650f221e80",
+        "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "e9b3e8da1848e91e41072705207748d1d321528a01ab07ccb74231c93652581c",
+        "selected_cutpoint_sha256": "fc3091eebbf3ed5a9c717b82cd53e2fabbfd40bd8b92f8b184bea9a27ac54b93",
+        "vad_observation_count": 69829,
+        "vad_probability_sha256": "874417e3c83753978674a246cbdf37bdb8f41ee28bc6e79eb69892f80bb5a37b",
+        "vad_timestamp_sha256": "962658f962094f595f9b0cebfc00f56d83bd6d61daccfc01f6173c09c7055bc6"
+      },
+      "O0_2": {
+        "candidate_cutpoint_sha256": "5a56fffd24ccb3b4181ba4176689f53778c93f465afe41994421674b5e732a69",
+        "geometry_fingerprint": "b8f9c3af61c5c18d8b52a1cdb992e5c98e154bc752c5665b52bea987b6d3c947",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "b25cde7f4fcbcf0be17c45d6824570164b7b9d56f406b991bb04f5eb6de3d338",
+        "selected_cutpoint_sha256": "0fb5f5721cef8346bc0c39aadb105f00655084b3c0fc73a855b2de548b2d1aee",
+        "vad_observation_count": 279315,
+        "vad_probability_sha256": "c9bbc57c9cf2d639d5c981344ffe579d53e5df845a7816e5e227b96a736cccd9",
+        "vad_timestamp_sha256": "fe4e799b924c00133081c98246d51480eeb1eb5710b07afaf4ea9bfddc9eef1c"
+      },
+      "O0_4": {
+        "candidate_cutpoint_sha256": "2ab0ebe3ad0f23b799a7659fd42449a681a6c2a7f2281a69787839c75731ca57",
+        "geometry_fingerprint": "87130029b5443647ed1f1febd32ab768bf957a0a1698217eb3cf14b2d00c6ecf",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "b30ca7cab60532a8eb945a34f5853f41ceeff0068be93bf74e3f95fd318082ca",
+        "selected_cutpoint_sha256": "859d0c4cd3b83eaf7502c4710a4394c7135806d330b5d8a746af01d127bd64d8",
+        "vad_observation_count": 139658,
+        "vad_probability_sha256": "4e4584a5863e2d63a13b5175a0fbfdfe0457ab33a360df8c79c4a4b8e17f170c",
+        "vad_timestamp_sha256": "2782d4bb2a530808626b99eae1aeb3e51d6e4981e47584d4f3e9692b56a234f9"
+      },
+      "O12.5_4": {
+        "candidate_cutpoint_sha256": "19fdca54fb949cd27eb2d43d046df927cf7d7fc72b02c1fc98a41d3f948b7017",
+        "geometry_fingerprint": "c4a9d51af35f27f1e99f5960f01d8721e1c9a7ae761cc52d68b81ecc3366390d",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "10cae0ba08f0001903e24012df30cf19a4ba3e0355421c85d9261ff8bcb87078",
+        "selected_cutpoint_sha256": "a267902f21bc03e5692781164317ec9634a05bde7c3c548b4c40dc2378e447cf",
+        "vad_observation_count": 139658,
+        "vad_probability_sha256": "b9a094b3c03be59dee16c16aea87c0c4a0be8a460a57065fece38e327f54fdbe",
+        "vad_timestamp_sha256": "84554d9bc0abd6dd4cf0ff6e1617e70c7281ae0e064febf67688a127abeea598"
+      },
+      "O25_4": {
+        "candidate_cutpoint_sha256": "1bd14ce4c5f67d2fb21777d94e8a5a56097fb455384b65c1e209912dd015d8fe",
+        "geometry_fingerprint": "5c718a3fdc193cf92e8babe55085d9a6c49c09e1bb11c69c0d3e71192acf39c2",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "6db0490f3b1917dce995d8fdf1cbe1a445c222dc4ccd8e65285ef8064675cab5",
+        "selected_cutpoint_sha256": "9fa8643b6b061a68f84045aaf60bfd71b4ce0a1133f4ea53c8e1e7b407c8cd58",
+        "vad_observation_count": 139658,
+        "vad_probability_sha256": "d5c0cc36494cec66400e90f4f9b9ac285361a8c684e8b20c9c5ee6484d9ade54",
+        "vad_timestamp_sha256": "ab91a53220904c729eba6f2b4508bc5eb537415a15619e2bd9f6dc755686c64a"
+      },
+      "forward_order": [
+        "A_O50_8",
+        "D_O0_8",
+        "O25_4",
+        "O0_4",
+        "O12.5_4",
+        "O0_2"
+      ],
+      "passed": true,
+      "recording_id": "s0101b",
+      "reverse_order": [
+        "O0_2",
+        "O12.5_4",
+        "O0_4",
+        "O25_4",
+        "D_O0_8",
+        "A_O50_8"
+      ],
+      "speaker_id": "s01"
+    },
+    {
+      "A_O50_8": {
+        "candidate_cutpoint_sha256": "12146610a37051a1f8e90c287e16545143798869c501599a52ec5800badda105",
+        "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "1d5826f7cbd90bca25da3f8fb3a9cb4538aaf3308832a004b78258ee49aa6ca9",
+        "selected_cutpoint_sha256": "66ec8fd13ca9fc9ee607f6ac334afab37e69b91ce2ece79e7a2cace6037778ef",
+        "vad_observation_count": 57721,
+        "vad_probability_sha256": "b4a19a851a7ca77c773689a0cdc345fbe7a79b1d5da1617d40f5831795941c49",
+        "vad_timestamp_sha256": "b4c680e897c85f336578d41114edafdf0eea081b9cd811ff54a34ef00b13120a"
+      },
+      "D_O0_8": {
+        "candidate_cutpoint_sha256": "74b17f9d81f449282fe2823c8ebf86c347602a58fecaa8352c21b3a6f0f357e3",
+        "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "70fd35da56ec17a3852ffdf96ff6584d8c2c15b009d7c53fc157d6636ce2244d",
+        "selected_cutpoint_sha256": "8a29575685e9457a0db55a850b25e7f834ff0fc2674d89d48e2dde3c5d900183",
+        "vad_observation_count": 57721,
+        "vad_probability_sha256": "75b2353b799c643c6a3f677fab07ade2405ec5bcdb5cefada17ef8a5ff6ed156",
+        "vad_timestamp_sha256": "22911337e67f758624b91ff7c5d809db55d97438d5fd7b669f2f623489ecb8e0"
+      },
+      "O0_2": {
+        "candidate_cutpoint_sha256": "31093c0c0d67058916d95cbc986efdd623ad6dd882f387068ffd0c47fe50e478",
+        "geometry_fingerprint": "b8f9c3af61c5c18d8b52a1cdb992e5c98e154bc752c5665b52bea987b6d3c947",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "8761b6a1b2884324dca136f90255fb3caeb3979ae3e7efb06d1c2bfdb34462e5",
+        "selected_cutpoint_sha256": "84a82f901ef75d3ad249f0b5240028c4d573563f8f1a05f5169db4dd80cd1f01",
+        "vad_observation_count": 230882,
+        "vad_probability_sha256": "8db2e4c58a19111f418f716c450e7d4b132576cc0a4aff87685b40f84f998757",
+        "vad_timestamp_sha256": "29717728628e00672ea163cac13689c69dadc1844c0b52eebf1ef178b151fd60"
+      },
+      "O0_4": {
+        "candidate_cutpoint_sha256": "4387a9e44df5f2c8b417fb637f32e29973603154077e46cb0a5b46a4a6805bc7",
+        "geometry_fingerprint": "87130029b5443647ed1f1febd32ab768bf957a0a1698217eb3cf14b2d00c6ecf",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "4c7024a715951d43322d7b448bd67c0b9a727f4b529bd8324190024ba42a9587",
+        "selected_cutpoint_sha256": "7387375c92be61b3d106f29a97633f49c014dab5a80e1fba4d0997e47c31fece",
+        "vad_observation_count": 115441,
+        "vad_probability_sha256": "51efa3a39e4a0c51107086fbbd5706dd0be651f3b4cef7ca9ddf872c424d528b",
+        "vad_timestamp_sha256": "3f26453248aacdfc10a1215d4863cabe7763d3f584cb6899c632811cbd6b23d0"
+      },
+      "O12.5_4": {
+        "candidate_cutpoint_sha256": "00facbb698915cf8ac8489c292006b24cf3412bccbcd5a59ccd9cc0c1e524ba0",
+        "geometry_fingerprint": "c4a9d51af35f27f1e99f5960f01d8721e1c9a7ae761cc52d68b81ecc3366390d",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "91b69666065eadb79b8a1f2e96cea16e7146c33097f718524ae74b6be4166d41",
+        "selected_cutpoint_sha256": "f0031ae6724bc13e9338544fbd1ceb5d22dde086361797ed6d63a62788448fd6",
+        "vad_observation_count": 115441,
+        "vad_probability_sha256": "8d7494c926b082dc3c8cb53981d2bf3b02fb6722fa4dbf647b26467ff0a94f96",
+        "vad_timestamp_sha256": "3b71257100a3719adb07a8f1451ae48442446fae45d058f89c5ff2729a459fc8"
+      },
+      "O25_4": {
+        "candidate_cutpoint_sha256": "873598630cc3dfde108a896644cba4887f640095fed6b1d963f2f46f9936dcd2",
+        "geometry_fingerprint": "5c718a3fdc193cf92e8babe55085d9a6c49c09e1bb11c69c0d3e71192acf39c2",
+        "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+        "selected_clip_sha256": "f177aa986a827b5a1b0c2cb0ffad1744bafbb5c693a8260d07a1d0ccd1a8d275",
+        "selected_cutpoint_sha256": "addcf4d67798b13152e42696032c61cee12e2b191ae2f31e2914761c3eaee09d",
+        "vad_observation_count": 115441,
+        "vad_probability_sha256": "3cddfaa77efae65ca6abb50e1a81521dc62c5474f6632a62f800b9b5bbba476c",
+        "vad_timestamp_sha256": "d37b9cd71c95d452df5e3a8642a23b8d3ae13fbe19dfd06f6a29b074697651f0"
+      },
+      "forward_order": [
+        "A_O50_8",
+        "D_O0_8",
+        "O25_4",
+        "O0_4",
+        "O12.5_4",
+        "O0_2"
+      ],
+      "passed": true,
+      "recording_id": "s1102a",
+      "reverse_order": [
+        "O0_2",
+        "O12.5_4",
+        "O0_4",
+        "O25_4",
+        "D_O0_8",
+        "A_O50_8"
+      ],
+      "speaker_id": "s11"
+    }
+  ],
+  "elapsed_by_geometry": {
+    "A_O50_8": 832.815824,
+    "D_O0_8": 791.844063,
+    "O0_2": 3117.436683,
+    "O0_4": 1566.79563,
+    "O12.5_4": 1561.249215,
+    "O25_4": 1564.341211
+  },
+  "elapsed_sec": 5087.745329296995,
+  "four_way": null,
+  "geometry_delta_vs_A": [
+    {
+      "D_O0_8": -0.05899705720142945,
+      "O0_2": -0.03098959712488547,
+      "O0_4": -0.0411413745351803,
+      "O12.5_4": -0.012175650406170857,
+      "O25_4": -0.0038602079325189553,
+      "metric": "speech coverage"
+    },
+    {
+      "D_O0_8": -2208.775999999998,
+      "O0_2": -1094.446,
+      "O0_4": -1504.2079999999987,
+      "O12.5_4": -415.03199999999197,
+      "O25_4": -102.81199999999808,
+      "metric": "emitted sec"
+    },
+    {
+      "D_O0_8": -2.625234934947512,
+      "O0_2": -2.6876013563320065,
+      "O0_4": -2.7322855176599834,
+      "O12.5_4": -2.297545794734699,
+      "O25_4": -1.9429469389614233,
+      "metric": "inside-phone %"
+    },
+    {
+      "D_O0_8": -0.4674560572954448,
+      "O0_2": -0.6092542280069922,
+      "O0_4": -0.4715964360670213,
+      "O12.5_4": -0.4408343265961099,
+      "O25_4": -0.2708337884334995,
+      "metric": ">50 ms %"
+    },
+    {
+      "D_O0_8": 0.04923701765139238,
+      "O0_2": 0.018154630273161887,
+      "O0_4": 0.032174564568653835,
+      "O12.5_4": 0.03629463468466548,
+      "O25_4": 0.03360382163295983,
+      "metric": ">100 ms %"
+    }
+  ],
+  "geometry_table": [
+    {
+      "A_O50_8": 0.6935342093978664,
+      "D_O0_8": 0.6345371521964369,
+      "O0_2": 0.6625446122729809,
+      "O0_4": 0.6523928348626861,
+      "O12.5_4": 0.6813585589916955,
+      "O25_4": 0.6896740014653474,
+      "metric": "speech coverage"
+    },
+    {
+      "A_O50_8": 23494.988464,
+      "D_O0_8": 21496.33409400001,
+      "O0_2": 22445.14807100001,
+      "O0_4": 22101.234404000003,
+      "O12.5_4": 23082.511672000008,
+      "O25_4": 23364.215476,
+      "metric": "retained speech sec"
+    },
+    {
+      "A_O50_8": 26551.248,
+      "D_O0_8": 24342.472,
+      "O0_2": 25456.802,
+      "O0_4": 25047.04,
+      "O12.5_4": 26136.216000000008,
+      "O25_4": 26448.436,
+      "metric": "emitted sec"
+    },
+    {
+      "A_O50_8": 4983,
+      "D_O0_8": 4518,
+      "O0_2": 4726,
+      "O0_4": 4651,
+      "O12.5_4": 4852,
+      "O25_4": 4935,
+      "metric": "clips"
+    },
+    {
+      "A_O50_8": 9310,
+      "D_O0_8": 8557,
+      "O0_2": 8925,
+      "O0_4": 8795,
+      "O12.5_4": 9118,
+      "O25_4": 9244,
+      "metric": "selected cuts"
+    },
+    {
+      "A_O50_8": 11.203007518796992,
+      "D_O0_8": 8.57777258384948,
+      "O0_2": 8.515406162464986,
+      "O0_4": 8.470722001137009,
+      "O12.5_4": 8.905461724062294,
+      "O25_4": 9.260060579835569,
+      "metric": "inside-phone %"
+    },
+    {
+      "A_O50_8": 6.885069817400645,
+      "D_O0_8": 4.335631646605119,
+      "O0_2": 4.168067226890757,
+      "O0_4": 4.138715179079022,
+      "O12.5_4": 4.419828909848651,
+      "O25_4": 5.095196884465599,
+      "metric": ">20 ms %"
+    },
+    {
+      "A_O50_8": 1.4607948442534908,
+      "D_O0_8": 0.993338786958046,
+      "O0_2": 0.8515406162464986,
+      "O0_4": 0.9891984081864695,
+      "O12.5_4": 1.019960517657381,
+      "O25_4": 1.1899610558199913,
+      "metric": ">50 ms %"
+    },
+    {
+      "A_O50_8": 0.1611170784103115,
+      "D_O0_8": 0.21035409606170388,
+      "O0_2": 0.1792717086834734,
+      "O0_4": 0.19329164297896534,
+      "O12.5_4": 0.197411713094977,
+      "O25_4": 0.19472090004327133,
+      "metric": ">100 ms %"
+    },
+    {
+      "A_O50_8": 12.181416817178405,
+      "D_O0_8": 8.908809207613988,
+      "O0_2": 8.897587812103257,
+      "O0_4": 8.804558159535583,
+      "O12.5_4": 9.367271228359439,
+      "O25_4": 9.969604863221884,
+      "metric": "final-edge inside-phone %"
+    },
+    {
+      "A_O50_8": 7.786474011639574,
+      "D_O0_8": 4.581673306772909,
+      "O0_2": 4.52814219212865,
+      "O0_4": 4.439905396688884,
+      "O12.5_4": 4.843363561417972,
+      "O25_4": 5.7649442755825735,
+      "metric": "final-edge >20 ms %"
+    },
+    {
+      "A_O50_8": 1.926550270921132,
+      "D_O0_8": 1.1730854360336431,
+      "O0_2": 1.0473973762166737,
+      "O0_4": 1.1825413889486132,
+      "O12.5_4": 1.2675185490519374,
+      "O25_4": 1.5096251266464034,
+      "metric": "final-edge >50 ms %"
+    },
+    {
+      "A_O50_8": 0.2608870158539033,
+      "D_O0_8": 0.27667109340416113,
+      "O0_2": 0.23275497249259416,
+      "O0_4": 0.25800903031606104,
+      "O12.5_4": 0.2679307502061006,
+      "O25_4": 0.2735562310030395,
+      "metric": "final-edge >100 ms %"
+    }
+  ],
+  "historical_comparison": null,
+  "order_independence_recording": {
+    "A_O50_8": {
+      "candidate_cutpoint_sha256": "835a283ac8a08d15a2c476ee85cc1038028df075c42b92849fa378efb48602be",
+      "geometry_fingerprint": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+      "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+      "selected_clip_sha256": "6694f87bbf9bec0d96aa648a36a3c853910f2b919a606e785e1a7ee36fa5ab25",
+      "selected_cutpoint_sha256": "fde371348ffd3e0de0343f96160d7e7ec8b17b02029203168bb09da0d9d03b61",
+      "vad_observation_count": 69829,
+      "vad_probability_sha256": "384a554710434280e25c770cc87360cb0d79a3166be9cd62ec7f621d1a8f1c9b",
+      "vad_timestamp_sha256": "b5f8a95b25d461ec3215edf05f53a64020c432b08d7f50d8cefb5751856aba9b"
+    },
+    "D_O0_8": {
+      "candidate_cutpoint_sha256": "919e164726688c2b703b3f629f60ccb1d9ac0f7278041a59994a0f650f221e80",
+      "geometry_fingerprint": "b35b56fbf50e01487bef7f59ef870fe839ea7b8d3f84afb9014d7c5503a3e4dc",
+      "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+      "selected_clip_sha256": "e9b3e8da1848e91e41072705207748d1d321528a01ab07ccb74231c93652581c",
+      "selected_cutpoint_sha256": "fc3091eebbf3ed5a9c717b82cd53e2fabbfd40bd8b92f8b184bea9a27ac54b93",
+      "vad_observation_count": 69829,
+      "vad_probability_sha256": "874417e3c83753978674a246cbdf37bdb8f41ee28bc6e79eb69892f80bb5a37b",
+      "vad_timestamp_sha256": "962658f962094f595f9b0cebfc00f56d83bd6d61daccfc01f6173c09c7055bc6"
+    },
+    "O0_2": {
+      "candidate_cutpoint_sha256": "5a56fffd24ccb3b4181ba4176689f53778c93f465afe41994421674b5e732a69",
+      "geometry_fingerprint": "b8f9c3af61c5c18d8b52a1cdb992e5c98e154bc752c5665b52bea987b6d3c947",
+      "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+      "selected_clip_sha256": "b25cde7f4fcbcf0be17c45d6824570164b7b9d56f406b991bb04f5eb6de3d338",
+      "selected_cutpoint_sha256": "0fb5f5721cef8346bc0c39aadb105f00655084b3c0fc73a855b2de548b2d1aee",
+      "vad_observation_count": 279315,
+      "vad_probability_sha256": "c9bbc57c9cf2d639d5c981344ffe579d53e5df845a7816e5e227b96a736cccd9",
+      "vad_timestamp_sha256": "fe4e799b924c00133081c98246d51480eeb1eb5710b07afaf4ea9bfddc9eef1c"
+    },
+    "O0_4": {
+      "candidate_cutpoint_sha256": "2ab0ebe3ad0f23b799a7659fd42449a681a6c2a7f2281a69787839c75731ca57",
+      "geometry_fingerprint": "87130029b5443647ed1f1febd32ab768bf957a0a1698217eb3cf14b2d00c6ecf",
+      "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+      "selected_clip_sha256": "b30ca7cab60532a8eb945a34f5853f41ceeff0068be93bf74e3f95fd318082ca",
+      "selected_cutpoint_sha256": "859d0c4cd3b83eaf7502c4710a4394c7135806d330b5d8a746af01d127bd64d8",
+      "vad_observation_count": 139658,
+      "vad_probability_sha256": "4e4584a5863e2d63a13b5175a0fbfdfe0457ab33a360df8c79c4a4b8e17f170c",
+      "vad_timestamp_sha256": "2782d4bb2a530808626b99eae1aeb3e51d6e4981e47584d4f3e9692b56a234f9"
+    },
+    "O12.5_4": {
+      "candidate_cutpoint_sha256": "19fdca54fb949cd27eb2d43d046df927cf7d7fc72b02c1fc98a41d3f948b7017",
+      "geometry_fingerprint": "c4a9d51af35f27f1e99f5960f01d8721e1c9a7ae761cc52d68b81ecc3366390d",
+      "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+      "selected_clip_sha256": "10cae0ba08f0001903e24012df30cf19a4ba3e0355421c85d9261ff8bcb87078",
+      "selected_cutpoint_sha256": "a267902f21bc03e5692781164317ec9634a05bde7c3c548b4c40dc2378e447cf",
+      "vad_observation_count": 139658,
+      "vad_probability_sha256": "b9a094b3c03be59dee16c16aea87c0c4a0be8a460a57065fece38e327f54fdbe",
+      "vad_timestamp_sha256": "84554d9bc0abd6dd4cf0ff6e1617e70c7281ae0e064febf67688a127abeea598"
+    },
+    "O25_4": {
+      "candidate_cutpoint_sha256": "1bd14ce4c5f67d2fb21777d94e8a5a56097fb455384b65c1e209912dd015d8fe",
+      "geometry_fingerprint": "5c718a3fdc193cf92e8babe55085d9a6c49c09e1bb11c69c0d3e71192acf39c2",
+      "policy_fingerprint": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+      "selected_clip_sha256": "6db0490f3b1917dce995d8fdf1cbe1a445c222dc4ccd8e65285ef8064675cab5",
+      "selected_cutpoint_sha256": "9fa8643b6b061a68f84045aaf60bfd71b4ce0a1133f4ea53c8e1e7b407c8cd58",
+      "vad_observation_count": 139658,
+      "vad_probability_sha256": "d5c0cc36494cec66400e90f4f9b9ac285361a8c684e8b20c9c5ee6484d9ade54",
+      "vad_timestamp_sha256": "ab91a53220904c729eba6f2b4508bc5eb537415a15619e2bd9f6dc755686c64a"
+    },
+    "forward_order": [
+      "A_O50_8",
+      "D_O0_8",
+      "O25_4",
+      "O0_4",
+      "O12.5_4",
+      "O0_2"
+    ],
+    "passed": true,
+    "recording_id": "s0101b",
+    "reverse_order": [
+      "O0_2",
+      "O12.5_4",
+      "O0_4",
+      "O25_4",
+      "D_O0_8",
+      "A_O50_8"
+    ],
+    "speaker_id": "s01"
+  },
+  "paired_coverage": {
+    "a_safer_gt50ms": null,
+    "baseline_safer_gt50ms": 41,
+    "contender_safer_gt50ms": 45,
+    "coverage_greater": 8,
+    "coverage_less": 111,
+    "coverage_ties": 1,
+    "d_coverage_greater": null,
+    "d_coverage_less": null,
+    "d_safer_gt50ms": null,
+    "gt50ms_ties": 34,
+    "gt50ms_undefined": 0,
+    "left": "A_O50_8",
+    "mean_d_minus_a_coverage": null,
+    "mean_d_minus_a_coverage_pp": null,
+    "mean_delta_coverage": -0.059134431397297745,
+    "mean_delta_coverage_pp": -5.913443139729774,
+    "median_d_minus_a_coverage": null,
+    "median_d_minus_a_coverage_pp": null,
+    "median_delta_coverage": -0.04670551747275781,
+    "median_delta_coverage_pp": -4.6705517472757805,
+    "recording_count": 120,
+    "right": "D_O0_8"
+  },
+  "paired_vs_A": null,
+  "paired_vs_baseline": {
+    "D_O0_8": {
+      "a_safer_gt50ms": null,
+      "baseline_safer_gt50ms": 41,
+      "contender_safer_gt50ms": 45,
+      "coverage_greater": 8,
+      "coverage_less": 111,
+      "coverage_ties": 1,
+      "d_coverage_greater": null,
+      "d_coverage_less": null,
+      "d_safer_gt50ms": null,
+      "gt50ms_ties": 34,
+      "gt50ms_undefined": 0,
+      "left": "A_O50_8",
+      "mean_d_minus_a_coverage": null,
+      "mean_d_minus_a_coverage_pp": null,
+      "mean_delta_coverage": -0.059134431397297745,
+      "mean_delta_coverage_pp": -5.913443139729774,
+      "median_d_minus_a_coverage": null,
+      "median_d_minus_a_coverage_pp": null,
+      "median_delta_coverage": -0.04670551747275781,
+      "median_delta_coverage_pp": -4.6705517472757805,
+      "recording_count": 120,
+      "right": "D_O0_8"
+    },
+    "O0_2": {
+      "a_safer_gt50ms": null,
+      "baseline_safer_gt50ms": 37,
+      "contender_safer_gt50ms": 49,
+      "coverage_greater": 23,
+      "coverage_less": 96,
+      "coverage_ties": 1,
+      "d_coverage_greater": null,
+      "d_coverage_less": null,
+      "d_safer_gt50ms": null,
+      "gt50ms_ties": 34,
+      "gt50ms_undefined": 0,
+      "left": "A_O50_8",
+      "mean_d_minus_a_coverage": null,
+      "mean_d_minus_a_coverage_pp": null,
+      "mean_delta_coverage": -0.03244912583676276,
+      "mean_delta_coverage_pp": -3.244912583676276,
+      "median_d_minus_a_coverage": null,
+      "median_d_minus_a_coverage_pp": null,
+      "median_delta_coverage": -0.023833646028520283,
+      "median_delta_coverage_pp": -2.383364602852028,
+      "recording_count": 120,
+      "right": "O0_2"
+    },
+    "O0_4": {
+      "a_safer_gt50ms": null,
+      "baseline_safer_gt50ms": 39,
+      "contender_safer_gt50ms": 47,
+      "coverage_greater": 18,
+      "coverage_less": 101,
+      "coverage_ties": 1,
+      "d_coverage_greater": null,
+      "d_coverage_less": null,
+      "d_safer_gt50ms": null,
+      "gt50ms_ties": 34,
+      "gt50ms_undefined": 0,
+      "left": "A_O50_8",
+      "mean_d_minus_a_coverage": null,
+      "mean_d_minus_a_coverage_pp": null,
+      "mean_delta_coverage": -0.041639943461253735,
+      "mean_delta_coverage_pp": -4.1639943461253734,
+      "median_d_minus_a_coverage": null,
+      "median_d_minus_a_coverage_pp": null,
+      "median_delta_coverage": -0.028868344044636063,
+      "median_delta_coverage_pp": -2.886834404463606,
+      "recording_count": 120,
+      "right": "O0_4"
+    },
+    "O12.5_4": {
+      "a_safer_gt50ms": null,
+      "baseline_safer_gt50ms": 35,
+      "contender_safer_gt50ms": 39,
+      "coverage_greater": 35,
+      "coverage_less": 84,
+      "coverage_ties": 1,
+      "d_coverage_greater": null,
+      "d_coverage_less": null,
+      "d_safer_gt50ms": null,
+      "gt50ms_ties": 46,
+      "gt50ms_undefined": 0,
+      "left": "A_O50_8",
+      "mean_d_minus_a_coverage": null,
+      "mean_d_minus_a_coverage_pp": null,
+      "mean_delta_coverage": -0.012780767601702032,
+      "mean_delta_coverage_pp": -1.2780767601702032,
+      "median_d_minus_a_coverage": null,
+      "median_d_minus_a_coverage_pp": null,
+      "median_delta_coverage": -0.007106149980051768,
+      "median_delta_coverage_pp": -0.7106149980051768,
+      "recording_count": 120,
+      "right": "O12.5_4"
+    },
+    "O25_4": {
+      "a_safer_gt50ms": null,
+      "baseline_safer_gt50ms": 30,
+      "contender_safer_gt50ms": 42,
+      "coverage_greater": 60,
+      "coverage_less": 59,
+      "coverage_ties": 1,
+      "d_coverage_greater": null,
+      "d_coverage_less": null,
+      "d_safer_gt50ms": null,
+      "gt50ms_ties": 48,
+      "gt50ms_undefined": 0,
+      "left": "A_O50_8",
+      "mean_d_minus_a_coverage": null,
+      "mean_d_minus_a_coverage_pp": null,
+      "mean_delta_coverage": -0.004513730337889571,
+      "mean_delta_coverage_pp": -0.4513730337889571,
+      "median_d_minus_a_coverage": null,
+      "median_d_minus_a_coverage_pp": null,
+      "median_delta_coverage": 3.528069246389043e-06,
+      "median_delta_coverage_pp": 0.0003528069246389043,
+      "recording_count": 120,
+      "right": "O25_4"
+    }
+  },
+  "pareto": null,
+  "passed": true,
+  "pooled": {
+    "A_O50_8": {
+      "clip_count": 4983,
+      "depth_gt_100ms_count": 15,
+      "depth_gt_100ms_rate": 0.001611170784103115,
+      "depth_gt_20ms_count": 641,
+      "depth_gt_20ms_rate": 0.06885069817400645,
+      "depth_gt_50ms_count": 136,
+      "depth_gt_50ms_rate": 0.014607948442534909,
+      "edge_depth_gt_100ms_count": 26,
+      "edge_depth_gt_100ms_rate": 0.0026088701585390327,
+      "edge_depth_gt_20ms_count": 776,
+      "edge_depth_gt_20ms_rate": 0.07786474011639574,
+      "edge_depth_gt_50ms_count": 192,
+      "edge_depth_gt_50ms_rate": 0.01926550270921132,
+      "edge_inside_phone_count": 1214,
+      "edge_inside_phone_rate": 0.12181416817178406,
+      "edge_occurrence_count": 9966,
+      "eligible_target_speech_sec": 33877.187521,
+      "emitted_audio_sec": 26551.248,
+      "inside_phone_count": 1043,
+      "inside_phone_rate": 0.11203007518796992,
+      "mean_clip_duration_sec": 5.328366044551475,
+      "retained_target_speech_sec": 23494.988464,
+      "speech_coverage": 0.6935342093978664,
+      "unique_cutpoint_count": 9310
+    },
+    "D_O0_8": {
+      "clip_count": 4518,
+      "depth_gt_100ms_count": 18,
+      "depth_gt_100ms_rate": 0.0021035409606170387,
+      "depth_gt_20ms_count": 371,
+      "depth_gt_20ms_rate": 0.04335631646605119,
+      "depth_gt_50ms_count": 85,
+      "depth_gt_50ms_rate": 0.00993338786958046,
+      "edge_depth_gt_100ms_count": 25,
+      "edge_depth_gt_100ms_rate": 0.0027667109340416113,
+      "edge_depth_gt_20ms_count": 414,
+      "edge_depth_gt_20ms_rate": 0.045816733067729085,
+      "edge_depth_gt_50ms_count": 106,
+      "edge_depth_gt_50ms_rate": 0.011730854360336431,
+      "edge_inside_phone_count": 805,
+      "edge_inside_phone_rate": 0.08908809207613988,
+      "edge_occurrence_count": 9036,
+      "eligible_target_speech_sec": 33877.187521,
+      "emitted_audio_sec": 24342.472,
+      "inside_phone_count": 734,
+      "inside_phone_rate": 0.0857777258384948,
+      "mean_clip_duration_sec": 5.387886675520142,
+      "retained_target_speech_sec": 21496.33409400001,
+      "speech_coverage": 0.6345371521964369,
+      "unique_cutpoint_count": 8557
+    },
+    "O0_2": {
+      "clip_count": 4726,
+      "depth_gt_100ms_count": 16,
+      "depth_gt_100ms_rate": 0.001792717086834734,
+      "depth_gt_20ms_count": 372,
+      "depth_gt_20ms_rate": 0.041680672268907565,
+      "depth_gt_50ms_count": 76,
+      "depth_gt_50ms_rate": 0.008515406162464986,
+      "edge_depth_gt_100ms_count": 22,
+      "edge_depth_gt_100ms_rate": 0.0023275497249259417,
+      "edge_depth_gt_20ms_count": 428,
+      "edge_depth_gt_20ms_rate": 0.0452814219212865,
+      "edge_depth_gt_50ms_count": 99,
+      "edge_depth_gt_50ms_rate": 0.010473973762166737,
+      "edge_inside_phone_count": 841,
+      "edge_inside_phone_rate": 0.08897587812103258,
+      "edge_occurrence_count": 9452,
+      "eligible_target_speech_sec": 33877.187521,
+      "emitted_audio_sec": 25456.802,
+      "inside_phone_count": 760,
+      "inside_phone_rate": 0.08515406162464986,
+      "mean_clip_duration_sec": 5.386542953872197,
+      "retained_target_speech_sec": 22445.14807100001,
+      "speech_coverage": 0.6625446122729809,
+      "unique_cutpoint_count": 8925
+    },
+    "O0_4": {
+      "clip_count": 4651,
+      "depth_gt_100ms_count": 17,
+      "depth_gt_100ms_rate": 0.0019329164297896533,
+      "depth_gt_20ms_count": 364,
+      "depth_gt_20ms_rate": 0.04138715179079022,
+      "depth_gt_50ms_count": 87,
+      "depth_gt_50ms_rate": 0.009891984081864695,
+      "edge_depth_gt_100ms_count": 24,
+      "edge_depth_gt_100ms_rate": 0.0025800903031606105,
+      "edge_depth_gt_20ms_count": 413,
+      "edge_depth_gt_20ms_rate": 0.04439905396688884,
+      "edge_depth_gt_50ms_count": 110,
+      "edge_depth_gt_50ms_rate": 0.011825413889486132,
+      "edge_inside_phone_count": 819,
+      "edge_inside_phone_rate": 0.08804558159535583,
+      "edge_occurrence_count": 9302,
+      "eligible_target_speech_sec": 33877.187521,
+      "emitted_audio_sec": 25047.04,
+      "inside_phone_count": 745,
+      "inside_phone_rate": 0.0847072200113701,
+      "mean_clip_duration_sec": 5.385302085572995,
+      "retained_target_speech_sec": 22101.234404000003,
+      "speech_coverage": 0.6523928348626861,
+      "unique_cutpoint_count": 8795
+    },
+    "O12.5_4": {
+      "clip_count": 4852,
+      "depth_gt_100ms_count": 18,
+      "depth_gt_100ms_rate": 0.0019741171309497698,
+      "depth_gt_20ms_count": 403,
+      "depth_gt_20ms_rate": 0.04419828909848651,
+      "depth_gt_50ms_count": 93,
+      "depth_gt_50ms_rate": 0.01019960517657381,
+      "edge_depth_gt_100ms_count": 26,
+      "edge_depth_gt_100ms_rate": 0.0026793075020610057,
+      "edge_depth_gt_20ms_count": 470,
+      "edge_depth_gt_20ms_rate": 0.04843363561417972,
+      "edge_depth_gt_50ms_count": 123,
+      "edge_depth_gt_50ms_rate": 0.012675185490519374,
+      "edge_inside_phone_count": 909,
+      "edge_inside_phone_rate": 0.09367271228359439,
+      "edge_occurrence_count": 9704,
+      "eligible_target_speech_sec": 33877.187521,
+      "emitted_audio_sec": 26136.216000000008,
+      "inside_phone_count": 812,
+      "inside_phone_rate": 0.08905461724062294,
+      "mean_clip_duration_sec": 5.386689200329762,
+      "retained_target_speech_sec": 23082.511672000008,
+      "speech_coverage": 0.6813585589916955,
+      "unique_cutpoint_count": 9118
+    },
+    "O25_4": {
+      "clip_count": 4935,
+      "depth_gt_100ms_count": 18,
+      "depth_gt_100ms_rate": 0.0019472090004327132,
+      "depth_gt_20ms_count": 471,
+      "depth_gt_20ms_rate": 0.05095196884465599,
+      "depth_gt_50ms_count": 110,
+      "depth_gt_50ms_rate": 0.011899610558199913,
+      "edge_depth_gt_100ms_count": 27,
+      "edge_depth_gt_100ms_rate": 0.002735562310030395,
+      "edge_depth_gt_20ms_count": 569,
+      "edge_depth_gt_20ms_rate": 0.05764944275582574,
+      "edge_depth_gt_50ms_count": 149,
+      "edge_depth_gt_50ms_rate": 0.015096251266464033,
+      "edge_inside_phone_count": 984,
+      "edge_inside_phone_rate": 0.09969604863221884,
+      "edge_occurrence_count": 9870,
+      "eligible_target_speech_sec": 33877.187521,
+      "emitted_audio_sec": 26448.436,
+      "inside_phone_count": 856,
+      "inside_phone_rate": 0.09260060579835569,
+      "mean_clip_duration_sec": 5.359358865248227,
+      "retained_target_speech_sec": 23364.215476,
+      "speech_coverage": 0.6896740014653474,
+      "unique_cutpoint_count": 9244
+    }
+  },
+  "pooled_A": {
+    "clip_count": 4983,
+    "depth_gt_100ms_count": 15,
+    "depth_gt_100ms_rate": 0.001611170784103115,
+    "depth_gt_20ms_count": 641,
+    "depth_gt_20ms_rate": 0.06885069817400645,
+    "depth_gt_50ms_count": 136,
+    "depth_gt_50ms_rate": 0.014607948442534909,
+    "edge_depth_gt_100ms_count": 26,
+    "edge_depth_gt_100ms_rate": 0.0026088701585390327,
+    "edge_depth_gt_20ms_count": 776,
+    "edge_depth_gt_20ms_rate": 0.07786474011639574,
+    "edge_depth_gt_50ms_count": 192,
+    "edge_depth_gt_50ms_rate": 0.01926550270921132,
+    "edge_inside_phone_count": 1214,
+    "edge_inside_phone_rate": 0.12181416817178406,
+    "edge_occurrence_count": 9966,
+    "eligible_target_speech_sec": 33877.187521,
+    "emitted_audio_sec": 26551.248,
+    "inside_phone_count": 1043,
+    "inside_phone_rate": 0.11203007518796992,
+    "mean_clip_duration_sec": 5.328366044551475,
+    "retained_target_speech_sec": 23494.988464,
+    "speech_coverage": 0.6935342093978664,
+    "unique_cutpoint_count": 9310
+  },
+  "pooled_D": {
+    "clip_count": 4518,
+    "depth_gt_100ms_count": 18,
+    "depth_gt_100ms_rate": 0.0021035409606170387,
+    "depth_gt_20ms_count": 371,
+    "depth_gt_20ms_rate": 0.04335631646605119,
+    "depth_gt_50ms_count": 85,
+    "depth_gt_50ms_rate": 0.00993338786958046,
+    "edge_depth_gt_100ms_count": 25,
+    "edge_depth_gt_100ms_rate": 0.0027667109340416113,
+    "edge_depth_gt_20ms_count": 414,
+    "edge_depth_gt_20ms_rate": 0.045816733067729085,
+    "edge_depth_gt_50ms_count": 106,
+    "edge_depth_gt_50ms_rate": 0.011730854360336431,
+    "edge_inside_phone_count": 805,
+    "edge_inside_phone_rate": 0.08908809207613988,
+    "edge_occurrence_count": 9036,
+    "eligible_target_speech_sec": 33877.187521,
+    "emitted_audio_sec": 24342.472,
+    "inside_phone_count": 734,
+    "inside_phone_rate": 0.0857777258384948,
+    "mean_clip_duration_sec": 5.387886675520142,
+    "retained_target_speech_sec": 21496.33409400001,
+    "speech_coverage": 0.6345371521964369,
+    "unique_cutpoint_count": 8557
+  },
+  "qualitative": {
+    "a_higher_yield": true,
+    "d_safer": true,
+    "historical_shape_recovered": true,
+    "note": "A generally higher yield and D generally safer"
+  },
+  "recording_count": 120,
+  "schedule_differed_from_A_recordings": {
+    "A_O50_8": 0,
+    "D_O0_8": 0,
+    "O0_2": 0,
+    "O0_4": 0,
+    "O12.5_4": 0,
+    "O25_4": 0
+  },
+  "selection_rule": "Every recording from speakers with accepted_recording_count > 0 in canonical/acoustic_matrix/cohort/speaker_cohort_summary.csv that is in the frozen reconciliation, not excluded, and has at least one raw NeMo target buffer. Review-required and excluded recordings are not added.",
+  "subset": [
+    {
+      "recording_id": "s0101b",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0102a",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0102b",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0103a",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0201b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0202b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0203a",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0203b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0204a",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0204b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0205b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0206a",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0301a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0301b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0302a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0302b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0303a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0303b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0304a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0304b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0305a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0305b",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0306a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0401b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0402a",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0402b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0403a",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0403b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0501a",
+      "speaker_id": "s05"
+    },
+    {
+      "recording_id": "s0503a",
+      "speaker_id": "s05"
+    },
+    {
+      "recording_id": "s0504a",
+      "speaker_id": "s05"
+    },
+    {
+      "recording_id": "s0601a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0602a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0602b",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0603a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0701a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0701b",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0702a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0702b",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0703a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0703b",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0704a",
+      "speaker_id": "s07"
+    },
+    {
+      "recording_id": "s0801a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0801b",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0802b",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0803a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0803b",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0804a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s0901a",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0901b",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0902a",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0902b",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0903a",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s0903b",
+      "speaker_id": "s09"
+    },
+    {
+      "recording_id": "s1001a",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1001b",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1002a",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1002b",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1003b",
+      "speaker_id": "s10"
+    },
+    {
+      "recording_id": "s1101a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1102a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1102b",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1103a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1103b",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1104a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1104b",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1201a",
+      "speaker_id": "s12"
+    },
+    {
+      "recording_id": "s1202b",
+      "speaker_id": "s12"
+    },
+    {
+      "recording_id": "s1203a",
+      "speaker_id": "s12"
+    },
+    {
+      "recording_id": "s1301a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1301b",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1302a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1302b",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1303a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1303b",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1304a",
+      "speaker_id": "s13"
+    },
+    {
+      "recording_id": "s1401a",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1401b",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1402a",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1402b",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1403a",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1403b",
+      "speaker_id": "s14"
+    },
+    {
+      "recording_id": "s1501a",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1501b",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1502a",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1502b",
+      "speaker_id": "s15"
+    },
+    {
+      "recording_id": "s1601a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1601b",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1602a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1602b",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1603a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1604a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s1701a",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1702a",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1703a",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1703b",
+      "speaker_id": "s17"
+    },
+    {
+      "recording_id": "s1801a",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1801b",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1803a",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1803b",
+      "speaker_id": "s18"
+    },
+    {
+      "recording_id": "s1901a",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1902a",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1902b",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1904a",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s1904b",
+      "speaker_id": "s19"
+    },
+    {
+      "recording_id": "s2002b",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2003a",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2003b",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2004a",
+      "speaker_id": "s20"
+    },
+    {
+      "recording_id": "s2101b",
+      "speaker_id": "s21"
+    },
+    {
+      "recording_id": "s2102b",
+      "speaker_id": "s21"
+    },
+    {
+      "recording_id": "s2201a",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2201b",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2202b",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2203b",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2401b",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2402a",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2402b",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2403a",
+      "speaker_id": "s24"
+    },
+    {
+      "recording_id": "s2403b",
+      "speaker_id": "s24"
+    }
+  ],
+  "workers": 2
+}

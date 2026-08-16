@@ -91,11 +91,14 @@ Real Phase 6 four-contender comparison (A, D, min_quiet_run_64ms, quiet_run_scor
     scripts/run_phase6_finalists.py
 ```
 
-Phase 7 geometry smoke (prepared; do not run until reviewed):
+Phase 7 geometry smoke (10 recordings, original seven geometries) and full finalist run:
 
 ```bash
 /home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \
-    scripts/run_phase7_geometry_smoke.py --workers 1
+    scripts/run_phase7_geometry_smoke.py --workers 2
+/home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \
+    scripts/run_phase7_geometry_full.py \
+    --geometries A_O50_8,D_O0_8,O25_4,O0_4,O12.5_4,O0_2 --workers 2
 ```
 
 ## Current Interpretation
