@@ -1,0 +1,41 @@
+raw_clip_count,raw_emitted_sec,clips_lt_3,clips_gt_15,legal_clip_count,native_compatible,note,speaker_id,recording_id,system,mode,elapsed_sec,detector_runtime_sec,packing_runtime_sec
+87,229.00099999999995,51,0,36,True,native legal clips scored without merge/truncate,s01,s0101b,OpenVPI_native,native,0.022821,0.019613526012108196,0.0
+77,239.34899999999985,45,0,32,True,native legal clips scored without merge/truncate,s01,s0101b,librosa_native,native,1.852984,1.8496489330009354,0.0
+17,12.255999999999936,17,0,0,False,native output not directly benchmark-compatible,s01,s0101b,pydub_native,native,3.074375,3.071253264000916,0.0
+77,239.34899999999985,45,0,32,True,native legal clips scored without merge/truncate,s01,s0101b,ffmpeg_native,native,2.461472,2.456545611994443,0.0
+24,97.33399999999997,13,1,10,True,native legal clips scored without merge/truncate,s02,s0201b,OpenVPI_native,native,0.009219,0.008097842995994142,0.0
+23,97.63199999999998,12,1,10,True,native legal clips scored without merge/truncate,s02,s0201b,librosa_native,native,1.631297,1.6295420599926729,0.0
+17,6.222999999999979,17,0,0,False,native output not directly benchmark-compatible,s02,s0201b,pydub_native,native,1.474738,1.4735620679985004,0.0
+23,97.63199999999998,12,1,10,True,native legal clips scored without merge/truncate,s02,s0201b,ffmpeg_native,native,0.776531,0.7750229869961913,0.0
+40,176.43799999999996,17,0,23,True,native legal clips scored without merge/truncate,s03,s0301a,OpenVPI_native,native,0.01448,0.012860243001341587,0.0
+28,176.79999999999995,14,2,12,True,native legal clips scored without merge/truncate,s03,s0301a,librosa_native,native,0.009347,0.00793796600191854,0.0
+3,1.9200000000000088,3,0,0,False,native output not directly benchmark-compatible,s03,s0301a,pydub_native,native,2.787844,2.786168953000015,0.0
+28,176.79999999999995,14,2,12,True,native legal clips scored without merge/truncate,s03,s0301a,ffmpeg_native,native,0.995589,0.9935308120002446,0.0
+160,364.83199999999897,121,0,39,True,native legal clips scored without merge/truncate,s04,s0401b,OpenVPI_native,native,0.03422,0.02964134000467311,0.0
+149,367.1039999999989,112,0,37,True,native legal clips scored without merge/truncate,s04,s0401b,librosa_native,native,0.022456,0.018274514004588127,0.0
+46,29.535999999999554,46,0,0,False,native output not directly benchmark-compatible,s04,s0401b,pydub_native,native,4.346961,4.341631170007531,0.0
+149,367.1039999999989,112,0,37,True,native legal clips scored without merge/truncate,s04,s0401b,ffmpeg_native,native,4.681424,4.671834074029903,0.0
+88,272.8836249999997,45,0,43,True,native legal clips scored without merge/truncate,s06,s0601a,OpenVPI_native,native,0.020517,0.01755412600687123,0.0
+87,273.1536249999997,44,0,43,True,native legal clips scored without merge/truncate,s06,s0601a,librosa_native,native,0.01582,0.012955311001860537,0.0
+12,8.415999999999954,12,0,0,False,native output not directly benchmark-compatible,s06,s0601a,pydub_native,native,3.511768,3.5081980590002786,0.0
+87,273.1536249999997,44,0,43,True,native legal clips scored without merge/truncate,s06,s0601a,ffmpeg_native,native,2.684701,2.6790833640043274,0.0
+137,353.24999999999943,89,0,48,True,native legal clips scored without merge/truncate,s08,s0801a,OpenVPI_native,native,0.031492,0.027104365988634527,0.0
+131,354.1759999999994,86,0,45,True,native legal clips scored without merge/truncate,s08,s0801a,librosa_native,native,0.021592,0.0176522680085327,0.0
+44,26.911999999999807,44,0,0,False,native output not directly benchmark-compatible,s08,s0801a,pydub_native,native,4.516638,4.511086704027548,0.0
+131,354.1759999999994,86,0,45,True,native legal clips scored without merge/truncate,s08,s0801a,ffmpeg_native,native,4.0536,4.04478915699292,0.0
+151,352.9579999999993,103,0,48,True,native legal clips scored without merge/truncate,s11,s1101a,OpenVPI_native,native,0.029204,0.024808078040223336,0.0
+151,352.95999999999924,103,0,48,True,native legal clips scored without merge/truncate,s11,s1101a,librosa_native,native,0.022659,0.01851842202449916,0.0
+32,22.975999999999843,32,0,0,False,native output not directly benchmark-compatible,s11,s1101a,pydub_native,native,3.955561,3.9501347280056507,0.0
+151,352.95999999999924,103,0,48,True,native legal clips scored without merge/truncate,s11,s1101a,ffmpeg_native,native,4.670096,4.660474180989695,0.0
+165,467.0419999999993,91,0,74,True,native legal clips scored without merge/truncate,s16,s1601a,OpenVPI_native,native,0.038588,0.03267421901909984,0.0
+156,471.599999999999,86,0,70,True,native legal clips scored without merge/truncate,s16,s1601a,librosa_native,native,0.026627,0.02136218596206163,0.0
+26,17.983999999999945,26,0,0,False,native output not directly benchmark-compatible,s16,s1601a,pydub_native,native,5.959424,5.952458790034143,0.0
+156,471.599999999999,86,0,70,True,native legal clips scored without merge/truncate,s16,s1601a,ffmpeg_native,native,4.788667,4.777340087985067,0.0
+218,390.2438749999984,188,0,30,True,native legal clips scored without merge/truncate,s22,s2201a,OpenVPI_native,native,0.038798,0.033415110017813276,0.0
+217,390.7918749999982,187,0,30,True,native legal clips scored without merge/truncate,s22,s2201a,librosa_native,native,0.027546,0.022831476031569764,0.0
+65,50.33587499999926,65,0,0,False,native output not directly benchmark-compatible,s22,s2201a,pydub_native,native,3.54556,3.53902036600266,0.0
+217,390.7918749999982,187,0,30,True,native legal clips scored without merge/truncate,s22,s2201a,ffmpeg_native,native,6.648662,6.634492446999502,0.0
+121,288.4809999999993,89,0,32,True,native legal clips scored without merge/truncate,s24,s2401b,OpenVPI_native,native,0.024551,0.020833686015976127,0.0
+118,288.6909999999993,86,0,32,True,native legal clips scored without merge/truncate,s24,s2401b,librosa_native,native,0.018217,0.014751766990229953,0.0
+22,14.495999999999817,22,0,0,False,native output not directly benchmark-compatible,s24,s2401b,pydub_native,native,3.217521,3.213009165992844,0.0
+118,288.6909999999993,86,0,32,True,native legal clips scored without merge/truncate,s24,s2401b,ffmpeg_native,native,3.634641,3.6272614040062763,0.0

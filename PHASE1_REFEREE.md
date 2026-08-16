@@ -96,3 +96,11 @@ Pure types, validation, interval arithmetic, and synthetic unit tests only.
 - Policy fingerprints include only knobs that affect that kind. Dead `prominence_db` is gone.
 - Round 2 local RMS evidence is clipped to the candidate's allowed buffer. Recording percentiles use the union of allowed-buffer fine hops, not the whole WAV. One `FineRmsGrid` is computed per O25_4 recording and reused across the three policies.
 - Smoke: `scripts/run_phase8_rms_smoke.py` (A / O25_4 family / O0_4 / O0_2). Do not run the 120-recording RMS tournament until smoke is reviewed.
+
+## Phase 9 (external slicer baselines vs frozen O0_4)
+
+- Internal control is frozen `O0_4` only. Do not include A, O25_4, O0_2, or RMS variants in the main table.
+- External families: vendored OpenVPI `slicer2.py`, `librosa.effects.split`, pydub `detect_silence` / `detect_nonsilent`, FFmpeg `silencedetect`. RVC/slicer2 is attribution-only (same algorithm).
+- Two modes where meaningful: native tool chunks vs external candidates into the frozen common 3–15 s packer. Every tool sees only allowed-buffer audio.
+- Parameters are documented/upstream defaults chosen before Buckeye scores. Evaluator and O0_4 are unchanged.
+- Smoke: `scripts/run_phase9_external_smoke.py` (10 recordings). Do not run the 120-recording external benchmark until smoke is reviewed.

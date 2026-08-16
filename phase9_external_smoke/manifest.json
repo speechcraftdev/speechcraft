@@ -1,0 +1,338 @@
+{
+  "adapter_version": "phase9_external_v1",
+  "cohort": {
+    "fingerprint": "f3177a2fd9b69434a0cc91856bd13da45d9b0a1f4a8a6b240b7fa16e213644dd",
+    "mode": "phase9_external_smoke",
+    "smoke_recording_count": 10
+  },
+  "cohort_fingerprint": "40d257603786eeddcfc294a5168ef25f838ad96294669bfd647ae2ed9eda8d92",
+  "external_baselines": {
+    "OpenVPI_common_packer": {
+      "adapter_behavior": {
+        "buffer_local": true,
+        "candidate_rule": "OpenVPI kept-chunk hop start/end times (silence-minima slice positions)",
+        "native_legal_filter": false
+      },
+      "adapter_version": "phase9_external_v1",
+      "candidate_rule": "OpenVPI kept-chunk hop start/end times (silence-minima slice positions)",
+      "common_packer_behavior": "buckeye_common_optimal_3_15_packer",
+      "detector_behavior": {
+        "hop_size_ms": 10,
+        "max_sil_kept_ms": 500,
+        "min_interval_ms": 300,
+        "min_length_ms": 5000,
+        "parameter_source": "vendored slicer2.py CLI argparse defaults",
+        "threshold_db": -40.0
+      },
+      "family": "openvpi",
+      "fingerprint": "596c4e1f3b1b932ee36a16776e593f7e08ac618e2802b6276c42f05fca9575e3",
+      "mode": "common_packer",
+      "name": "OpenVPI_common_packer",
+      "packing": "buckeye_common_optimal_3_15_packer",
+      "params": {
+        "hop_size_ms": 10,
+        "max_sil_kept_ms": 500,
+        "min_interval_ms": 300,
+        "min_length_ms": 5000,
+        "parameter_source": "vendored slicer2.py CLI argparse defaults",
+        "threshold_db": -40.0
+      }
+    },
+    "OpenVPI_native": {
+      "adapter_behavior": {
+        "buffer_local": true,
+        "candidate_rule": "OpenVPI kept-chunk hop start/end times (silence-minima slice positions)",
+        "native_legal_filter": true
+      },
+      "adapter_version": "phase9_external_v1",
+      "candidate_rule": "OpenVPI kept-chunk hop start/end times (silence-minima slice positions)",
+      "common_packer_behavior": "none_native_legal_filter_only",
+      "detector_behavior": {
+        "hop_size_ms": 10,
+        "max_sil_kept_ms": 500,
+        "min_interval_ms": 300,
+        "min_length_ms": 5000,
+        "parameter_source": "vendored slicer2.py CLI argparse defaults",
+        "threshold_db": -40.0
+      },
+      "family": "openvpi",
+      "fingerprint": "81bfc8a91418f5fb57f706e9740eb424272b4a4ddcb1846b8684da3ed853839a",
+      "mode": "native",
+      "name": "OpenVPI_native",
+      "packing": "none_native_legal_filter_only",
+      "params": {
+        "hop_size_ms": 10,
+        "max_sil_kept_ms": 500,
+        "min_interval_ms": 300,
+        "min_length_ms": 5000,
+        "parameter_source": "vendored slicer2.py CLI argparse defaults",
+        "threshold_db": -40.0
+      }
+    },
+    "ffmpeg_common_packer": {
+      "adapter_behavior": {
+        "buffer_local": true,
+        "candidate_rule": "midpoint of FFmpeg silencedetect silence intervals",
+        "native_legal_filter": false
+      },
+      "adapter_version": "phase9_external_v1",
+      "candidate_rule": "midpoint of FFmpeg silencedetect silence intervals",
+      "common_packer_behavior": "buckeye_common_optimal_3_15_packer",
+      "detector_behavior": {
+        "binary": "/usr/bin/ffmpeg",
+        "duration_sec": 2.0,
+        "filter": "silencedetect=noise=-60dB:duration=2",
+        "noise": "-60dB",
+        "parameter_source": "FFmpeg silencedetect documented filter defaults"
+      },
+      "family": "ffmpeg",
+      "fingerprint": "86c18885bc0b0cb2ab27eb66092a36e2f889f153de323101f58c45146f8a6bf9",
+      "mode": "common_packer",
+      "name": "ffmpeg_common_packer",
+      "packing": "buckeye_common_optimal_3_15_packer",
+      "params": {
+        "binary": "/usr/bin/ffmpeg",
+        "duration_sec": 2.0,
+        "filter": "silencedetect=noise=-60dB:duration=2",
+        "noise": "-60dB",
+        "parameter_source": "FFmpeg silencedetect documented filter defaults"
+      }
+    },
+    "ffmpeg_native": {
+      "adapter_behavior": {
+        "buffer_local": true,
+        "candidate_rule": "midpoint of FFmpeg silencedetect silence intervals",
+        "native_legal_filter": true
+      },
+      "adapter_version": "phase9_external_v1",
+      "candidate_rule": "midpoint of FFmpeg silencedetect silence intervals",
+      "common_packer_behavior": "none_native_legal_filter_only",
+      "detector_behavior": {
+        "binary": "/usr/bin/ffmpeg",
+        "duration_sec": 2.0,
+        "filter": "silencedetect=noise=-60dB:duration=2",
+        "noise": "-60dB",
+        "parameter_source": "FFmpeg silencedetect documented filter defaults"
+      },
+      "family": "ffmpeg",
+      "fingerprint": "60e074db59ee0cb1cb957c607f1ce8bcfeb21c64565f6433742126053f2d145b",
+      "mode": "native",
+      "name": "ffmpeg_native",
+      "packing": "none_native_legal_filter_only",
+      "params": {
+        "binary": "/usr/bin/ffmpeg",
+        "duration_sec": 2.0,
+        "filter": "silencedetect=noise=-60dB:duration=2",
+        "noise": "-60dB",
+        "parameter_source": "FFmpeg silencedetect documented filter defaults"
+      }
+    },
+    "librosa_common_packer": {
+      "adapter_behavior": {
+        "buffer_local": true,
+        "candidate_rule": "start and end of librosa.effects.split non-silent intervals",
+        "native_legal_filter": false
+      },
+      "adapter_version": "phase9_external_v1",
+      "candidate_rule": "start and end of librosa.effects.split non-silent intervals",
+      "common_packer_behavior": "buckeye_common_optimal_3_15_packer",
+      "detector_behavior": {
+        "aggregate": "np.max",
+        "frame_length": 2048,
+        "hop_length": 512,
+        "parameter_source": "librosa.effects.split documented defaults",
+        "ref": "np.max",
+        "top_db": 60.0
+      },
+      "family": "librosa",
+      "fingerprint": "cae603e8994aa27bad3adc4ad45aeee24bad4b0ae8d44dae4039b990f80f3344",
+      "mode": "common_packer",
+      "name": "librosa_common_packer",
+      "packing": "buckeye_common_optimal_3_15_packer",
+      "params": {
+        "aggregate": "np.max",
+        "frame_length": 2048,
+        "hop_length": 512,
+        "parameter_source": "librosa.effects.split documented defaults",
+        "ref": "np.max",
+        "top_db": 60.0
+      }
+    },
+    "librosa_native": {
+      "adapter_behavior": {
+        "buffer_local": true,
+        "candidate_rule": "start and end of librosa.effects.split non-silent intervals",
+        "native_legal_filter": true
+      },
+      "adapter_version": "phase9_external_v1",
+      "candidate_rule": "start and end of librosa.effects.split non-silent intervals",
+      "common_packer_behavior": "none_native_legal_filter_only",
+      "detector_behavior": {
+        "aggregate": "np.max",
+        "frame_length": 2048,
+        "hop_length": 512,
+        "parameter_source": "librosa.effects.split documented defaults",
+        "ref": "np.max",
+        "top_db": 60.0
+      },
+      "family": "librosa",
+      "fingerprint": "3ba3c28759f7c857cc20e6abdd64e9978661fb557cd448315fe4197450af642f",
+      "mode": "native",
+      "name": "librosa_native",
+      "packing": "none_native_legal_filter_only",
+      "params": {
+        "aggregate": "np.max",
+        "frame_length": 2048,
+        "hop_length": 512,
+        "parameter_source": "librosa.effects.split documented defaults",
+        "ref": "np.max",
+        "top_db": 60.0
+      }
+    },
+    "pydub_common_packer": {
+      "adapter_behavior": {
+        "buffer_local": true,
+        "candidate_rule": "midpoint of pydub.silence.detect_silence intervals",
+        "native_legal_filter": false
+      },
+      "adapter_version": "phase9_external_v1",
+      "candidate_rule": "midpoint of pydub.silence.detect_silence intervals",
+      "common_packer_behavior": "buckeye_common_optimal_3_15_packer",
+      "detector_behavior": {
+        "min_silence_len_ms": 1000,
+        "parameter_source": "pydub.silence.detect_silence documented defaults",
+        "seek_step_ms": 1,
+        "silence_thresh_dbfs": -16.0
+      },
+      "family": "pydub",
+      "fingerprint": "636ff9edba49c17674955c7cb477e8c122f8993b87552f0f10eeed182cdea669",
+      "mode": "common_packer",
+      "name": "pydub_common_packer",
+      "packing": "buckeye_common_optimal_3_15_packer",
+      "params": {
+        "min_silence_len_ms": 1000,
+        "parameter_source": "pydub.silence.detect_silence documented defaults",
+        "seek_step_ms": 1,
+        "silence_thresh_dbfs": -16.0
+      }
+    },
+    "pydub_native": {
+      "adapter_behavior": {
+        "buffer_local": true,
+        "candidate_rule": "midpoint of pydub.silence.detect_silence intervals",
+        "native_legal_filter": true
+      },
+      "adapter_version": "phase9_external_v1",
+      "candidate_rule": "midpoint of pydub.silence.detect_silence intervals",
+      "common_packer_behavior": "none_native_legal_filter_only",
+      "detector_behavior": {
+        "min_silence_len_ms": 1000,
+        "parameter_source": "pydub.silence.detect_silence documented defaults",
+        "seek_step_ms": 1,
+        "silence_thresh_dbfs": -16.0
+      },
+      "family": "pydub",
+      "fingerprint": "56ae886fef9194ba26b538029df1970c39b376d3bcf9ab207000282237b12a76",
+      "mode": "native",
+      "name": "pydub_native",
+      "packing": "none_native_legal_filter_only",
+      "params": {
+        "min_silence_len_ms": 1000,
+        "parameter_source": "pydub.silence.detect_silence documented defaults",
+        "seek_step_ms": 1,
+        "silence_thresh_dbfs": -16.0
+      }
+    }
+  },
+  "full_cohort_fingerprint": "f3177a2fd9b69434a0cc91856bd13da45d9b0a1f4a8a6b240b7fa16e213644dd",
+  "git_commit": "07943fc79dfb1844588b7c37b783c2a4f5f6f38b",
+  "internal_control": "O0_4",
+  "library_versions": {
+    "adapter_version": "phase9_external_v1",
+    "ffmpeg": "ffmpeg version n8.1.2 Copyright (c) 2000-2026 the FFmpeg developers",
+    "librosa": "0.11.0",
+    "numpy": "2.4.6",
+    "openvpi_revision": "9958eede8f38fb6ce26914b1673e202ecfce70f3",
+    "openvpi_slicer2_sha256": "505a7fceda62275f391cea11f3bd5ad3d4b54b460ff4567a7ca8747daeaf1957",
+    "pydub": "0.25.1",
+    "soundfile": "0.13.1"
+  },
+  "o0_4_geometry_fingerprint": "87130029b5443647ed1f1febd32ab768bf957a0a1698217eb3cf14b2d00c6ecf",
+  "openvpi_vendor": {
+    "path": "/home/aaravthegreat/Projects/buckeye-slicer-lab/vendor/openvpi_audio_slicer/slicer2.py",
+    "repository": "https://github.com/openvpi/audio-slicer",
+    "revision": "9958eede8f38fb6ce26914b1673e202ecfce70f3",
+    "sha256": "505a7fceda62275f391cea11f3bd5ad3d4b54b460ff4567a7ca8747daeaf1957",
+    "upstream_file": "slicer2.py"
+  },
+  "parameter_policy": "documented defaults / upstream CLI defaults chosen before inspecting Buckeye phone labels or >50 ms rates",
+  "paths": {
+    "cohort_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort",
+    "normalized_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/normalized/corpus"
+  },
+  "phase": 9,
+  "public_cutpoint_population": "selected_schedule",
+  "recording_count": 10,
+  "run_timestamp": "2026-08-16T11:07:30.346218+00:00",
+  "rvc": {
+    "classification": "RVC / slicer2 ecosystem implementation; derived from OpenVPI",
+    "independent_competitor": false,
+    "inspected": true,
+    "reason": "algorithmically equivalent; preprocess kwargs and 3.7s chopping are wrapper policy"
+  },
+  "selection_rule": "First accepted recording from speakers s01, s02, s04, s06, s08, s11, s16, s22, s24 in the frozen Phase-5 accepted cohort, plus historical s0301a. Not chosen from Phase-7 geometry scores.",
+  "subset": [
+    {
+      "recording_id": "s0101b",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0201b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0301a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0401b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0601a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0801a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s1101a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1601a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s2201a",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2401b",
+      "speaker_id": "s24"
+    }
+  ],
+  "systems": [
+    "O0_4",
+    "OpenVPI_native",
+    "OpenVPI_common_packer",
+    "librosa_native",
+    "librosa_common_packer",
+    "pydub_native",
+    "pydub_common_packer",
+    "ffmpeg_native",
+    "ffmpeg_common_packer"
+  ],
+  "workers": 2
+}

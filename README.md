@@ -108,6 +108,13 @@ Phase 8 RMS round 2 smoke (10 recordings; A / O25_4_CURRENT + three waveform vet
     scripts/run_phase8_rms_smoke.py --workers 2
 ```
 
+Phase 9 external slicer smoke (10 recordings; frozen `O0_4` vs OpenVPI / librosa / pydub / FFmpeg). Do not run the 120-recording external benchmark yet:
+
+```bash
+/home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \
+    scripts/run_phase9_external_smoke.py --workers 2
+```
+
 ## Current Interpretation
 
 Use the completed fast 16-way run for A-derived policy variants. Do not use it to compare A against D.
