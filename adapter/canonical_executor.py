@@ -45,7 +45,8 @@ from adapter.diagnostics import (
     resolve_speaker_ts_eval_src,
 )
 from adapter.feature_bundle import FeatureBundle, require_bundle_geometry
-from adapter.rms_policy import apply_rms_policy
+from adapter.rms_evidence import FineRmsGrid, build_fine_rms_grid
+from adapter.rms_policy import apply_rms_policy, family_fine_rms_spec
 from adapter.types import RawClip, RawCutpoint, RawSlicerOutput, SlicerRequest
 
 _VAD_ENV_KEYS = (
@@ -206,12 +207,14 @@ def execute_canonical_diagnosed(request: SlicerRequest) -> CanonicalExecution:
     with tempfile.TemporaryDirectory(prefix=f"buckeye_slicer_{request.config.name}_") as tmp:
         workdir = Path(tmp)
         bundle, state = _compute_bundle_in_workdir(request, workdir)
+        fine_grid = _fine_grid_for_requests(bundle, (request,))
         return _execute_policy_from_state(
             request=request,
             bundle=bundle,
             state=state,
             base_cutpoints=None,
             vad_compute_count=1,
+            fine_grid=fine_grid,
         )
 
 
@@ -232,6 +235,7 @@ def execute_shared_geometry_family(
         workdir = Path(tmp)
         bundle, state = _compute_bundle_in_workdir(first, workdir)
         base_cutpoints = _detect_cutpoints(state)
+        fine_grid = _fine_grid_for_requests(bundle, requests)
         executions: dict[str, CanonicalExecution] = {}
         for index, request in enumerate(requests):
             require_bundle_geometry(bundle, request.config)
@@ -241,6 +245,7 @@ def execute_shared_geometry_family(
                 state=state,
                 base_cutpoints=base_cutpoints,
                 vad_compute_count=1 if index == 0 else 0,
+                fine_grid=fine_grid,
             )
         return executions
 
@@ -433,6 +438,15 @@ def _make_contexts(state: dict[str, Any], config: GeometryConfig) -> Any:
     return canon["BenchmarkContexts"](shared=shared, acoustic=acoustic, linguistic=linguistic), benchmark_config
 
 
+def _fine_grid_for_requests(
+    bundle: FeatureBundle, requests: Sequence[SlicerRequest]
+) -> FineRmsGrid | None:
+    spec = family_fine_rms_spec([req.config for req in requests])
+    if spec is None:
+        return None
+    return build_fine_rms_grid(bundle, spec)
+
+
 def _detect_cutpoints(state: dict[str, Any]) -> list[Any]:
     canon = state["canon"]
     config = state["run_state"].config
@@ -449,6 +463,7 @@ def _execute_policy_from_state(
     state: dict[str, Any],
     base_cutpoints: list[Any] | None,
     vad_compute_count: int,
+    fine_grid: FineRmsGrid | None,
 ) -> CanonicalExecution:
     require_bundle_geometry(bundle, request.config)
     canon = state["canon"]
@@ -460,7 +475,7 @@ def _execute_policy_from_state(
         cutpoints = deepcopy(base_cutpoints)
     cutpoints = apply_cut_policy(cutpoints, config)
     if config.rms_policy is not None:
-        cutpoints = apply_rms_policy(cutpoints, bundle, config)
+        cutpoints = apply_rms_policy(cutpoints, bundle, config, fine_grid=fine_grid)
     contexts, benchmark_config = _make_contexts(state, config)
     packing = canon["PackingConstraints"](
         min_clip_sec=benchmark_config.min_clip_sec,

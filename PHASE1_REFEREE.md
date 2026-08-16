@@ -83,9 +83,16 @@ Pure types, validation, interval arithmetic, and synthetic unit tests only.
 - Distinct requested geometries must not collapse onto identical VAD observation signatures; diagnostics fingerprints must match the requested config.
 - `RESET-8` (per-window Silero reset) is omitted: the canonical path resets once per offset stream, not per window.
 
-## Phase 8 prep (O25_4 RMS evidence)
+## Phase 8 (O25_4 RMS evidence)
 
 - Geometry is frozen: `A_O50_8`, `O25_4`, `O0_4`, `O0_2`. New work is RMS/pause evidence on `O25_4` only.
 - All O25_4 RMS variants share one immutable in-memory VAD/RMS bundle per recording. Cross-geometry bundle reuse is rejected.
 - Public `SlicerResult.cutpoints` remains selected-schedule. Evaluator unchanged.
-- Smoke: `scripts/run_phase8_rms_smoke.py`. Do not run the 120-recording RMS tournament until smoke is reviewed.
+- Round-1 seven RMS scorers (prominence / multiscale / valley / bilateral / min-placement) were dropped after smoke: none improved `>50 ms` vs `O25_4_CURRENT`. The reusable O25_4 feature-sharing harness stays.
+- Round 2 is a veto against suspicious VAD valleys, interrogating the **raw waveform at 10 ms / 8 ms hops**, not 32 ms VAD-frame RMS:
+  - `O25_4_WEAK_VALLEY_VETO` — reject only extremely shallow local RMS depressions (`veto_depth_db=1.5`)
+  - `O25_4_SHORT_SHALLOW_PENALTY` — short valleys are not automatically bad; short **and** shallow are
+  - `O25_4_WAVEFORM_SILENCE_RATIO` — fraction of ±64 ms below a recording-relative 10th-percentile fine RMS threshold
+- Policy fingerprints include only knobs that affect that kind. Dead `prominence_db` is gone.
+- Round 2 local RMS evidence is clipped to the candidate's allowed buffer. Recording percentiles use the union of allowed-buffer fine hops, not the whole WAV. One `FineRmsGrid` is computed per O25_4 recording and reused across the three policies.
+- Smoke: `scripts/run_phase8_rms_smoke.py` (A / O25_4 family / O0_4 / O0_2). Do not run the 120-recording RMS tournament until smoke is reviewed.

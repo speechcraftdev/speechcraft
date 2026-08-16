@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Phase 8 smoke: O25_4 RMS evidence vs frozen A / O0_4 / O0_2 controls.
+"""Phase 8 round-2 smoke: O25_4 waveform veto/penalty vs frozen A / O0_4 / O0_2.
 
-Does not launch the 120-recording RMS tournament.
+The seven round-1 RMS scorers are not in this set. Does not launch the
+120-recording RMS tournament.
 
     /home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \\
         scripts/run_phase8_rms_smoke.py --workers 2
@@ -80,6 +81,7 @@ def main() -> int:
     print(f"runtime: {summary.get('runtime')}")
     print(f"O25_4_feature_reuse: {summary.get('O25_4_feature_reuse')}")
     print(f"O25_4_vad_computations_per_recording: {summary.get('O25_4_vad_computations_per_recording')}")
+    print(f"schedule_diffs_vs_o25_current: {summary.get('schedule_diffs_vs_o25_current')}")
     print(f"wrote {output_dir}")
     print("phase 8 rms smoke passed")
     return 0

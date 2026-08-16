@@ -39,7 +39,7 @@ from adapter.canonical_smoke import (
     assert_independent_state,
     assert_order_independence,
 )
-from adapter.config import CURRENT_A, PROPER_D, GeometryConfig
+from adapter.config import CURRENT_A, PROPER_D, GeometryConfig, rms_policy_payload
 from adapter.convert import to_slicer_result
 from adapter.diagnostics import (
     ExecutionDiagnostics,
@@ -92,18 +92,7 @@ def geometry_config_payload(config: GeometryConfig) -> dict[str, object]:
         "scoring": None if not config.scoring else str(config.scoring),
         "rms_policy": None
         if config.rms_policy is None
-        else {
-            "kind": config.rms_policy.kind,
-            "center_ms": config.rms_policy.center_ms,
-            "shoulder_ms": config.rms_policy.shoulder_ms,
-            "long_ms": config.rms_policy.long_ms,
-            "prominence_db": config.rms_policy.prominence_db,
-            "valley_width_ref_ms": config.rms_policy.valley_width_ref_ms,
-            "valley_margin_db": config.rms_policy.valley_margin_db,
-            "score_scale": config.rms_policy.score_scale,
-            "placement_window_ms": config.rms_policy.placement_window_ms,
-            "placement_hop_ms": config.rms_policy.placement_hop_ms,
-        },
+        else rms_policy_payload(config.rms_policy),
     }
 
 
@@ -1158,14 +1147,23 @@ def run_validation(
                 "A-derived policies were identical to A on every recording: "
                 f"{silent}. Policy config is probably not wired."
             )
+    differed_from_current = None
     if "O25_4_CURRENT" in contender_names and len(rms_family) > 1:
         differed_from_current = _count_schedule_diffs(
             recording_rows, contender_names, baseline="O25_4_CURRENT"
         )
+        kind_by_name = {
+            config.name: None if config.rms_policy is None else config.rms_policy.kind
+            for config in active_contenders
+        }
+        # A conservative veto may keep every CURRENT candidate. Score-mutating
+        # policies that never change the packer output are still treated as unwired.
         silent_rms = [
             name
             for name in rms_family
-            if name != "O25_4_CURRENT" and differed_from_current.get(name, 0) == 0
+            if name != "O25_4_CURRENT"
+            and differed_from_current.get(name, 0) == 0
+            and kind_by_name.get(name) != "weak_valley_veto"
         ]
         if silent_rms:
             raise RuntimeError(
@@ -1244,6 +1242,7 @@ def run_validation(
         "historical_comparison": historical,
         "O25_4_feature_reuse": bool(rms_family) and reuse_shared_geometry,
         "O25_4_vad_computations_per_recording": 1 if rms_family and reuse_shared_geometry else None,
+        "schedule_diffs_vs_o25_current": differed_from_current,
         "runtime": {
             "whole_run_sec": elapsed_sec,
             "O25_4_vad_compute_sec": sum(

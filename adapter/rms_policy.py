@@ -1,4 +1,4 @@
-"""Apply Phase-8 RMS/evidence policies to CURRENT detector candidates."""
+"""Apply O25_4 RMS veto/penalty policies to CURRENT detector candidates."""
 
 from __future__ import annotations
 
@@ -6,31 +6,24 @@ from dataclasses import replace
 from typing import Any
 
 from adapter.config import GeometryConfig, RmsPolicySpec
-from adapter.feature_bundle import (
-    FeatureBundle,
-    as_float_tuple,
-    buffer_bounds,
-    require_bundle_geometry,
-)
+from adapter.feature_bundle import FeatureBundle, buffer_bounds, require_bundle_geometry
 from adapter.rms_evidence import (
-    argmin_in_bounds,
-    bilateral_score,
-    clip_interval,
-    multiscale_pause_score,
-    placement_grid,
-    prominence_drops_db,
-    prominence_score,
-    valley_shape_score,
+    FineRmsGrid,
+    build_fine_rms_grid,
+    evidence_depth_db,
+    half_depth_width_ms,
+    recording_silence_threshold,
+    recording_speech_ref,
+    require_grid_spec,
+    short_shallow_penalty,
+    silence_ratio,
 )
 
 EXPECTED_RMS_KIND = {
     "O25_4_CURRENT": "current",
-    "O25_4_RMS_PROMINENCE": "prominence",
-    "O25_4_MULTISCALE_RMS": "multiscale",
-    "O25_4_VALLEY_WIDTH_DEPTH": "valley",
-    "O25_4_BILATERAL_CONTRAST": "bilateral",
-    "O25_4_RMS_MIN_PLACEMENT": "min_placement",
-    "O25_4_MULTISCALE_MIN": "multiscale_min",
+    "O25_4_WEAK_VALLEY_VETO": "weak_valley_veto",
+    "O25_4_SHORT_SHALLOW_PENALTY": "short_shallow_penalty",
+    "O25_4_WAVEFORM_SILENCE_RATIO": "waveform_silence_ratio",
 }
 
 
@@ -55,20 +48,84 @@ def _copy_cut(cut: Any, **changes: Any) -> Any:
     return replace(cut, metadata=metadata, **changes)
 
 
-def apply_rms_policy(cuts: list[Any], bundle: FeatureBundle, config: GeometryConfig) -> list[Any]:
-    """Rescore / re-place CURRENT candidates. Never qualifies new regions."""
+def family_fine_rms_spec(configs: list[GeometryConfig]) -> RmsPolicySpec | None:
+    """Shared 10/8 ms grid spec for an O25_4 family, or None if nothing needs it."""
+    specs = [
+        config.rms_policy
+        for config in configs
+        if config.rms_policy is not None and config.rms_policy.kind != "current"
+    ]
+    if not specs:
+        return None
+    windows = {(spec.fine_window_ms, spec.fine_hop_ms) for spec in specs}
+    if len(windows) != 1:
+        raise RuntimeError(f"O25_4 family mixed fine RMS grids: {windows}")
+    return specs[0]
+
+
+def apply_rms_policy(
+    cuts: list[Any],
+    bundle: FeatureBundle,
+    config: GeometryConfig,
+    fine_grid: FineRmsGrid | None = None,
+) -> list[Any]:
+    """Veto or rescore CURRENT candidates from fine-scale waveform RMS.
+
+    Never qualifies new regions. Does not read evaluator annotations.
+    Local evidence is clipped to the candidate's allowed buffer. Recording
+    percentiles use the union of allowed-buffer hops only.
+    """
     require_bundle_geometry(bundle, config)
     spec = _spec(config)
     if spec.kind == "current":
         return list(cuts)
-    times = as_float_tuple(bundle.vad_centers_sec)
-    rms = as_float_tuple(bundle.frame_rms_dbfs)
+    grid = fine_grid if fine_grid is not None else build_fine_rms_grid(bundle, spec)
+    require_grid_spec(grid, spec)
+    times = grid.times_sec
+    rms = grid.rms_dbfs
+    speech_ref = recording_speech_ref(rms, spec) if rms else -12.0
+    threshold = (
+        recording_silence_threshold(rms, spec)
+        if spec.kind == "waveform_silence_ratio" and rms
+        else -120.0
+    )
     updated: list[Any] = []
     for cut in cuts:
-        if spec.kind == "prominence":
-            left, right = prominence_drops_db(times, rms, float(cut.time_sec), spec)
-            evidence = prominence_score(left, right)
-            score_delta = spec.score_scale * evidence
+        t_sec = float(cut.time_sec)
+        bound_start, bound_end = buffer_bounds(bundle, str(cut.buffer_id))
+        depth = evidence_depth_db(
+            times,
+            rms,
+            t_sec,
+            spec,
+            speech_ref,
+            bound_start=bound_start,
+            bound_end=bound_end,
+        )
+        if spec.kind == "weak_valley_veto":
+            if depth is not None and depth < spec.veto_depth_db:
+                continue
+            updated.append(
+                _copy_cut(
+                    cut,
+                    metadata={
+                        "rms_policy": spec.kind,
+                        "local_depth_db": None if depth is None else round(depth, 6),
+                    },
+                )
+            )
+        elif spec.kind == "short_shallow_penalty":
+            width_ms = half_depth_width_ms(
+                times,
+                rms,
+                t_sec,
+                spec,
+                speech_ref,
+                bound_start=bound_start,
+                bound_end=bound_end,
+            )
+            penalty = short_shallow_penalty(width_ms, depth, spec)
+            score_delta = -penalty
             updated.append(
                 _copy_cut(
                     cut,
@@ -76,14 +133,22 @@ def apply_rms_policy(cuts: list[Any], bundle: FeatureBundle, config: GeometryCon
                     metadata={
                         "rms_policy": spec.kind,
                         "score_delta": round(score_delta, 6),
-                        "left_drop_db": round(left, 6),
-                        "right_drop_db": round(right, 6),
+                        "local_depth_db": None if depth is None else round(depth, 6),
+                        "valley_width_ms": round(width_ms, 6),
                     },
                 )
             )
-        elif spec.kind == "multiscale":
-            evidence = multiscale_pause_score(times, rms, float(cut.time_sec), spec)
-            score_delta = spec.score_scale * evidence
+        elif spec.kind == "waveform_silence_ratio":
+            ratio = silence_ratio(
+                times,
+                rms,
+                t_sec,
+                spec,
+                bound_start=bound_start,
+                bound_end=bound_end,
+                threshold_db=threshold,
+            )
+            score_delta = spec.score_scale * (2.0 * ratio - 1.0)
             updated.append(
                 _copy_cut(
                     cut,
@@ -91,87 +156,10 @@ def apply_rms_policy(cuts: list[Any], bundle: FeatureBundle, config: GeometryCon
                     metadata={
                         "rms_policy": spec.kind,
                         "score_delta": round(score_delta, 6),
-                        "multiscale_score": round(evidence, 6),
+                        "silence_ratio": round(ratio, 6),
                     },
                 )
             )
-        elif spec.kind == "valley":
-            evidence = valley_shape_score(times, rms, float(cut.time_sec), spec)
-            score_delta = spec.score_scale * evidence
-            updated.append(
-                _copy_cut(
-                    cut,
-                    score=round(float(cut.score) + score_delta, 6),
-                    metadata={
-                        "rms_policy": spec.kind,
-                        "score_delta": round(score_delta, 6),
-                        "valley_score": round(evidence, 6),
-                    },
-                )
-            )
-        elif spec.kind == "bilateral":
-            left, right = prominence_drops_db(times, rms, float(cut.time_sec), spec)
-            evidence = bilateral_score(left, right)
-            score_delta = spec.score_scale * evidence
-            updated.append(
-                _copy_cut(
-                    cut,
-                    score=round(float(cut.score) + score_delta, 6),
-                    metadata={
-                        "rms_policy": spec.kind,
-                        "score_delta": round(score_delta, 6),
-                        "left_drop_db": round(left, 6),
-                        "right_drop_db": round(right, 6),
-                    },
-                )
-            )
-        elif spec.kind == "min_placement":
-            updated.append(_place_at_rms_min(cut, bundle, spec, score_delta=0.0))
-        elif spec.kind == "multiscale_min":
-            evidence = multiscale_pause_score(times, rms, float(cut.time_sec), spec)
-            placed = _place_at_rms_min(
-                cut, bundle, spec, score_delta=spec.score_scale * evidence
-            )
-            updated.append(placed)
         else:
             raise RuntimeError(f"unknown rms_policy.kind {spec.kind!r} on {config.name}")
     return updated
-
-
-def _place_at_rms_min(
-    cut: Any,
-    bundle: FeatureBundle,
-    spec: RmsPolicySpec,
-    *,
-    score_delta: float,
-) -> Any:
-    bound_start, bound_end = buffer_bounds(bundle, str(cut.buffer_id))
-    region_start, region_end = clip_interval(
-        float(cut.interval_start_sec),
-        float(cut.interval_end_sec),
-        bound_start,
-        bound_end,
-    )
-    grid_t, grid_rms = placement_grid(
-        audio=bundle.audio,
-        sample_rate_hz=int(bundle.sample_rate_hz),
-        start_sec=region_start,
-        end_sec=region_end,
-        window_ms=spec.placement_window_ms,
-        hop_ms=spec.placement_hop_ms,
-    )
-    placed = argmin_in_bounds(grid_t, grid_rms, region_start, region_end)
-    if placed is None:
-        placed = float(cut.time_sec)
-    placed = min(max(placed, region_start), region_end)
-    return _copy_cut(
-        cut,
-        time_sec=round(float(placed), 6),
-        score=round(float(cut.score) + score_delta, 6),
-        metadata={
-            "rms_policy": spec.kind,
-            "score_delta": round(float(score_delta), 6),
-            "original_time_sec": float(cut.time_sec),
-            "placed_time_sec": round(float(placed), 6),
-        },
-    )

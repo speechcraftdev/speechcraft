@@ -1,0 +1,354 @@
+{
+  "O25_4_feature_reuse": true,
+  "O25_4_vad_computations_per_recording": 1,
+  "canonical_paths": {
+    "cluster_mapping_csv": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort/benchmark_cluster_mapping.csv",
+    "cohort_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort",
+    "normalized_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/normalized/corpus",
+    "speaker_cohort_summary_csv": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort/speaker_cohort_summary.csv"
+  },
+  "cohort": {
+    "fingerprint": "f3177a2fd9b69434a0cc91856bd13da45d9b0a1f4a8a6b240b7fa16e213644dd",
+    "mode": "phase8_rms_smoke",
+    "smoke_recording_count": 10
+  },
+  "cohort_fingerprint": "40d257603786eeddcfc294a5168ef25f838ad96294669bfd647ae2ed9eda8d92",
+  "config_A": {
+    "hop_samples": 256,
+    "max_clip_sec": 15.0,
+    "min_clip_sec": 3.0,
+    "min_quiet_run_ms": null,
+    "name": "A_O50_8",
+    "offsets": [
+      0,
+      128
+    ],
+    "percentile_rms_margin_db": 3.0,
+    "percentile_rms_percentile": 10.0,
+    "preferred_max_sec": 8.0,
+    "preferred_min_sec": 6.0,
+    "rms_policy": null,
+    "sample_rate_hz": 16000,
+    "scoring": null,
+    "target_clip_sec": 8.0,
+    "vad_backend": "silero_official_onnx",
+    "vad_min_run_ms": 40.0,
+    "vad_threshold": 0.2,
+    "window_samples": 512
+  },
+  "config_D": null,
+  "contender_configs": {
+    "A_O50_8": {
+      "hop_samples": 256,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "A_O50_8",
+      "offsets": [
+        0,
+        128
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "rms_policy": null,
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "O0_2": {
+      "hop_samples": 512,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "O0_2",
+      "offsets": [
+        0,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        288,
+        320,
+        352,
+        384,
+        416,
+        448,
+        480
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "rms_policy": null,
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "O0_4": {
+      "hop_samples": 512,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "O0_4",
+      "offsets": [
+        0,
+        64,
+        128,
+        192,
+        256,
+        320,
+        384,
+        448
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "rms_policy": null,
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "O25_4_CURRENT": {
+      "hop_samples": 384,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "O25_4_CURRENT",
+      "offsets": [
+        0,
+        64,
+        128,
+        192,
+        256,
+        320
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "rms_policy": {
+        "kind": "current"
+      },
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "O25_4_SHORT_SHALLOW_PENALTY": {
+      "hop_samples": 384,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "O25_4_SHORT_SHALLOW_PENALTY",
+      "offsets": [
+        0,
+        64,
+        128,
+        192,
+        256,
+        320
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "rms_policy": {
+        "center_ms": 20.0,
+        "fine_hop_ms": 8.0,
+        "fine_window_ms": 10.0,
+        "kind": "short_shallow_penalty",
+        "outer_contrast_db": 1.5,
+        "outer_ms": 250.0,
+        "score_scale": 0.25,
+        "shallow_depth_db": 6.0,
+        "short_valley_ms": 64.0,
+        "shoulder_ms": 80.0,
+        "speech_percentile": 75.0
+      },
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "O25_4_WAVEFORM_SILENCE_RATIO": {
+      "hop_samples": 384,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "O25_4_WAVEFORM_SILENCE_RATIO",
+      "offsets": [
+        0,
+        64,
+        128,
+        192,
+        256,
+        320
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "rms_policy": {
+        "context_ms": 64.0,
+        "fine_hop_ms": 8.0,
+        "fine_window_ms": 10.0,
+        "kind": "waveform_silence_ratio",
+        "score_scale": 0.25,
+        "silence_margin_db": 0.0,
+        "silence_percentile": 10.0
+      },
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    },
+    "O25_4_WEAK_VALLEY_VETO": {
+      "hop_samples": 384,
+      "max_clip_sec": 15.0,
+      "min_clip_sec": 3.0,
+      "min_quiet_run_ms": null,
+      "name": "O25_4_WEAK_VALLEY_VETO",
+      "offsets": [
+        0,
+        64,
+        128,
+        192,
+        256,
+        320
+      ],
+      "percentile_rms_margin_db": 3.0,
+      "percentile_rms_percentile": 10.0,
+      "preferred_max_sec": 8.0,
+      "preferred_min_sec": 6.0,
+      "rms_policy": {
+        "center_ms": 20.0,
+        "fine_hop_ms": 8.0,
+        "fine_window_ms": 10.0,
+        "kind": "weak_valley_veto",
+        "outer_contrast_db": 1.5,
+        "outer_ms": 250.0,
+        "shoulder_ms": 80.0,
+        "speech_percentile": 75.0,
+        "veto_depth_db": 1.5
+      },
+      "sample_rate_hz": 16000,
+      "scoring": null,
+      "target_clip_sec": 8.0,
+      "vad_backend": "silero_official_onnx",
+      "vad_min_run_ms": 40.0,
+      "vad_threshold": 0.2,
+      "window_samples": 512
+    }
+  },
+  "contender_names": [
+    "A_O50_8",
+    "O25_4_CURRENT",
+    "O25_4_WEAK_VALLEY_VETO",
+    "O25_4_SHORT_SHALLOW_PENALTY",
+    "O25_4_WAVEFORM_SILENCE_RATIO",
+    "O0_4",
+    "O0_2"
+  ],
+  "geometry_fingerprint_A": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+  "geometry_fingerprint_D": null,
+  "geometry_fingerprints": {
+    "A_O50_8": "72ea8093df3fb11222b7291a784e2272246d6349ad6d5da63900e79412997498",
+    "O0_2": "b8f9c3af61c5c18d8b52a1cdb992e5c98e154bc752c5665b52bea987b6d3c947",
+    "O0_4": "87130029b5443647ed1f1febd32ab768bf957a0a1698217eb3cf14b2d00c6ecf",
+    "O25_4_CURRENT": "5c718a3fdc193cf92e8babe55085d9a6c49c09e1bb11c69c0d3e71192acf39c2",
+    "O25_4_SHORT_SHALLOW_PENALTY": "5c718a3fdc193cf92e8babe55085d9a6c49c09e1bb11c69c0d3e71192acf39c2",
+    "O25_4_WAVEFORM_SILENCE_RATIO": "5c718a3fdc193cf92e8babe55085d9a6c49c09e1bb11c69c0d3e71192acf39c2",
+    "O25_4_WEAK_VALLEY_VETO": "5c718a3fdc193cf92e8babe55085d9a6c49c09e1bb11c69c0d3e71192acf39c2"
+  },
+  "git_commit": "5a478a336102c893613fc3fd9d84028443838db3",
+  "model_backend_identity": "silero_official_onnx",
+  "paths": {
+    "cohort_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/acoustic_matrix/cohort",
+    "normalized_root": "/home/aaravthegreat/Projects/buckeye-slicer-lab/canonical/normalized/corpus"
+  },
+  "policy_fingerprints": {
+    "A_O50_8": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+    "O0_2": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+    "O0_4": "7742f46ba78ed9fa88c087d5ec69553ce3988bd974cf12b77459f3fa28b99e2d",
+    "O25_4_CURRENT": "4d91cdf714e69daea4f314ed620dca131eeb7abcf0c1c2d2c2cf9f50a66a0f20",
+    "O25_4_SHORT_SHALLOW_PENALTY": "f318e169fdf6a6d7ae8575d10251c7958f6f4a50da2a1036c55e4a20d0719c96",
+    "O25_4_WAVEFORM_SILENCE_RATIO": "da44de1d6eefc930ed12f9be87bb2491756fd137310b5cb974acf545f9d8c0c9",
+    "O25_4_WEAK_VALLEY_VETO": "0babdff8a0bf31686f02bc66a2304051d36946569fa3c2dfdf360aa5b9d73400"
+  },
+  "public_cutpoint_population": "selected_schedule",
+  "recording_count": 10,
+  "run_timestamp": "2026-08-16T09:41:15.796792+00:00",
+  "selection_rule": "First accepted recording from speakers s01, s02, s04, s06, s08, s11, s16, s22, s24 in the frozen Phase-5 accepted cohort, plus historical s0301a. Not chosen from Phase-7 geometry scores.",
+  "subset": [
+    {
+      "recording_id": "s0101b",
+      "speaker_id": "s01"
+    },
+    {
+      "recording_id": "s0201b",
+      "speaker_id": "s02"
+    },
+    {
+      "recording_id": "s0301a",
+      "speaker_id": "s03"
+    },
+    {
+      "recording_id": "s0401b",
+      "speaker_id": "s04"
+    },
+    {
+      "recording_id": "s0601a",
+      "speaker_id": "s06"
+    },
+    {
+      "recording_id": "s0801a",
+      "speaker_id": "s08"
+    },
+    {
+      "recording_id": "s1101a",
+      "speaker_id": "s11"
+    },
+    {
+      "recording_id": "s1601a",
+      "speaker_id": "s16"
+    },
+    {
+      "recording_id": "s2201a",
+      "speaker_id": "s22"
+    },
+    {
+      "recording_id": "s2401b",
+      "speaker_id": "s24"
+    }
+  ],
+  "vad_backend": "silero_official_onnx",
+  "workers": 2
+}

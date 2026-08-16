@@ -101,7 +101,7 @@ Phase 7 geometry smoke (10 recordings, original seven geometries) and full final
     --geometries A_O50_8,D_O0_8,O25_4,O0_4,O12.5_4,O0_2 --workers 2
 ```
 
-Phase 8 RMS evidence smoke (10 recordings; do not run the full 120-recording RMS tournament yet):
+Phase 8 RMS round 2 smoke (10 recordings; A / O25_4_CURRENT + three waveform veto/penalty variants / O0_4 / O0_2). Do not run the full 120-recording RMS tournament yet:
 
 ```bash
 /home/aaravthegreat/Projects/speechcraft/workers/dataset/.venv/bin/python \

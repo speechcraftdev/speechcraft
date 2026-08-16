@@ -13,30 +13,84 @@ from dataclasses import dataclass, replace
 
 @dataclass(frozen=True)
 class RmsPolicySpec:
-    """Soft RMS/pause evidence knobs. Not part of the geometry fingerprint.
+    """RMS veto/penalty knobs. Not part of the geometry fingerprint.
 
-    Windows are fixed for this experiment; this is not a parameter sweep.
+    Fingerprints include only knobs that affect the named kind. Fine-scale
+    windows interrogate the raw waveform; they are not 32 ms VAD-frame RMS.
     """
 
     kind: str
-    center_ms: float = 24.0
+    # Fine-scale raw-waveform interrogation (Linus: 5–10 ms hops).
+    fine_window_ms: float = 10.0
+    fine_hop_ms: float = 8.0
+    # Half-width around the cut for silence-ratio (±context).
+    context_ms: float = 64.0
+    center_ms: float = 20.0
     shoulder_ms: float = 80.0
-    long_ms: float = 120.0
-    prominence_db: float = 3.0
-    valley_width_ref_ms: float = 80.0
-    valley_margin_db: float = 3.0
+    # Outer ring for local speech context when inner shoulders sit in a pause.
+    outer_ms: float = 250.0
+    outer_contrast_db: float = 1.5
+    # Weak-valley veto: reject if depth vs speech context is below this.
+    veto_depth_db: float = 1.5
+    # Short+shallow penalty: short is not enough; short AND shallow is.
+    short_valley_ms: float = 64.0
+    shallow_depth_db: float = 6.0
     score_scale: float = 0.25
-    placement_window_ms: float = 24.0
-    placement_hop_ms: float = 4.0
+    # Typical-speech fallback for depth/width when the local outer ring is quiet.
+    speech_percentile: float = 75.0
+    # Recording-relative silence threshold: quiet-end percentile of fine RMS.
+    # Margin 0 keeps the threshold on the quiet tail instead of lifting it into
+    # speech (the round-1 valley-shape mistake).
+    silence_percentile: float = 10.0
+    silence_margin_db: float = 0.0
+
+
+def rms_policy_payload(spec: RmsPolicySpec) -> dict[str, object]:
+    """Behavior-producing knobs only. Unused fields must not enter fingerprints."""
+    if spec.kind == "current":
+        return {"kind": "current"}
+    grid = {
+        "kind": spec.kind,
+        "fine_window_ms": float(spec.fine_window_ms),
+        "fine_hop_ms": float(spec.fine_hop_ms),
+    }
+    if spec.kind == "weak_valley_veto":
+        return {
+            **grid,
+            "center_ms": float(spec.center_ms),
+            "shoulder_ms": float(spec.shoulder_ms),
+            "outer_ms": float(spec.outer_ms),
+            "outer_contrast_db": float(spec.outer_contrast_db),
+            "veto_depth_db": float(spec.veto_depth_db),
+            "speech_percentile": float(spec.speech_percentile),
+        }
+    if spec.kind == "short_shallow_penalty":
+        return {
+            **grid,
+            "center_ms": float(spec.center_ms),
+            "shoulder_ms": float(spec.shoulder_ms),
+            "outer_ms": float(spec.outer_ms),
+            "outer_contrast_db": float(spec.outer_contrast_db),
+            "short_valley_ms": float(spec.short_valley_ms),
+            "shallow_depth_db": float(spec.shallow_depth_db),
+            "speech_percentile": float(spec.speech_percentile),
+            "score_scale": float(spec.score_scale),
+        }
+    if spec.kind == "waveform_silence_ratio":
+        return {
+            **grid,
+            "context_ms": float(spec.context_ms),
+            "score_scale": float(spec.score_scale),
+            "silence_percentile": float(spec.silence_percentile),
+            "silence_margin_db": float(spec.silence_margin_db),
+        }
+    raise RuntimeError(f"unknown rms_policy.kind {spec.kind!r}")
 
 
 RMS_CURRENT = RmsPolicySpec(kind="current")
-RMS_PROMINENCE = RmsPolicySpec(kind="prominence")
-RMS_MULTISCALE = RmsPolicySpec(kind="multiscale")
-RMS_VALLEY = RmsPolicySpec(kind="valley")
-RMS_BILATERAL = RmsPolicySpec(kind="bilateral")
-RMS_MIN_PLACEMENT = RmsPolicySpec(kind="min_placement")
-RMS_MULTISCALE_MIN = RmsPolicySpec(kind="multiscale_min")
+RMS_WEAK_VALLEY_VETO = RmsPolicySpec(kind="weak_valley_veto")
+RMS_SHORT_SHALLOW_PENALTY = RmsPolicySpec(kind="short_shallow_penalty")
+RMS_WAVEFORM_SILENCE_RATIO = RmsPolicySpec(kind="waveform_silence_ratio")
 
 
 @dataclass(frozen=True)
@@ -209,21 +263,20 @@ def _o25_rms(name: str, spec: RmsPolicySpec) -> GeometryConfig:
 
 
 O25_4_CURRENT = _o25_rms("O25_4_CURRENT", RMS_CURRENT)
-O25_4_RMS_PROMINENCE = _o25_rms("O25_4_RMS_PROMINENCE", RMS_PROMINENCE)
-O25_4_MULTISCALE_RMS = _o25_rms("O25_4_MULTISCALE_RMS", RMS_MULTISCALE)
-O25_4_VALLEY_WIDTH_DEPTH = _o25_rms("O25_4_VALLEY_WIDTH_DEPTH", RMS_VALLEY)
-O25_4_BILATERAL_CONTRAST = _o25_rms("O25_4_BILATERAL_CONTRAST", RMS_BILATERAL)
-O25_4_RMS_MIN_PLACEMENT = _o25_rms("O25_4_RMS_MIN_PLACEMENT", RMS_MIN_PLACEMENT)
-O25_4_MULTISCALE_MIN = _o25_rms("O25_4_MULTISCALE_MIN", RMS_MULTISCALE_MIN)
+O25_4_WEAK_VALLEY_VETO = _o25_rms("O25_4_WEAK_VALLEY_VETO", RMS_WEAK_VALLEY_VETO)
+O25_4_SHORT_SHALLOW_PENALTY = _o25_rms(
+    "O25_4_SHORT_SHALLOW_PENALTY", RMS_SHORT_SHALLOW_PENALTY
+)
+O25_4_WAVEFORM_SILENCE_RATIO = _o25_rms(
+    "O25_4_WAVEFORM_SILENCE_RATIO", RMS_WAVEFORM_SILENCE_RATIO
+)
 
+# Round-2 set. The seven Phase-8 RMS scorers were dropped after smoke.
 PHASE8_RMS_VARIANTS: tuple[GeometryConfig, ...] = (
     O25_4_CURRENT,
-    O25_4_RMS_PROMINENCE,
-    O25_4_MULTISCALE_RMS,
-    O25_4_VALLEY_WIDTH_DEPTH,
-    O25_4_BILATERAL_CONTRAST,
-    O25_4_RMS_MIN_PLACEMENT,
-    O25_4_MULTISCALE_MIN,
+    O25_4_WEAK_VALLEY_VETO,
+    O25_4_SHORT_SHALLOW_PENALTY,
+    O25_4_WAVEFORM_SILENCE_RATIO,
 )
 PHASE8_SMOKE_CONTENDERS: tuple[GeometryConfig, ...] = (
     A_O50_8,
