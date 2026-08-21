@@ -39,7 +39,13 @@ from adapter.canonical_smoke import (
     assert_independent_state,
     assert_order_independence,
 )
-from adapter.config import CURRENT_A, PROPER_D, GeometryConfig, rms_policy_payload
+from adapter.config import (
+    CURRENT_A,
+    PROPER_D,
+    GeometryConfig,
+    logistic_policy_payload,
+    rms_policy_payload,
+)
 from adapter.convert import to_slicer_result
 from adapter.diagnostics import (
     ExecutionDiagnostics,
@@ -93,6 +99,9 @@ def geometry_config_payload(config: GeometryConfig) -> dict[str, object]:
         "rms_policy": None
         if config.rms_policy is None
         else rms_policy_payload(config.rms_policy),
+        "logistic": None
+        if config.logistic is None
+        else logistic_policy_payload(config.logistic),
     }
 
 

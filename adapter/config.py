@@ -92,6 +92,51 @@ RMS_WEAK_VALLEY_VETO = RmsPolicySpec(kind="weak_valley_veto")
 RMS_SHORT_SHALLOW_PENALTY = RmsPolicySpec(kind="short_shallow_penalty")
 RMS_WAVEFORM_SILENCE_RATIO = RmsPolicySpec(kind="waveform_silence_ratio")
 
+# Frozen logistic feature names. Order is part of the policy fingerprint.
+LOGISTIC_BOUNDARY_FEATURE_NAMES: tuple[str, ...] = (
+    "quiet_run_norm",
+    "quiet_before_norm",
+    "quiet_after_norm",
+    "rms_quiet_norm",
+    "prominence_norm",
+)
+
+
+@dataclass(frozen=True)
+class LogisticSpec:
+    """Logistic boundary scorer. Not part of the geometry fingerprint."""
+
+    kind: str
+    model_id: str
+    feature_names: tuple[str, ...]
+    weights: tuple[float, ...]
+    bias: float = 0.0
+    score_scale: float = 1.0
+
+
+def logistic_policy_payload(spec: LogisticSpec) -> dict[str, object]:
+    """Behavior-producing knobs only."""
+    if spec.kind != "boundary_v1":
+        raise RuntimeError(f"unknown logistic.kind {spec.kind!r}")
+    return {
+        "kind": spec.kind,
+        "model_id": str(spec.model_id),
+        "feature_names": [str(name) for name in spec.feature_names],
+        "weights": [float(value) for value in spec.weights],
+        "bias": float(spec.bias),
+        "score_scale": float(spec.score_scale),
+    }
+
+
+LOGISTIC_BOUNDARY_V1_UNTRAINED = LogisticSpec(
+    kind="boundary_v1",
+    model_id="untrained_zero",
+    feature_names=LOGISTIC_BOUNDARY_FEATURE_NAMES,
+    weights=(0.0,) * len(LOGISTIC_BOUNDARY_FEATURE_NAMES),
+    bias=0.0,
+    score_scale=1.0,
+)
+
 
 @dataclass(frozen=True)
 class GeometryConfig:
@@ -122,6 +167,7 @@ class GeometryConfig:
     min_quiet_run_ms: float | None = None
     scoring: str | None = None
     rms_policy: RmsPolicySpec | None = None
+    logistic: LogisticSpec | None = None
 
 
 # Current overlapping geometry (validated A baseline).
@@ -221,6 +267,17 @@ O0_4 = GeometryConfig(
     offsets=(0, 64, 128, 192, 256, 320, 384, 448),
     sample_rate_hz=16000,
 )
+# O0_4 geometry with an opt-in logistic scorer. Frozen O0_4 stays scoring=None.
+O0_4_LOGISTIC = GeometryConfig(
+    name="O0_4_LOGISTIC",
+    window_samples=512,
+    hop_samples=512,
+    offsets=(0, 64, 128, 192, 256, 320, 384, 448),
+    sample_rate_hz=16000,
+    scoring="logistic_boundary",
+    logistic=LOGISTIC_BOUNDARY_V1_UNTRAINED,
+)
+PHASE10_LOGISTIC_CONTENDERS: tuple[GeometryConfig, ...] = (O0_4, O0_4_LOGISTIC)
 # 12.5% recurrent overlap, ~4 ms aggregate spacing. Between O25_4 and O0_4.
 O12_5_4 = GeometryConfig(
     name="O12.5_4",
@@ -293,7 +350,13 @@ PHASE8_FROZEN_GEOMETRIES: tuple[GeometryConfig, ...] = (
 
 PHASE7_GEOMETRIES_BY_NAME: dict[str, GeometryConfig] = {
     config.name: config
-    for config in (*PHASE7_GEOMETRIES, O12_5_4, O0_2, *PHASE8_RMS_VARIANTS)
+    for config in (
+        *PHASE7_GEOMETRIES,
+        O12_5_4,
+        O0_2,
+        *PHASE8_RMS_VARIANTS,
+        O0_4_LOGISTIC,
+    )
 }
 
 # RESET-8 (per-window Silero state reset at hop=128) is intentionally omitted.

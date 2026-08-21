@@ -10,11 +10,14 @@ from types import SimpleNamespace
 from typing import Any
 
 from adapter.config import GeometryConfig
+from adapter.logistic_policy import apply_logistic_cut_policy
 from adapter.tournament_policy import (
     BoundaryEvidence,
     apply_min_quiet_run,
     quiet_evidence_score,
 )
+
+_SCORE_DELTA_POLICIES = frozenset({"quiet_evidence", "logistic_boundary"})
 
 
 def cut_quiet_run_ms(cut: Any) -> float:
@@ -70,6 +73,10 @@ def boundary_evidence_from_cut(cut: Any) -> BoundaryEvidence:
 
 def apply_cut_policy(cuts: list[Any], config: GeometryConfig) -> list[Any]:
     """Apply min-quiet gate and/or quiet-evidence rescoring. Baseline is a no-op."""
+    if config.logistic is not None and config.scoring != "logistic_boundary":
+        raise RuntimeError(
+            f"{config.name} has a logistic spec but scoring={config.scoring!r}"
+        )
     annotated = [attach_quiet_metadata(cut) for cut in cuts]
     if config.min_quiet_run_ms is not None:
         min_ms = float(config.min_quiet_run_ms)
@@ -87,6 +94,8 @@ def apply_cut_policy(cuts: list[Any], config: GeometryConfig) -> list[Any]:
             metadata["original_score"] = cut.score
             rescored.append(_replace_obj(cut, score=round(decision.score, 6), metadata=metadata))
         annotated = rescored
+    elif config.scoring == "logistic_boundary":
+        annotated = apply_logistic_cut_policy(annotated, config)
     elif config.scoring not in {None, ""}:
         raise RuntimeError(f"unknown scoring policy: {config.scoring!r}")
     return annotated
@@ -98,7 +107,7 @@ def apply_candidate_weight_policy(
     config: GeometryConfig,
 ) -> list[Any]:
     """Historical quiet_run_score packer: add boundary-score delta to clip weight."""
-    if config.scoring == "quiet_evidence":
+    if config.scoring in _SCORE_DELTA_POLICIES:
         by_id = {str(cut.cutpoint_id): cut for cut in cuts}
         weighted: list[Any] = []
         for candidate in candidates:

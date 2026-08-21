@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from adapter.config import GeometryConfig, rms_policy_payload
+from adapter.config import GeometryConfig, logistic_policy_payload, rms_policy_payload
 
 
 SPEAKER_TS_EVAL_SRC_ENV = "SPEAKER_TS_EVAL_SRC"
@@ -97,6 +97,9 @@ def policy_canonical_payload(config: GeometryConfig) -> dict[str, Any]:
     spec = getattr(config, "rms_policy", None)
     if spec is not None:
         payload["rms_policy"] = rms_policy_payload(spec)
+    logistic = getattr(config, "logistic", None)
+    if logistic is not None:
+        payload["logistic"] = logistic_policy_payload(logistic)
     return payload
 
 
