@@ -475,7 +475,7 @@ def _execute_policy_from_state(
         cutpoints = _detect_cutpoints(state)
     else:
         cutpoints = deepcopy(base_cutpoints)
-    cutpoints = apply_cut_policy(cutpoints, config)
+    cutpoints = apply_cut_policy(cutpoints, config, bundle=bundle, fine_grid=fine_grid)
     if config.rms_policy is not None:
         cutpoints = apply_rms_policy(cutpoints, bundle, config, fine_grid=fine_grid)
     contexts, benchmark_config = _make_contexts(state, config)

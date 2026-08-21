@@ -10,7 +10,9 @@ from types import SimpleNamespace
 from typing import Any
 
 from adapter.config import GeometryConfig
+from adapter.feature_bundle import FeatureBundle
 from adapter.logistic_policy import apply_logistic_cut_policy
+from adapter.rms_evidence import FineRmsGrid
 from adapter.tournament_policy import (
     BoundaryEvidence,
     apply_min_quiet_run,
@@ -71,8 +73,13 @@ def boundary_evidence_from_cut(cut: Any) -> BoundaryEvidence:
     )
 
 
-def apply_cut_policy(cuts: list[Any], config: GeometryConfig) -> list[Any]:
-    """Apply min-quiet gate and/or quiet-evidence rescoring. Baseline is a no-op."""
+def apply_cut_policy(
+    cuts: list[Any],
+    config: GeometryConfig,
+    bundle: FeatureBundle | None = None,
+    fine_grid: FineRmsGrid | None = None,
+) -> list[Any]:
+    """Apply min-quiet gate and/or rescoring. Baseline is a no-op."""
     if config.logistic is not None and config.scoring != "logistic_boundary":
         raise RuntimeError(
             f"{config.name} has a logistic spec but scoring={config.scoring!r}"
@@ -95,7 +102,9 @@ def apply_cut_policy(cuts: list[Any], config: GeometryConfig) -> list[Any]:
             rescored.append(_replace_obj(cut, score=round(decision.score, 6), metadata=metadata))
         annotated = rescored
     elif config.scoring == "logistic_boundary":
-        annotated = apply_logistic_cut_policy(annotated, config)
+        if bundle is None:
+            raise RuntimeError("logistic_boundary scoring requires a feature bundle")
+        annotated = apply_logistic_cut_policy(annotated, config, bundle, fine_grid)
     elif config.scoring not in {None, ""}:
         raise RuntimeError(f"unknown scoring policy: {config.scoring!r}")
     return annotated

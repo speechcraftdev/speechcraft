@@ -92,25 +92,56 @@ RMS_WEAK_VALLEY_VETO = RmsPolicySpec(kind="weak_valley_veto")
 RMS_SHORT_SHALLOW_PENALTY = RmsPolicySpec(kind="short_shallow_penalty")
 RMS_WAVEFORM_SILENCE_RATIO = RmsPolicySpec(kind="waveform_silence_ratio")
 
-# Frozen logistic feature names. Order is part of the policy fingerprint.
-LOGISTIC_BOUNDARY_FEATURE_NAMES: tuple[str, ...] = (
-    "quiet_run_norm",
-    "quiet_before_norm",
-    "quiet_after_norm",
-    "rms_quiet_norm",
-    "prominence_norm",
+# Frozen 15-feature waveform-first schema. Order is part of the policy fingerprint.
+FEATURE_NAMES: tuple[str, ...] = (
+    "center_rms",
+    "rms_percentile",
+    "rms_valley_depth",
+    "rms_valley_width",
+    "left_rms",
+    "right_rms",
+    "rms_asymmetry",
+    "zcr_40ms",
+    "zcr_80ms",
+    "abs_amplitude_p90",
+    "short_window_energy_variance",
+    "spectral_flatness",
+    "high_frequency_energy_fraction",
+    "vad_mean_64ms",
+    "low_vad_run_width",
 )
+RMS_WAVEFORM = FEATURE_NAMES[:13]
+VAD_ONLY = FEATURE_NAMES[13:]
+ALL = FEATURE_NAMES
+LOGISTIC_BOUNDARY_FEATURE_NAMES = FEATURE_NAMES
+FEATURE_SUBSET_ALL = "all"
+FEATURE_SUBSET_RMS_WAVEFORM = "rms_waveform"
+FEATURE_SUBSET_VAD_ONLY = "vad_only"
+
+
+def feature_names_for_subset(subset: str) -> tuple[str, ...]:
+    if subset == FEATURE_SUBSET_ALL:
+        return ALL
+    if subset == FEATURE_SUBSET_RMS_WAVEFORM:
+        return RMS_WAVEFORM
+    if subset == FEATURE_SUBSET_VAD_ONLY:
+        return VAD_ONLY
+    raise RuntimeError(f"unknown logistic feature_subset {subset!r}")
 
 
 @dataclass(frozen=True)
 class LogisticSpec:
-    """Logistic boundary scorer. Not part of the geometry fingerprint."""
+    """P(bad boundary) scorer. Not part of the geometry fingerprint."""
 
     kind: str
     model_id: str
+    target: str
+    feature_subset: str
     feature_names: tuple[str, ...]
-    weights: tuple[float, ...]
-    bias: float = 0.0
+    feature_mean: tuple[float, ...]
+    feature_scale: tuple[float, ...]
+    coefficients: tuple[float, ...]
+    intercept: float = 0.0
     score_scale: float = 1.0
 
 
@@ -118,24 +149,40 @@ def logistic_policy_payload(spec: LogisticSpec) -> dict[str, object]:
     """Behavior-producing knobs only."""
     if spec.kind != "boundary_v1":
         raise RuntimeError(f"unknown logistic.kind {spec.kind!r}")
+    if spec.target != "p_bad":
+        raise RuntimeError(f"logistic.target must be 'p_bad', got {spec.target!r}")
     return {
         "kind": spec.kind,
         "model_id": str(spec.model_id),
+        "target": str(spec.target),
+        "feature_subset": str(spec.feature_subset),
         "feature_names": [str(name) for name in spec.feature_names],
-        "weights": [float(value) for value in spec.weights],
-        "bias": float(spec.bias),
+        "feature_mean": [float(value) for value in spec.feature_mean],
+        "feature_scale": [float(value) for value in spec.feature_scale],
+        "coefficients": [float(value) for value in spec.coefficients],
+        "intercept": float(spec.intercept),
         "score_scale": float(spec.score_scale),
     }
 
 
-LOGISTIC_BOUNDARY_V1_UNTRAINED = LogisticSpec(
-    kind="boundary_v1",
-    model_id="untrained_zero",
-    feature_names=LOGISTIC_BOUNDARY_FEATURE_NAMES,
-    weights=(0.0,) * len(LOGISTIC_BOUNDARY_FEATURE_NAMES),
-    bias=0.0,
-    score_scale=1.0,
-)
+def untrained_logistic_spec(subset: str = FEATURE_SUBSET_ALL) -> LogisticSpec:
+    names = feature_names_for_subset(subset)
+    n = len(names)
+    return LogisticSpec(
+        kind="boundary_v1",
+        model_id="untrained_zero",
+        target="p_bad",
+        feature_subset=subset,
+        feature_names=names,
+        feature_mean=(0.0,) * n,
+        feature_scale=(1.0,) * n,
+        coefficients=(0.0,) * n,
+        intercept=0.0,
+        score_scale=1.0,
+    )
+
+
+LOGISTIC_BOUNDARY_V1_UNTRAINED = untrained_logistic_spec(FEATURE_SUBSET_ALL)
 
 
 @dataclass(frozen=True)

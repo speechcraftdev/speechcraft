@@ -7,6 +7,7 @@ from typing import Any
 
 from adapter.config import GeometryConfig, RmsPolicySpec
 from adapter.feature_bundle import FeatureBundle, buffer_bounds, require_bundle_geometry
+from adapter.logistic_features import LOGISTIC_FINE_RMS_SPEC
 from adapter.rms_evidence import (
     FineRmsGrid,
     build_fine_rms_grid,
@@ -55,11 +56,18 @@ def family_fine_rms_spec(configs: list[GeometryConfig]) -> RmsPolicySpec | None:
         for config in configs
         if config.rms_policy is not None and config.rms_policy.kind != "current"
     ]
+    if any(
+        config.scoring == "logistic_boundary"
+        and config.logistic is not None
+        and config.logistic.feature_subset in {"all", "rms_waveform"}
+        for config in configs
+    ):
+        specs.append(LOGISTIC_FINE_RMS_SPEC)
     if not specs:
         return None
     windows = {(spec.fine_window_ms, spec.fine_hop_ms) for spec in specs}
     if len(windows) != 1:
-        raise RuntimeError(f"O25_4 family mixed fine RMS grids: {windows}")
+        raise RuntimeError(f"mixed fine RMS grids: {windows}")
     return specs[0]
 
 
