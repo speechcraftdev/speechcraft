@@ -93,6 +93,9 @@ RMS_SHORT_SHALLOW_PENALTY = RmsPolicySpec(kind="short_shallow_penalty")
 RMS_WAVEFORM_SILENCE_RATIO = RmsPolicySpec(kind="waveform_silence_ratio")
 
 # Frozen 15-feature waveform-first schema. Order is part of the policy fingerprint.
+# RMS fields are FineRmsGrid dBFS, not linear amplitude:
+#   center_rms / left_rms / right_rms: dBFS
+#   rms_asymmetry: left_rms - right_rms (dB). Positive = left louder than right.
 FEATURE_NAMES: tuple[str, ...] = (
     "center_rms",
     "rms_percentile",
@@ -143,6 +146,22 @@ class LogisticSpec:
     coefficients: tuple[float, ...]
     intercept: float = 0.0
     score_scale: float = 1.0
+
+    def __post_init__(self) -> None:
+        for name, values in (
+            ("feature_mean", self.feature_mean),
+            ("feature_scale", self.feature_scale),
+            ("coefficients", self.coefficients),
+        ):
+            for index, value in enumerate(values):
+                if not math.isfinite(float(value)):
+                    raise RuntimeError(f"non-finite logistic {name}[{index}]: {value}")
+                if name == "feature_scale" and float(value) <= 0.0:
+                    raise RuntimeError("logistic feature_scale must be strictly positive")
+        if not math.isfinite(float(self.intercept)):
+            raise RuntimeError(f"non-finite logistic intercept: {self.intercept}")
+        if not math.isfinite(float(self.score_scale)):
+            raise RuntimeError(f"non-finite logistic score_scale: {self.score_scale}")
 
 
 def logistic_policy_payload(spec: LogisticSpec) -> dict[str, object]:

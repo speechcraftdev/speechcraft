@@ -43,6 +43,7 @@ SPECTRAL_WINDOW_MS = 40.0
 HIGH_FREQ_HZ = 4000.0
 VAD_MEAN_MS = 64.0
 EMPTY_RMS_DB = -120.0
+SPECTRAL_EPS = 1e-12
 LOGISTIC_FINE_WINDOW_MS = 10.0
 LOGISTIC_FINE_HOP_MS = 8.0
 
@@ -185,6 +186,19 @@ def _frame_energies(
     return tuple(energies)
 
 
+def _hann(n: int) -> tuple[float, ...]:
+    if n <= 0:
+        return ()
+    if n == 1:
+        return (1.0,)
+    return tuple(0.5 - 0.5 * math.cos(2.0 * math.pi * i / (n - 1)) for i in range(n))
+
+
+def _hann_window(samples: Sequence[float]) -> tuple[float, ...]:
+    window = _hann(len(samples))
+    return tuple(float(sample) * weight for sample, weight in zip(samples, window))
+
+
 def _rfft_power(samples: Sequence[float]) -> tuple[float, ...]:
     n = len(samples)
     if n == 0:
@@ -212,13 +226,12 @@ def _rfft_power(samples: Sequence[float]) -> tuple[float, ...]:
 
 
 def _spectral_flatness(power: Sequence[float]) -> float:
-    positive = [float(value) for value in power[1:] if float(value) > 0.0]
-    if len(positive) < 2:
+    bins = [float(value) for value in power[1:]]
+    if not bins:
         return 0.0
-    log_mean = sum(math.log(value) for value in positive) / float(len(positive))
-    arith = sum(positive) / float(len(positive))
-    if arith <= 0.0:
-        return 0.0
+    shifted = [value + SPECTRAL_EPS for value in bins]
+    log_mean = sum(math.log(value) for value in shifted) / float(len(shifted))
+    arith = sum(shifted) / float(len(shifted))
     return math.exp(log_mean) / arith
 
 
@@ -285,7 +298,28 @@ def _low_vad_run_width_ms(
     hi = nearest
     while hi + 1 < len(values) and values[hi + 1] < threshold:
         hi += 1
-    return max(0.0, (times[hi] - times[lo]) * 1000.0)
+    if hi + 1 < len(times):
+        step = times[hi + 1] - times[hi]
+    elif lo > 0:
+        step = times[lo] - times[lo - 1]
+    elif len(times) >= 2:
+        step = times[1] - times[0]
+    else:
+        step = 0.0
+    start_sec = max(bound_start, times[lo])
+    end_sec = min(bound_end, times[hi] + max(0.0, step))
+    return max(0.0, (end_sec - start_sec) * 1000.0)
+
+
+def _require_finite_features(values: tuple[float, ...]) -> tuple[float, ...]:
+    if len(values) != len(FEATURE_NAMES):
+        raise RuntimeError(
+            f"logistic feature length {len(values)} != {len(FEATURE_NAMES)}"
+        )
+    for name, value in zip(FEATURE_NAMES, values):
+        if not math.isfinite(value):
+            raise RuntimeError(f"non-finite logistic feature {name}: {value}")
+    return values
 
 
 def extract_all_boundary_features(
@@ -300,7 +334,11 @@ def extract_all_boundary_features(
     vad_speech_prob: Sequence[float],
     vad_threshold: float,
 ) -> tuple[float, ...]:
-    """Return the frozen 15-vector. All lookups stop at the allowed buffer."""
+    """Return the frozen 15-vector. All lookups stop at the allowed buffer.
+
+    center_rms / left_rms / right_rms are FineRmsGrid dBFS.
+    rms_asymmetry is left_rms - right_rms in dB (positive: left louder).
+    """
     times, rms = _buffer_hops(fine_grid.times_sec, fine_grid.rms_dbfs, bound_start, bound_end)
     half_center = CENTER_MS / 2000.0
     side = SIDE_MS / 1000.0
@@ -375,30 +413,32 @@ def extract_all_boundary_features(
         bound_start=bound_start,
         bound_end=bound_end,
     )
-    power = _rfft_power(spectral_samples)
+    power = _rfft_power(_hann_window(spectral_samples))
     flatness = _spectral_flatness(power)
     hf_frac = _high_frequency_fraction(power, sample_rate_hz, len(spectral_samples))
     vad_times, vad_probs = _vad_in_buffer(
         vad_centers_sec, vad_speech_prob, bound_start, bound_end
     )
-    return (
-        float(center_rms),
-        _rms_percentile(center_rms, rms),
-        0.0 if depth is None else float(depth),
-        float(width),
-        float(left_rms),
-        float(right_rms),
-        float(left_rms) - float(right_rms),
-        float(zcr40),
-        float(zcr80),
-        float(abs_p90),
-        float(energy_var),
-        float(flatness),
-        float(hf_frac),
-        _vad_mean(vad_times, vad_probs, t_sec, bound_start, bound_end),
-        _low_vad_run_width_ms(
-            vad_times, vad_probs, t_sec, vad_threshold, bound_start, bound_end
-        ),
+    return _require_finite_features(
+        (
+            float(center_rms),
+            _rms_percentile(center_rms, rms),
+            0.0 if depth is None else float(depth),
+            float(width),
+            float(left_rms),
+            float(right_rms),
+            float(left_rms) - float(right_rms),
+            float(zcr40),
+            float(zcr80),
+            float(abs_p90),
+            float(energy_var),
+            float(flatness),
+            float(hf_frac),
+            _vad_mean(vad_times, vad_probs, t_sec, bound_start, bound_end),
+            _low_vad_run_width_ms(
+                vad_times, vad_probs, t_sec, vad_threshold, bound_start, bound_end
+            ),
+        )
     )
 
 

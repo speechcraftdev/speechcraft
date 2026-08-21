@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import FrozenInstanceError, replace
 from types import SimpleNamespace
 
@@ -42,6 +43,7 @@ from referee.types import BufferScope
 
 TRUSTED_O0_4 = "87130029b5443647ed1f1febd32ab768bf957a0a1698217eb3cf14b2d00c6ecf"
 SR = 16000
+IDX = {name: index for index, name in enumerate(FEATURE_NAMES)}
 
 
 def _cut(*, cut_id: str, time_sec: float, score: float = 1.0, buffer_id: str = "buf0") -> SimpleNamespace:
@@ -71,6 +73,21 @@ def _three_second(*, inside_amp: float, left_amp: float, right_amp: float) -> tu
     _paint(audio, 1.0, 2.0, inside_amp)
     _paint(audio, 2.0, 3.0, right_amp)
     return tuple(audio)
+
+
+def _sine(freq_hz: float, *, amp: float = 0.2, duration_sec: float = 3.0) -> tuple[float, ...]:
+    n = int(duration_sec * SR)
+    return tuple(amp * math.sin(2.0 * math.pi * freq_hz * i / SR) for i in range(n))
+
+
+def _det_noise(*, amp: float = 0.2, duration_sec: float = 3.0, seed: int = 1) -> tuple[float, ...]:
+    n = int(duration_sec * SR)
+    x = int(seed)
+    samples: list[float] = []
+    for _ in range(n):
+        x = (1_103_515_245 * x + 12_345) % (2**31)
+        samples.append(amp * ((x / float(2**30)) - 1.0))
+    return tuple(samples)
 
 
 def _vad_track(*, inside: float, left: float, right: float, hop_sec: float = 0.004) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -261,7 +278,9 @@ class TestLogisticInference:
         raw = (5.0,) + (0.0,) * 14
         assert standardize(raw, spec)[0] == pytest.approx(1.0)
         with pytest.raises(RuntimeError, match="strictly positive"):
-            standardize(raw, replace(spec, feature_scale=(0.0,) + (1.0,) * 14))
+            replace(spec, feature_scale=(0.0,) + (1.0,) * 14)
+        with pytest.raises(RuntimeError, match="non-finite"):
+            replace(spec, intercept=float("nan"))
 
     def test_higher_p_bad_lowers_preference(self) -> None:
         spec = _p_bad_spec(center_coef=1.0)
@@ -282,6 +301,22 @@ class TestWaveformExtraction:
         features = _extract(bundle, 1.5)
         assert len(features) == 15
         assert features == _extract(bundle, 1.5)
+        assert all(math.isfinite(value) for value in features)
+
+    def test_silence_features_are_finite(self) -> None:
+        vad_times, vad_probs = _vad_track(inside=0.1, left=0.1, right=0.1)
+        bundle = _bundle(audio=(0.0,) * (3 * SR), vad_times=vad_times, vad_probs=vad_probs)
+        features = _extract(bundle, 1.5)
+        assert len(features) == 15
+        assert all(math.isfinite(v) for v in features)
+
+    def test_nan_waveform_is_rejected(self) -> None:
+        vad_times, vad_probs = _vad_track(inside=0.1, left=0.1, right=0.1)
+        audio = list(_three_second(inside_amp=0.2, left_amp=0.2, right_amp=0.2))
+        audio[int(1.5 * SR)] = float("nan")
+        bundle = _bundle(audio=tuple(audio), vad_times=vad_times, vad_probs=vad_probs)
+        with pytest.raises(RuntimeError, match="non-finite logistic feature"):
+            _extract(bundle, 1.5)
 
     def test_family_grid_is_requested_for_logistic(self) -> None:
         assert family_fine_rms_spec([O0_4]) is None
@@ -291,6 +326,85 @@ class TestWaveformExtraction:
         assert spec.fine_hop_ms == 8.0
         vad_only = replace(O0_4_LOGISTIC, logistic=untrained_logistic_spec(FEATURE_SUBSET_VAD_ONLY))
         assert family_fine_rms_spec([vad_only]) is None
+
+
+class TestFeatureSemantics:
+    def _from_audio(self, audio: tuple[float, ...], t_sec: float = 1.5) -> tuple[float, ...]:
+        vad_times, vad_probs = _vad_track(inside=0.1, left=0.1, right=0.1)
+        return _extract(_bundle(audio=audio, vad_times=vad_times, vad_probs=vad_probs), t_sec)
+
+    def test_low_frequency_sine_has_lower_zcr_than_high_frequency(self) -> None:
+        low = self._from_audio(_sine(200.0))
+        high = self._from_audio(_sine(2000.0))
+        assert low[IDX["zcr_40ms"]] < high[IDX["zcr_40ms"]]
+        assert low[IDX["zcr_80ms"]] < high[IDX["zcr_80ms"]]
+
+    def test_high_frequency_sine_has_higher_high_band_energy(self) -> None:
+        low = self._from_audio(_sine(400.0))
+        high = self._from_audio(_sine(6000.0))
+        assert high[IDX["high_frequency_energy_fraction"]] > low[IDX["high_frequency_energy_fraction"]]
+
+    def test_noise_is_flatter_than_a_tone(self) -> None:
+        tone = self._from_audio(_sine(1000.0))
+        noise = self._from_audio(_det_noise())
+        assert noise[IDX["spectral_flatness"]] > tone[IDX["spectral_flatness"]]
+
+    def test_louder_waveform_raises_abs_amplitude_p90(self) -> None:
+        quiet = self._from_audio(_sine(1000.0, amp=0.05))
+        loud = self._from_audio(_sine(1000.0, amp=0.5))
+        assert loud[IDX["abs_amplitude_p90"]] > quiet[IDX["abs_amplitude_p90"]]
+
+    def test_constant_amplitude_has_lower_energy_variance_than_steps(self) -> None:
+        constant = self._from_audio(_three_second(inside_amp=0.2, left_amp=0.2, right_amp=0.2))
+        stepped = list(_three_second(inside_amp=0.2, left_amp=0.2, right_amp=0.2))
+        t = 1.46
+        while t < 1.54:
+            _paint(stepped, t, t + 0.01, 0.05 if int(round(t * 100)) % 2 == 0 else 0.45)
+            t += 0.01
+        modulated = self._from_audio(tuple(stepped))
+        assert constant[IDX["short_window_energy_variance"]] < modulated[IDX["short_window_energy_variance"]]
+
+    def test_rms_valley_is_deeper_and_wider_than_flat(self) -> None:
+        flat = list(_three_second(inside_amp=0.2, left_amp=0.2, right_amp=0.2))
+        dipped = list(flat)
+        _paint(dipped, 1.44, 1.56, 0.01)
+        flat_f = self._from_audio(tuple(flat))
+        dip_f = self._from_audio(tuple(dipped))
+        assert dip_f[IDX["rms_valley_depth"]] > flat_f[IDX["rms_valley_depth"]]
+        assert dip_f[IDX["rms_valley_width"]] > flat_f[IDX["rms_valley_width"]]
+
+    def test_rms_asymmetry_sign_is_left_minus_right_dbfs(self) -> None:
+        left_loud = list(_three_second(inside_amp=0.2, left_amp=0.2, right_amp=0.2))
+        _paint(left_loud, 1.0, 1.5, 0.5)
+        _paint(left_loud, 1.5, 2.0, 0.05)
+        right_loud = list(_three_second(inside_amp=0.2, left_amp=0.2, right_amp=0.2))
+        _paint(right_loud, 1.0, 1.5, 0.05)
+        _paint(right_loud, 1.5, 2.0, 0.5)
+        left_f = self._from_audio(tuple(left_loud))
+        right_f = self._from_audio(tuple(right_loud))
+        assert left_f[IDX["left_rms"]] > left_f[IDX["right_rms"]]
+        assert left_f[IDX["rms_asymmetry"]] > 0.0
+        assert right_f[IDX["rms_asymmetry"]] < 0.0
+        assert left_f[IDX["rms_asymmetry"]] == pytest.approx(
+            left_f[IDX["left_rms"]] - left_f[IDX["right_rms"]]
+        )
+
+    def test_low_vad_run_width_grows_with_the_low_run(self) -> None:
+        audio = _three_second(inside_amp=0.2, left_amp=0.2, right_amp=0.2)
+        hop = 0.004
+        n = int(round(3.0 / hop))
+        times = tuple(i * hop for i in range(n))
+
+        def width(low_start: float, low_end: float) -> float:
+            probs = tuple(0.05 if low_start <= t < low_end else 0.9 for t in times)
+            return _extract(_bundle(audio=audio, vad_times=times, vad_probs=probs), 1.50)[IDX["low_vad_run_width"]]
+
+        short = width(1.48, 1.52)
+        long = width(1.20, 1.80)
+        one_hop = width(1.500, 1.504)
+        assert long > short
+        assert one_hop > 0.0
+        assert one_hop < 20.0
 
 
 class TestBufferScopeIsolation:

@@ -36,8 +36,16 @@ def require_p_bad_spec(spec: LogisticSpec) -> None:
         raise RuntimeError(f"logistic feature_scale length {len(spec.feature_scale)} != {n}")
     if len(spec.coefficients) != n:
         raise RuntimeError(f"logistic coefficients length {len(spec.coefficients)} != {n}")
-    if any(float(scale) <= 0.0 for scale in spec.feature_scale):
+    if any(not math.isfinite(float(scale)) or float(scale) <= 0.0 for scale in spec.feature_scale):
         raise RuntimeError("logistic feature_scale must be strictly positive")
+    if any(not math.isfinite(float(value)) for value in spec.feature_mean):
+        raise RuntimeError("logistic feature_mean must be finite")
+    if any(not math.isfinite(float(value)) for value in spec.coefficients):
+        raise RuntimeError("logistic coefficients must be finite")
+    if not math.isfinite(float(spec.intercept)):
+        raise RuntimeError("logistic intercept must be finite")
+    if not math.isfinite(float(spec.score_scale)):
+        raise RuntimeError("logistic score_scale must be finite")
 
 
 def standardize(raw: tuple[float, ...] | list[float], spec: LogisticSpec) -> tuple[float, ...]:
@@ -46,6 +54,9 @@ def standardize(raw: tuple[float, ...] | list[float], spec: LogisticSpec) -> tup
         raise RuntimeError(
             f"logistic feature/mean length mismatch: {len(raw)} != {len(spec.feature_mean)}"
         )
+    for name, value in zip(spec.feature_names, raw):
+        if not math.isfinite(float(value)):
+            raise RuntimeError(f"non-finite logistic feature {name}: {value}")
     return tuple(
         (float(value) - float(mean)) / float(scale)
         for value, mean, scale in zip(raw, spec.feature_mean, spec.feature_scale)
