@@ -6,6 +6,7 @@ import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.esm.js";
 
 type WaveformPaneProps = {
   audioUrl: string;
+  durationSeconds?: number;
   selectionStart: number;
   selectionEnd: number;
   onSelectionChange: (start: number, end: number) => void;
@@ -16,6 +17,11 @@ type WaveformPaneProps = {
   onPlayingChange?: (isPlaying: boolean) => void;
 };
 
+/** Snap to clip start/end when the pointer is this close to either edge. */
+const EDGE_SNAP_PX = 8;
+/** Ignore sub-millisecond jitter when syncing the region from React state. */
+const REGION_SYNC_EPS = 0.001;
+
 // Adapted from speechcraft's WaveformPane — real wavesurfer + regions, but
 // restyled to Midday's monochrome ink palette (was teal) and simplified to
 // decode audio directly (no cached-peaks machinery). Keeps the core
@@ -23,6 +29,7 @@ type WaveformPaneProps = {
 // zoom, and exposes the instance via onReady so the transport can drive it.
 export function WaveformPane({
   audioUrl,
+  durationSeconds,
   selectionStart,
   selectionEnd,
   onSelectionChange,
@@ -40,6 +47,8 @@ export function WaveformPane({
   const pointerStartXRef = useRef<number | null>(null);
   const pointerStartTimeRef = useRef<number | null>(null);
   const draggedRef = useRef(false);
+  const durationSecondsRef = useRef(durationSeconds);
+  durationSecondsRef.current = durationSeconds;
 
   const selectionChangeRef = useRef(onSelectionChange);
   const cursorChangeRef = useRef(onCursorChange);
@@ -79,7 +88,7 @@ export function WaveformPane({
       barWidth: 2,
       barGap: 1,
       dragToSeek: false,
-      interact: true,
+      interact: false,
       autoScroll: false,
       autoCenter: false,
       plugins: [regions],
@@ -89,28 +98,39 @@ export function WaveformPane({
     regionsRef.current = regions;
     readyRef.current?.(ws);
 
+    const clipDuration = (): number => {
+      const decoded = ws.getDuration();
+      const fromClip = durationSecondsRef.current;
+      if (typeof fromClip === "number" && Number.isFinite(fromClip) && fromClip > 0) {
+        return Math.max(decoded, fromClip);
+      }
+      return decoded;
+    };
+
     const timeAtClientX = (clientX: number): number | null => {
       const wrapper = ws.getWrapper();
-      const scroll = wrapper.parentElement;
-      const duration = ws.getDuration();
-      if (!scroll || duration <= 0 || wrapper.scrollWidth <= 0) return null;
-      const rect = scroll.getBoundingClientRect();
-      const localX = Math.max(0, Math.min(clientX - rect.left, rect.width));
-      const absX = Math.max(0, Math.min(scroll.scrollLeft + localX, wrapper.scrollWidth));
-      return Number(((absX / wrapper.scrollWidth) * duration).toFixed(3));
+      const decoded = ws.getDuration();
+      if (!wrapper || decoded <= 0) return null;
+      const rect = wrapper.getBoundingClientRect();
+      if (rect.width <= 0) return null;
+      const duration = clipDuration();
+      const x = clientX - rect.left;
+      // Bar rendering leaves a few empty pixels after the last bar, and
+      // dragging onto the container padding used to stop short of duration.
+      if (x <= EDGE_SNAP_PX) return 0;
+      if (x >= rect.width - EDGE_SNAP_PX) return duration;
+      return Math.min(duration, Math.max(0, (x / rect.width) * decoded));
+    };
+
+    const seekTo = (time: number) => {
+      const duration = clipDuration();
+      const clamped = Math.min(duration, Math.max(0, time));
+      ws.setTime(Math.min(ws.getDuration() || clamped, clamped));
+      cursorChangeRef.current(clamped);
     };
 
     ws.on("timeupdate", (t) => {
-      if (ws.isPlaying()) cursorChangeRef.current(Number(t.toFixed(2)));
-    });
-    ws.on("interaction", () => {
-      if (!draggedRef.current) cursorChangeRef.current(Number(ws.getCurrentTime().toFixed(2)));
-    });
-    ws.on("click", () => {
-      if (draggedRef.current) return;
-      const t = Number(ws.getCurrentTime().toFixed(2));
-      cursorChangeRef.current(t);
-      selectionChangeRef.current(t, t);
+      if (ws.isPlaying()) cursorChangeRef.current(t);
     });
     ws.on("play", () => playingChangeRef.current?.(true));
     ws.on("pause", () => playingChangeRef.current?.(false));
@@ -131,18 +151,28 @@ export function WaveformPane({
       for (const other of regions.getRegions()) {
         if (other.id !== region.id) other.remove();
       }
-      selectionChangeRef.current(Number(region.start.toFixed(3)), Number(region.end.toFixed(3)));
+      selectionChangeRef.current(region.start, region.end);
     });
     regions.on("region-updated", (region) => {
-      selectionChangeRef.current(Number(region.start.toFixed(3)), Number(region.end.toFixed(3)));
+      const duration = clipDuration();
+      const start = region.start <= 0.005 ? 0 : region.start;
+      const end = region.end >= duration - 0.005 ? duration : region.end;
+      selectionChangeRef.current(start, end);
     });
 
     const el = containerRef.current;
     const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
       pointerDownRef.current = true;
       pointerStartXRef.current = e.clientX;
       pointerStartTimeRef.current = timeAtClientX(e.clientX);
       draggedRef.current = false;
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        // Pointer capture can fail on some synthetic events; drag still works
+        // while the cursor stays inside the waveform.
+      }
     };
     const onPointerMove = (e: PointerEvent) => {
       const t = timeAtClientX(e.clientX);
@@ -162,20 +192,28 @@ export function WaveformPane({
         }
       }
     };
-    const onPointerUp = (e: PointerEvent) => {
+    const finishPointer = (e: PointerEvent) => {
+      if (!pointerDownRef.current) return;
       const didDrag = draggedRef.current;
       const start = pointerStartTimeRef.current;
       const end = timeAtClientX(e.clientX);
       pointerDownRef.current = false;
       pointerStartXRef.current = null;
       pointerStartTimeRef.current = null;
+      if (el.hasPointerCapture(e.pointerId)) {
+        el.releasePointerCapture(e.pointerId);
+      }
       if (didDrag && start !== null && end !== null) {
         selectionChangeRef.current(Math.min(start, end), Math.max(start, end));
         setTimeout(() => {
           draggedRef.current = false;
         }, 120);
-      } else {
-        draggedRef.current = false;
+        return;
+      }
+      draggedRef.current = false;
+      if (end !== null) {
+        seekTo(end);
+        selectionChangeRef.current(end, end);
       }
     };
     const onWheel = (e: WheelEvent) => {
@@ -185,19 +223,23 @@ export function WaveformPane({
       zoomRef.current = Math.max(20, Math.min(600, base + (e.deltaY < 0 ? 30 : -30)));
       ws.zoom(zoomRef.current);
     };
-    const onLeave = () => hoverChangeRef.current?.(null);
+    const onLeave = () => {
+      if (!pointerDownRef.current) hoverChangeRef.current?.(null);
+    };
 
     el.addEventListener("wheel", onWheel, { passive: false });
     el.addEventListener("pointerdown", onPointerDown);
     el.addEventListener("pointermove", onPointerMove);
-    el.addEventListener("pointerup", onPointerUp);
+    el.addEventListener("pointerup", finishPointer);
+    el.addEventListener("pointercancel", finishPointer);
     el.addEventListener("pointerleave", onLeave);
 
     return () => {
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("pointerdown", onPointerDown);
       el.removeEventListener("pointermove", onPointerMove);
-      el.removeEventListener("pointerup", onPointerUp);
+      el.removeEventListener("pointerup", finishPointer);
+      el.removeEventListener("pointercancel", finishPointer);
       el.removeEventListener("pointerleave", onLeave);
       readyRef.current?.(null);
       ws.destroy();
@@ -240,7 +282,10 @@ export function WaveformPane({
         drag: true,
         resize: true,
       });
-    } else if (Math.abs(current.start - start) > 0.02 || Math.abs(current.end - end) > 0.02) {
+    } else if (
+      Math.abs(current.start - start) > REGION_SYNC_EPS ||
+      Math.abs(current.end - end) > REGION_SYNC_EPS
+    ) {
       current.setOptions({ start, end });
     }
   }, [selectionStart, selectionEnd]);

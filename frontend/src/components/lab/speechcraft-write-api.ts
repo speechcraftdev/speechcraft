@@ -5,7 +5,8 @@
 // SpeechcraftApiError so the workstation can react per failure kind.
 
 import { speechcraftApiBase } from "@/lib/api-base";
-import type { CanonicalExportSummary } from "./speechcraft-api";
+import type { ClipEdit, LabClip } from "./lab-data";
+import { resolveMediaUrl, type CanonicalExportSummary } from "./speechcraft-api";
 
 const BASE = speechcraftApiBase();
 
@@ -122,6 +123,56 @@ export type DatasetClipLabAudioStackRequest = {
 };
 
 // Full clip row returned by every write (backend DatasetClipLabClipView).
+function mapAudioEditOps(ops: DatasetAudioEditOperation[] | undefined, sampleRateHz: number): ClipEdit[] {
+  if (!Array.isArray(ops)) return [];
+  const sr = sampleRateHz > 0 ? sampleRateHz : 16000;
+  return ops.map((op) => {
+    if (op.kind === "delete_range") {
+      return {
+        op: "delete_range",
+        startSeconds: op.start_sample / sr,
+        endSeconds: op.end_sample / sr,
+      };
+    }
+    if (op.kind === "insert_silence") {
+      return {
+        op: "insert_silence",
+        startSeconds: op.at_sample / sr,
+        durationSeconds: op.duration_samples / sr,
+      };
+    }
+    return { op: op.kind };
+  });
+}
+
+/** Fold an authoritative write response back into the local working clip. */
+export function mergeClipLabWriteResponse(prev: LabClip, server: DatasetClipLabClipView): LabClip {
+  const sampleRateHz = server.sample_rate_hz ?? prev.sampleRateHz;
+  return {
+    ...prev,
+    status: server.review_status,
+    transcript: server.transcript_override ?? server.transcript ?? prev.transcript,
+    originalTranscript: server.original_transcript ?? prev.originalTranscript,
+    tags: server.reviewer_tags ?? prev.tags,
+    durationSeconds: server.current_duration_sec ?? prev.durationSeconds,
+    transcriptConfidence: server.transcript_match ?? prev.transcriptConfidence,
+    speakerPurity: server.speaker_check ?? prev.speakerPurity,
+    reasonCodes: (server.pipeline_findings ?? []).map((f) => f.code),
+    variant: server.effective_audio_kind ?? prev.variant,
+    clipVersion: server.clip_version,
+    effectiveAudioRevisionKey: server.effective_audio_revision_key,
+    renderStatus: server.render_status,
+    canUndoAudio: server.can_undo_audio,
+    canRedoAudio: server.can_redo_audio,
+    audioEditOpCount: server.audio_edit_op_count,
+    audioUrl: resolveMediaUrl(server.audio_url),
+    waveformPeaksUrl: resolveMediaUrl(server.waveform_peaks_url),
+    sampleRateHz,
+    originalEndSeconds: server.current_duration_sec ?? prev.originalEndSeconds,
+    edits: mapAudioEditOps(server.audio_edit_ops, sampleRateHz),
+  };
+}
+
 export type DatasetClipLabClipView = {
   clip_id: string;
   clip_version: number;

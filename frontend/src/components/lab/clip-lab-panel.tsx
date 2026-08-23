@@ -62,7 +62,7 @@ export function ClipLabPanel({
   const selHi = Math.max(selectionStart, selectionEnd);
   const hasSelection = selHi - selLo > 0.02;
 
-  // Reset transient state on clip change.
+  // Reset transient state on clip change or when rendered audio updates.
   useEffect(() => {
     setPlayhead(0);
     setSelectionStart(0);
@@ -71,7 +71,7 @@ export function ClipLabPanel({
     setIsPlaying(false);
     setRate(DEFAULT_PLAYBACK_RATE);
     waveSurferRef.current?.setPlaybackRate(DEFAULT_PLAYBACK_RATE, true);
-  }, [clip.id]);
+  }, [clip.id, clip.audioUrl, clip.effectiveAudioRevisionKey]);
 
   const togglePlayback = useCallback(() => {
     const ws = waveSurferRef.current;
@@ -192,6 +192,7 @@ export function ClipLabPanel({
           <WaveformPane
             key={clip.id}
             audioUrl={clip.audioUrl}
+            durationSeconds={duration}
             selectionStart={selectionStart}
             selectionEnd={selectionEnd}
             onSelectionChange={(s, e) => {

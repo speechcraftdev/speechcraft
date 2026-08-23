@@ -45,6 +45,7 @@ import {
   SpeechcraftApiError,
   appendAudioOperation,
   markReferenceClipCandidate,
+  mergeClipLabWriteResponse,
   patchClipLab,
   redoAudioOperation,
   undoAudioOperation,
@@ -71,28 +72,6 @@ function tokensFor(clip: LabClip) {
 
 const isLiveBacked = (clip: LabClip) =>
   clip.manifestSha != null && clip.clipVersion != null;
-
-/** Fold an authoritative server clip view back into the local working copy. */
-function mergeServerClip(prev: LabClip, s: DatasetClipLabClipView): LabClip {
-  return {
-    ...prev,
-    status: s.review_status,
-    transcript: s.transcript_override ?? s.transcript ?? prev.transcript,
-    originalTranscript: s.original_transcript ?? prev.originalTranscript,
-    tags: s.reviewer_tags ?? prev.tags,
-    durationSeconds: s.current_duration_sec ?? prev.durationSeconds,
-    transcriptConfidence: s.transcript_match ?? prev.transcriptConfidence,
-    speakerPurity: s.speaker_check ?? prev.speakerPurity,
-    reasonCodes: (s.pipeline_findings ?? []).map((f) => f.code),
-    variant: s.effective_audio_kind ?? prev.variant,
-    clipVersion: s.clip_version,
-    effectiveAudioRevisionKey: s.effective_audio_revision_key,
-    renderStatus: s.render_status,
-    canUndoAudio: s.can_undo_audio,
-    canRedoAudio: s.can_redo_audio,
-    audioEditOpCount: s.audio_edit_op_count,
-  };
-}
 
 export function LabWorkstation() {
   const searchParams = useSearchParams();
@@ -296,7 +275,7 @@ export function LabWorkstation() {
       if (!isLiveBacked(snapshot)) return; // mock / not-yet-live: local only
       try {
         const server = await call(snapshot);
-        updateClip(clipId, (c) => mergeServerClip(c, server));
+        updateClip(clipId, (c) => mergeClipLabWriteResponse(c, server));
       } catch (err) {
         if (err instanceof SpeechcraftApiError && err.isStale) {
           toast({

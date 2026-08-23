@@ -14,10 +14,7 @@ import { Spinner } from "@midday/ui/spinner";
 import { useToast } from "@midday/ui/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import {
-  canonicalExportArtifactPath,
-  fetchCanonicalExportPreview,
-} from "./speechcraft-api";
+import { fetchCanonicalExportPreview } from "./speechcraft-api";
 import { createCanonicalExport, SpeechcraftApiError } from "./speechcraft-write-api";
 
 type ExportDialogProps = {
@@ -59,11 +56,20 @@ export function ExportDialog({ runId, open, onOpenChange }: ExportDialogProps) {
     setIsExporting(true);
     try {
       const summary = await createCanonicalExport(runId);
-      const artifactPath = canonicalExportArtifactPath(summary.export_id);
       onOpenChange(false);
+      const clipSummary = `${summary.accepted_clip_count} clips (${formatDuration(summary.total_duration_sec)})`;
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(summary.snapshot_dir);
+        copied = true;
+      } catch {
+        copied = false;
+      }
       toast({
         title: "Export complete",
-        description: `${summary.export_id} — ${summary.accepted_clip_count} clips (${formatDuration(summary.total_duration_sec)}). Files: ${artifactPath}/speechcraft_dataset.jsonl`,
+        description: copied
+          ? `${clipSummary}. Export folder copied to clipboard: ${summary.snapshot_dir}`
+          : `${clipSummary}. Couldn't copy path: ${summary.snapshot_dir}`,
         variant: "success",
         duration: 8000,
       });

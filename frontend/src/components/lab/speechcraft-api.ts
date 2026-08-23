@@ -275,16 +275,42 @@ export function mapApiClip(
       )
     : 0;
 
+  const sampleRateHz = clip.sample_rate_hz ?? 16000;
   const edits = Array.isArray(clip.audio_edit_ops)
     ? clip.audio_edit_ops.map((op) => {
         const o = (op ?? {}) as Record<string, unknown>;
-        return {
-          op: String(o.op ?? o.kind ?? "edit"),
-          startSeconds: typeof o.start_seconds === "number" ? o.start_seconds : undefined,
-          endSeconds: typeof o.end_seconds === "number" ? o.end_seconds : undefined,
-          durationSeconds:
-            typeof o.duration_seconds === "number" ? o.duration_seconds : undefined,
-        };
+        const kind = String(o.op ?? o.kind ?? "edit");
+        if (kind === "delete_range") {
+          const startSeconds =
+            typeof o.start_seconds === "number"
+              ? o.start_seconds
+              : typeof o.start_sample === "number"
+                ? o.start_sample / sampleRateHz
+                : undefined;
+          const endSeconds =
+            typeof o.end_seconds === "number"
+              ? o.end_seconds
+              : typeof o.end_sample === "number"
+                ? o.end_sample / sampleRateHz
+                : undefined;
+          return { op: kind, startSeconds, endSeconds };
+        }
+        if (kind === "insert_silence") {
+          const startSeconds =
+            typeof o.start_seconds === "number"
+              ? o.start_seconds
+              : typeof o.at_sample === "number"
+                ? o.at_sample / sampleRateHz
+                : undefined;
+          const durationSeconds =
+            typeof o.duration_seconds === "number"
+              ? o.duration_seconds
+              : typeof o.duration_samples === "number"
+                ? o.duration_samples / sampleRateHz
+                : undefined;
+          return { op: kind, startSeconds, durationSeconds };
+        }
+        return { op: kind };
       })
     : [];
 
@@ -305,7 +331,7 @@ export function mapApiClip(
     tags: clip.reviewer_tags ?? [],
     reasonCodes: (clip.pipeline_findings ?? []).map(findingToCode),
     peaks: [],
-    sampleRateHz: clip.sample_rate_hz ?? 16000,
+    sampleRateHz,
     channels: 1,
     speaker: "—",
     language: "en",
