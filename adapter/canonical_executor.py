@@ -45,6 +45,7 @@ from adapter.diagnostics import (
     resolve_speaker_ts_eval_src,
 )
 from adapter.feature_bundle import FeatureBundle, require_bundle_geometry
+from adapter.logistic_features import LOGISTIC_FINE_RMS_SPEC
 from adapter.rms_evidence import FineRmsGrid, build_fine_rms_grid
 from adapter.rms_policy import apply_rms_policy, family_fine_rms_spec
 from adapter.types import RawClip, RawCutpoint, RawSlicerOutput, SlicerRequest
@@ -250,6 +251,64 @@ def execute_shared_geometry_family(
                 fine_grid=fine_grid,
             )
         return executions
+
+
+def compute_detector_bundle(
+    request: SlicerRequest,
+) -> tuple[FeatureBundle, list[Any], FineRmsGrid]:
+    """One Silero + detector pass. Returns in-memory bundle, cuts, and fine RMS grid."""
+    with tempfile.TemporaryDirectory(prefix=f"buckeye_slicer_{request.config.name}_detect_") as tmp:
+        workdir = Path(tmp)
+        bundle, state = _compute_bundle_in_workdir(request, workdir)
+        cuts = deepcopy(_detect_cutpoints(state))
+        grid = build_fine_rms_grid(bundle, LOGISTIC_FINE_RMS_SPEC)
+        return bundle, cuts, grid
+
+
+def pack_scored_cutpoints(cutpoints: Sequence[Any], config: GeometryConfig) -> RawSlicerOutput:
+    """Pack already-scored detector cuts. Does not rerun Silero or feature extraction."""
+    canon = _import_canonical()
+    packing = canon["PackingConstraints"](
+        min_clip_sec=float(config.min_clip_sec),
+        preferred_min_sec=float(config.preferred_min_sec),
+        preferred_max_sec=float(config.preferred_max_sec),
+        target_clip_sec=float(config.target_clip_sec),
+        max_clip_sec=float(config.max_clip_sec),
+        allow_overlap=False,
+        max_overlap_sec=0.0,
+        max_duplication_ratio=1.0,
+        eligible_regions_by_recording={},
+    )
+    candidates = canon["generate_legal_candidate_clips_in_buffers"](
+        cutpoints=list(cutpoints),
+        constraints=packing,
+    )
+    candidates = apply_candidate_weight_policy(candidates, list(cutpoints), config)
+    selected = canon["schedule_candidates_by_buffer"](candidates, max_overlap_sec=0.0)
+    clips = canon["clips_from_candidates"](
+        selected, packer_name="optimal_weighted_interval"
+    )
+    selected_cuts = cutpoints_used_by_selected_schedule(cutpoints, selected)
+    if clips and not selected_cuts:
+        raise RuntimeError("emitted clips but selected schedule has no cutpoints")
+    raw_cuts = tuple(
+        RawCutpoint(
+            recording_id=cut.recording_id,
+            buffer_id=cut.buffer_id,
+            time_sec=float(cut.time_sec),
+        )
+        for cut in selected_cuts
+    )
+    raw_clips = tuple(
+        RawClip(
+            recording_id=clip.recording_id,
+            buffer_id=clip.buffer_id,
+            start_sec=float(clip.start_sec),
+            end_sec=float(clip.end_sec),
+        )
+        for clip in clips
+    )
+    return RawSlicerOutput(cutpoints=raw_cuts, clips=raw_clips)
 
 
 def _load_audio_float32(path: Path) -> Any:

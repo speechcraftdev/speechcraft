@@ -117,9 +117,17 @@ RMS_WAVEFORM = FEATURE_NAMES[:13]
 VAD_ONLY = FEATURE_NAMES[13:]
 ALL = FEATURE_NAMES
 LOGISTIC_BOUNDARY_FEATURE_NAMES = FEATURE_NAMES
+FEATURE_SCHEMA_ID = "o0_4_boundary_features_v1"
 FEATURE_SUBSET_ALL = "all"
 FEATURE_SUBSET_RMS_WAVEFORM = "rms_waveform"
 FEATURE_SUBSET_VAD_ONLY = "vad_only"
+PHASE10B_TARGETS: tuple[str, ...] = ("inside", "gt20ms", "gt50ms")
+PHASE10B_FEATURE_SETS: tuple[str, ...] = (
+    FEATURE_SUBSET_RMS_WAVEFORM,
+    FEATURE_SUBSET_VAD_ONLY,
+    FEATURE_SUBSET_ALL,
+)
+PHASE10B_N_SPLITS = 5
 
 
 def feature_names_for_subset(subset: str) -> tuple[str, ...]:
