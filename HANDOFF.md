@@ -4,7 +4,24 @@
 **Commits:** `d71fb74` (Phase 10B negative LR result), `ae4b948` (Phase 10C signed-margin + score-control)  
 **Question:** freeze/ship **O0_4**, or keep hunting a learned reranker?
 
-This file is the review packet. You do not need the chat transcript.
+Read this file, the 10B/10C summaries, **and** the Linus chats listed below. Those chats are part of the review, not optional background.
+
+## Also read: Linus chats (ChatGPT + this Cursor thread)
+
+These are design/review threads with **Linus**, our code reviewer. Please open them before deciding.
+
+**Shared ChatGPT** (Aarav + you already have access). Look up these two chats by title:
+
+1. **Slicer test reimplementation** — how the slicer test / Buckeye lab was rebuilt and what Linus required.
+2. **Speaker purity score design** — how speaker-purity scoring was designed and reviewed.
+
+They live in the shared ChatGPT workspace. If a share link is missing, ask Aarav; do not skip them.
+
+**This Cursor chat** (O0_4 geometry through Phase 10C, including Linus’s 10B/10C reviews and the agent work):
+
+```text
+handoff/cursor_chat_linus_attempt3.md
+```
 
 ## Proposed decision
 
@@ -28,6 +45,9 @@ O0_4 packing is duration-only. Detector `original_score` does **not** enter clip
 
 | File | Why |
 |---|---|
+| Shared ChatGPT: **Slicer test reimplementation** | Linus + Aarav design/review. Required reading. |
+| Shared ChatGPT: **Speaker purity score design** | Linus + Aarav design/review. Required reading. |
+| `handoff/cursor_chat_linus_attempt3.md` | This Cursor thread (O0_4 through 10C) |
 | `phase10b_logistic_full/summary.json` | 120-recording LR negative result |
 | `phase10c_margin_full/summary.json` | 120-recording signed-margin + O0_4 score-control |
 | `phase10c_margin_full/summary.json` → `label_reasons` | Why ~70% of candidates stay unlabeled |
@@ -87,7 +107,7 @@ No learned point is better on coverage **and** safety. `s0.5` is a 0.07 pp cover
 
 - Referee, adapter, tests, phase scripts
 - Compact 10B/10C result tables (`summary.json`, `recordings.csv`, OOF preds)
-- This handoff
+- This handoff, the 120 recording IDs, and the Cursor chat export
 
 **Not in git (local symlinks only):**
 
