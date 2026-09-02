@@ -5,6 +5,7 @@ Cut-level helpers match code_snapshots/run_failure_driven_slicer_tournament.py.
 
 from __future__ import annotations
 
+import math
 from dataclasses import is_dataclass, replace
 from types import SimpleNamespace
 from typing import Any
@@ -19,7 +20,7 @@ from adapter.tournament_policy import (
     quiet_evidence_score,
 )
 
-_SCORE_DELTA_POLICIES = frozenset({"quiet_evidence", "logistic_boundary"})
+_SCORE_DELTA_POLICIES = frozenset({"quiet_evidence", "logistic_boundary", "margin_regression"})
 
 
 def cut_quiet_run_ms(cut: Any) -> float:
@@ -105,6 +106,11 @@ def apply_cut_policy(
         if bundle is None:
             raise RuntimeError("logistic_boundary scoring requires a feature bundle")
         annotated = apply_logistic_cut_policy(annotated, config, bundle, fine_grid)
+    elif config.scoring == "margin_regression":
+        raise RuntimeError("margin_regression is OOF-only; pack via apply_precomputed_margin")
+    elif config.scoring == "o0_4_score_weight":
+        # Detector scores stay as-is. Packer weight policy scales their contribution.
+        pass
     elif config.scoring not in {None, ""}:
         raise RuntimeError(f"unknown scoring policy: {config.scoring!r}")
     return annotated
@@ -116,6 +122,27 @@ def apply_candidate_weight_policy(
     config: GeometryConfig,
 ) -> list[Any]:
     """Historical quiet_run_score packer: add boundary-score delta to clip weight."""
+    if config.scoring == "o0_4_score_weight":
+        raw_weight = getattr(config, "score_weight", None)
+        if raw_weight is None:
+            raise RuntimeError("o0_4_score_weight requires score_weight")
+        score_weight = float(raw_weight)
+        if not math.isfinite(score_weight):
+            raise RuntimeError(f"non-finite score_weight: {raw_weight}")
+        if score_weight == 0.0:
+            return candidates
+        by_id = {str(cut.cutpoint_id): cut for cut in cuts}
+        weighted: list[Any] = []
+        for candidate in candidates:
+            start = by_id[str(candidate.start_cutpoint_id)]
+            end = by_id[str(candidate.end_cutpoint_id)]
+            start_score = float((getattr(start, "metadata", None) or {}).get("original_score", start.score))
+            end_score = float((getattr(end, "metadata", None) or {}).get("original_score", end.score))
+            weight_delta = score_weight * (start_score + end_score)
+            weighted.append(
+                _replace_obj(candidate, weight=round(float(candidate.weight) + weight_delta, 6))
+            )
+        return weighted
     if config.scoring in _SCORE_DELTA_POLICIES:
         by_id = {str(cut.cutpoint_id): cut for cut in cuts}
         weighted: list[Any] = []

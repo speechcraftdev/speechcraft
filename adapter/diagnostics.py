@@ -94,6 +94,9 @@ def policy_canonical_payload(config: GeometryConfig) -> dict[str, Any]:
         ),
         "scoring": None if not config.scoring else str(config.scoring),
     }
+    score_weight = getattr(config, "score_weight", None)
+    if score_weight is not None:
+        payload["score_weight"] = float(score_weight)
     spec = getattr(config, "rms_policy", None)
     if spec is not None:
         payload["rms_policy"] = rms_policy_payload(spec)

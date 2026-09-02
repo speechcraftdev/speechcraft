@@ -242,6 +242,8 @@ class GeometryConfig:
     scoring: str | None = None
     rms_policy: RmsPolicySpec | None = None
     logistic: LogisticSpec | None = None
+    # How strongly existing detector scores enter packer weight. None/0 = frozen O0_4.
+    score_weight: float | None = None
 
 
 # Current overlapping geometry (validated A baseline).
@@ -350,6 +352,15 @@ O0_4_LOGISTIC = GeometryConfig(
     sample_rate_hz=16000,
     scoring="logistic_boundary",
     logistic=LOGISTIC_BOUNDARY_V1_UNTRAINED,
+)
+# O0_4 geometry with OOF signed-margin packer weights. Frozen O0_4 stays scoring=None.
+O0_4_MARGIN = GeometryConfig(
+    name="O0_4_MARGIN",
+    window_samples=512,
+    hop_samples=512,
+    offsets=(0, 64, 128, 192, 256, 320, 384, 448),
+    sample_rate_hz=16000,
+    scoring="margin_regression",
 )
 PHASE10_LOGISTIC_CONTENDERS: tuple[GeometryConfig, ...] = (O0_4, O0_4_LOGISTIC)
 # 12.5% recurrent overlap, ~4 ms aggregate spacing. Between O25_4 and O0_4.
