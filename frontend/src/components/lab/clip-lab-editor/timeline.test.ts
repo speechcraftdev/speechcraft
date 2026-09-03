@@ -23,6 +23,7 @@ import {
   selectionFromAnchorFocus,
   selectionStart,
   shiftClick,
+  snapSelectionToZeroCrossings,
   splicePcmDelete,
   splicePcmInsertSilence,
   xFromSample,
@@ -273,7 +274,7 @@ describe("randomized invariants", () => {
     for (let trial = 0; trial < 40; trial++) {
       let duration = randInt(8, 400);
       let state = createTimelineState(duration, 16000);
-      let pcm = new Int16Array(duration);
+      let pcm: Int16Array = new Int16Array(duration);
       for (let i = 0; i < duration; i++) pcm[i] = i;
       for (let step = 0; step < 80; step++) {
         const kind = randInt(0, 5);
@@ -313,5 +314,16 @@ describe("randomized invariants", () => {
 describe("selectionFromAnchorFocus", () => {
   test("does not represent empty selection as start === end", () => {
     expect(selectionFromAnchorFocus(4, 4, 10)).toEqual({ anchorSample: 4, focusSample: 5 });
+  });
+});
+
+describe("zero-cross snap", () => {
+  test("snaps both edges inside a bounded window without changing PCM", () => {
+    const pcm = new Int16Array([8, 8, 0, 0, 8, 8]);
+    const selected = dragSelect(createTimelineState(pcm.length, 16000), 1, 4);
+    const snapped = snapSelectionToZeroCrossings(selected, pcm, 4);
+    expect(selectionStart(snapped.selection!)).toBe(2);
+    expect(selectionEnd(snapped.selection!)).toBe(3);
+    expect(Array.from(pcm)).toEqual([8, 8, 0, 0, 8, 8]);
   });
 });

@@ -268,14 +268,15 @@ export function LabWorkstation() {
       optimistic: (clip: LabClip) => LabClip,
       call: (clip: LabClip) => Promise<DatasetClipLabClipView>,
       label: string,
-    ) => {
+    ): Promise<boolean> => {
       const snapshot = clips.find((c) => c.id === clipId);
-      if (!snapshot) return;
+      if (!snapshot) return false;
       updateClip(clipId, optimistic);
-      if (!isLiveBacked(snapshot)) return; // mock / not-yet-live: local only
+      if (!isLiveBacked(snapshot)) return true; // mock / not-yet-live: local only
       try {
         const server = await call(snapshot);
         updateClip(clipId, (c) => mergeClipLabWriteResponse(c, server));
+        return true;
       } catch (err) {
         if (err instanceof SpeechcraftApiError && err.isStale) {
           toast({
@@ -285,7 +286,7 @@ export function LabWorkstation() {
             duration: 3500,
           });
           await reseedFromServer();
-          return;
+          return false;
         }
         updateClip(clipId, () => snapshot); // revert
         toast({
@@ -295,6 +296,7 @@ export function LabWorkstation() {
           variant: "error",
           duration: 4000,
         });
+        return false;
       }
     },
     [clips, updateClip, toast, reseedFromServer],
@@ -406,71 +408,27 @@ export function LabWorkstation() {
 
   const appendEdit = useCallback(
     (edit: ClipEdit) => {
-      if (!activeClipId) return;
-      const clip = clips.find((c) => c.id === activeClipId);
-      if (!clip) return;
-      const sr = clip.sampleRateHz || 16000;
-      let operation: DatasetAudioEditOperation | null = null;
-      if (edit.op === "delete_range" && edit.startSeconds != null && edit.endSeconds != null) {
-        const currentDuration = clip.durationSeconds || 0;
-        const startSeconds = Math.max(0, Math.min(edit.startSeconds, currentDuration));
-        const endSeconds = Math.max(0, Math.min(edit.endSeconds, currentDuration));
-        const durationSamples = Math.round(currentDuration * sr);
-        const startSample = Math.max(0, Math.min(Math.round(startSeconds * sr), durationSamples));
-        const endSample = Math.max(0, Math.min(Math.round(endSeconds * sr), durationSamples));
-        if (endSample <= startSample) {
-          toast({
-            title: "Selection too small",
-            description: "Drag a wider area before deleting.",
-            variant: "error",
-            duration: 2500,
-          });
-          return;
-        }
-        if (startSample === 0 && endSample >= durationSamples) {
-          toast({
-            title: "Cannot delete entire clip",
-            description: "Leave some audio in the clip or reject it instead.",
-            variant: "error",
-            duration: 3000,
-          });
-          return;
-        }
-        operation = {
-          kind: "delete_range",
-          start_sample: startSample,
-          end_sample: endSample,
-        };
-      } else if (
-        edit.op === "insert_silence" &&
-        edit.startSeconds != null &&
-        edit.durationSeconds != null
-      ) {
-        operation = {
-          kind: "insert_silence",
-          at_sample: Math.round(edit.startSeconds * sr),
-          duration_samples: Math.round(edit.durationSeconds * sr),
-        };
-      }
-      if (!operation) {
-        // split / merge_next are not backend audio operations.
-        toast({
-          title: "Not supported yet",
-          description: `"${edit.op}" isn't a backend audio operation.`,
-          variant: "error",
-          duration: 3000,
-        });
-        return;
-      }
-      const backendOp = operation;
-      void applyClipWrite(
+      toast({
+        title: "Not supported yet",
+        description: `"${edit.op}" isn't a backend audio operation.`,
+        variant: "error",
+        duration: 3000,
+      });
+    },
+    [toast],
+  );
+
+  const commitAudioOp = useCallback(
+    async (operation: DatasetAudioEditOperation): Promise<boolean> => {
+      if (!activeClipId) return false;
+      return applyClipWrite(
         activeClipId,
-        (c) => ({ ...c, edits: [...c.edits, edit] }),
-        (c) => appendAudioOperation(runId!, c.id, { ...tokensFor(c), operation: backendOp }),
+        (c) => c,
+        (c) => appendAudioOperation(runId!, c.id, { ...tokensFor(c), operation }),
         "Audio edit",
       );
     },
-    [activeClipId, clips, applyClipWrite, runId, toast],
+    [activeClipId, applyClipWrite, runId],
   );
 
   const undoEdit = useCallback(() => {
@@ -695,6 +653,7 @@ export function LabWorkstation() {
                     onAccept={() => decide("accepted")}
                     onReject={() => decide("rejected")}
                     onAppendEdit={appendEdit}
+                    onCommitAudioOp={commitAudioOp}
                     onUndo={undoEdit}
                     onRedo={redoEdit}
                     onMarkReference={markReference}
