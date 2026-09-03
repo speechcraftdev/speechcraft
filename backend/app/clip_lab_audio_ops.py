@@ -18,6 +18,7 @@ from .clip_lab_audio import (
     render_or_reuse_audio_revision_from_bytes,
     sha256_file,
     validate_audio_op,
+    timeline_length_after_ops,
     verify_source_wav_bytes,
 )
 from .clip_lab_state import (
@@ -217,16 +218,14 @@ def _edited_duration_sec(
         return None
     try:
         duration_samples = int(manifest_row.get("duration_samples") or 0)
-        from .clip_lab_audio import _timeline_length_after_op, validate_audio_ops_recipe
+        from .clip_lab_audio import timeline_length_after_ops, validate_audio_ops_recipe
 
         validate_audio_ops_recipe(
             ops,
             source_sample_count=duration_samples,
             sample_rate=sample_rate_hz,
         )
-        current = duration_samples
-        for op in ops:
-            current = _timeline_length_after_op(current, op)
+        current = timeline_length_after_ops(duration_samples, ops)
         return round(current / sample_rate_hz, 6)
     except ClipLabAudioValidationError:
         return None
@@ -470,12 +469,14 @@ def append_clip_audio_operation(
         source_wav_bytes = _capture_source_wav_bytes(run_root, manifest_row, source_sha=source_sha)
         samples, _ = load_pcm16_mono_wav_bytes(source_wav_bytes)
         sample_rate = _sample_rate_hz(manifest_row)
+        existing_ops = list(audio_edit.get("ops") or [])
+        current_length = timeline_length_after_ops(len(samples), existing_ops)
         try:
-            validate_audio_op(operation, len(samples), index=len(audio_edit.get("ops") or []), sample_rate=sample_rate)
+            validate_audio_op(operation, current_length, index=len(existing_ops), sample_rate=sample_rate)
         except ClipLabAudioValidationError as exc:
             raise ClipLabValidationError(str(exc)) from exc
 
-        ops = list(audio_edit.get("ops") or [])
+        ops = existing_ops
         ops.append(operation)
         audio_edit["ops"] = ops
         audio_edit["redo_ops"] = []

@@ -49,6 +49,13 @@ def _timeline_length_after_op(timeline_length: int, op: dict[str, Any]) -> int:
     raise ClipLabAudioValidationError(f"unsupported kind {kind!r}")
 
 
+def timeline_length_after_ops(source_sample_count: int, ops: list[dict[str, Any]]) -> int:
+    current = source_sample_count
+    for op in ops:
+        current = _timeline_length_after_op(current, op)
+    return current
+
+
 def validate_audio_ops_recipe(
     ops: list[dict[str, Any]],
     *,

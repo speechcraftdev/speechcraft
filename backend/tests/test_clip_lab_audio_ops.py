@@ -24,6 +24,7 @@ from app.clip_lab_audio_ops import (
     load_revision_peaks_payload,
 )
 from app.clip_lab_state import (
+    ClipLabValidationError,
     StaleManifestError,
     compute_manifest_sha256,
     load_clip_lab_state,
@@ -292,6 +293,39 @@ class ClipLabAudioOpsLifecycleTests(unittest.TestCase):
         with patch("app.clip_lab_audio_ops._finalize_render", return_value=False):
             with self.assertRaises(StaleManifestError):
                 self._append_delete(version=0)
+
+    def test_appended_op_validates_against_edited_timeline_not_source(self) -> None:
+        first = append_clip_audio_operation(
+            self.run_root,
+            run_id="run-1",
+            clip_id=self.clip_id,
+            expected_manifest_sha256=self.manifest_sha,
+            expected_clip_version=0,
+            operation={"kind": "insert_silence", "at_sample": 60, "duration_samples": 20},
+        )
+        self.assertEqual(first["render_status"], "ready")
+        second = append_clip_audio_operation(
+            self.run_root,
+            run_id="run-1",
+            clip_id=self.clip_id,
+            expected_manifest_sha256=self.manifest_sha,
+            expected_clip_version=first["clip_version"],
+            operation={"kind": "delete_range", "start_sample": 60, "end_sample": 70},
+        )
+        self.assertEqual(second["render_status"], "ready")
+        self.assertEqual(second["audio_edit_op_count"], 2)
+
+    def test_appended_op_rejects_range_valid_on_source_but_past_current_eof(self) -> None:
+        first = self._append_delete(version=0)
+        with self.assertRaises(ClipLabValidationError):
+            append_clip_audio_operation(
+                self.run_root,
+                run_id="run-1",
+                clip_id=self.clip_id,
+                expected_manifest_sha256=self.manifest_sha,
+                expected_clip_version=first["clip_version"],
+                operation={"kind": "delete_range", "start_sample": 50, "end_sample": 59},
+            )
 
     def test_source_peaks_use_captured_bytes_after_file_swap(self) -> None:
         import app.clip_lab_audio_ops as ops_module
