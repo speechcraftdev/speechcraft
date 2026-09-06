@@ -98,9 +98,16 @@ def _sample_rate_hz(manifest_row: dict[str, Any]) -> int:
     return sample_rate
 
 
-def _original_duration_sec(manifest_row: dict[str, Any], *, sample_rate_hz: int | None) -> float:
+def _original_duration_samples(manifest_row: dict[str, Any]) -> int | None:
     duration_samples = manifest_row.get("duration_samples")
-    if isinstance(duration_samples, int) and duration_samples >= 0 and sample_rate_hz:
+    if isinstance(duration_samples, bool) or not isinstance(duration_samples, int) or duration_samples < 0:
+        return None
+    return duration_samples
+
+
+def _original_duration_sec(manifest_row: dict[str, Any], *, sample_rate_hz: int | None) -> float:
+    duration_samples = _original_duration_samples(manifest_row)
+    if duration_samples is not None and sample_rate_hz:
         return round(duration_samples / sample_rate_hz, 6)
     return float(manifest_row.get("duration_sec") or 0.0)
 
@@ -208,27 +215,42 @@ def effective_revision_key(manifest_row: dict[str, Any], clip_entry: dict[str, A
     return source_sha
 
 
+def _edited_duration_samples(
+    manifest_row: dict[str, Any],
+    ops: list[dict[str, Any]],
+    *,
+    sample_rate_hz: int | None,
+) -> int | None:
+    if not sample_rate_hz or not ops:
+        return None
+    source_samples = _original_duration_samples(manifest_row)
+    if source_samples is None:
+        return None
+    try:
+        from .clip_lab_audio import timeline_length_after_ops, validate_audio_ops_recipe
+
+        validate_audio_ops_recipe(
+            ops,
+            source_sample_count=source_samples,
+            sample_rate=sample_rate_hz,
+        )
+        return timeline_length_after_ops(source_samples, ops)
+    except ClipLabAudioValidationError:
+        return None
+
+
 def _edited_duration_sec(
     manifest_row: dict[str, Any],
     ops: list[dict[str, Any]],
     *,
     sample_rate_hz: int | None,
 ) -> float | None:
-    if not sample_rate_hz or not ops:
+    if not sample_rate_hz:
         return None
-    try:
-        duration_samples = int(manifest_row.get("duration_samples") or 0)
-        from .clip_lab_audio import timeline_length_after_ops, validate_audio_ops_recipe
-
-        validate_audio_ops_recipe(
-            ops,
-            source_sample_count=duration_samples,
-            sample_rate=sample_rate_hz,
-        )
-        current = timeline_length_after_ops(duration_samples, ops)
-        return round(current / sample_rate_hz, 6)
-    except ClipLabAudioValidationError:
+    current = _edited_duration_samples(manifest_row, ops, sample_rate_hz=sample_rate_hz)
+    if current is None:
         return None
+    return round(current / sample_rate_hz, 6)
 
 
 def audio_view_fields(
@@ -248,6 +270,7 @@ def audio_view_fields(
     rendered_audio_sha256: str | None = None
     render_status = "ready"
     original_duration_sec = _original_duration_sec(manifest_row, sample_rate_hz=sample_rate_hz)
+    original_duration_samples = _original_duration_samples(manifest_row)
 
     if audio_edit is not None:
         ops = list(audio_edit.get("ops") or [])
@@ -270,6 +293,7 @@ def audio_view_fields(
             "audio_url": None,
             "waveform_peaks_url": None,
             "current_duration_sec": original_duration_sec,
+            "current_duration_samples": original_duration_samples,
             "audio_edit_op_count": 0,
             "audio_edit_ops": [],
             "can_undo_audio": False,
@@ -280,8 +304,12 @@ def audio_view_fields(
     revision_key = effective_revision_key(manifest_row, clip_entry, clip_id=clip_id)
     kind = "rendered_revision" if revision_key != source_sha else "candidate_original"
     edited_duration_sec = _edited_duration_sec(manifest_row, ops, sample_rate_hz=sample_rate_hz)
+    edited_duration_samples = _edited_duration_samples(manifest_row, ops, sample_rate_hz=sample_rate_hz)
     playback_ready = kind == "rendered_revision"
     current_duration_sec = edited_duration_sec if playback_ready and edited_duration_sec is not None else original_duration_sec
+    current_duration_samples = (
+        edited_duration_samples if playback_ready and edited_duration_samples is not None else original_duration_samples
+    )
     return {
         "sample_rate_hz": sample_rate_hz,
         "source_audio_sha256": source_sha,
@@ -292,6 +320,7 @@ def audio_view_fields(
         "audio_url": f"/media/dataset-runs/{run_id}/clip-lab/{clip_id}/audio/{revision_key}.wav",
         "waveform_peaks_url": f"/api/dataset-runs/{run_id}/clips/{clip_id}/waveform-peaks/{revision_key}",
         "current_duration_sec": current_duration_sec,
+        "current_duration_samples": current_duration_samples,
         "audio_edit_op_count": len(ops),
         "audio_edit_ops": ops,
         "can_undo_audio": bool(ops),

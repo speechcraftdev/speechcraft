@@ -155,6 +155,7 @@ export function mergeClipLabWriteResponse(prev: LabClip, server: DatasetClipLabC
     originalTranscript: server.original_transcript ?? prev.originalTranscript,
     tags: server.reviewer_tags ?? prev.tags,
     durationSeconds: server.current_duration_sec ?? prev.durationSeconds,
+    durationSamples: server.current_duration_samples ?? prev.durationSamples,
     transcriptConfidence: server.transcript_match ?? prev.transcriptConfidence,
     speakerPurity: server.speaker_check ?? prev.speakerPurity,
     reasonCodes: (server.pipeline_findings ?? []).map((f) => f.code),
@@ -193,6 +194,7 @@ export type DatasetClipLabClipView = {
   audio_url: string | null;
   waveform_peaks_url: string | null;
   current_duration_sec: number | null;
+  current_duration_samples: number | null;
   audio_edit_op_count: number;
   audio_edit_ops: DatasetAudioEditOperation[];
   can_undo_audio: boolean;

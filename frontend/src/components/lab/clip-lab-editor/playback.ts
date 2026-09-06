@@ -30,6 +30,15 @@ export function pcm16ToAudioBuffer(
   return buffer;
 }
 
+export function canReuseOrdinaryAudioBuffer(
+  cachedPcm: Int16Array | null,
+  cachedSampleRateHz: number,
+  pcm: Int16Array,
+  sampleRateHz: number,
+): boolean {
+  return cachedPcm === pcm && cachedSampleRateHz === sampleRateHz;
+}
+
 export function cutPreviewContextSamples(sampleRateHz: number): number {
   return Math.round(CUT_PREVIEW_CONTEXT_SECONDS * sampleRateHz);
 }
@@ -89,13 +98,25 @@ export class ClipLabPlayback {
   private startedAt = 0;
   private transport: Transport | null = null;
   private fileSampleRateHz = 16000;
-  private playbackRate = 1;
+  private scheduledRate = 1;
+  private playingRate = 1;
+  private generation = 0;
   private raf = 0;
   private onStop: (() => void) | null = null;
+  private ordinaryPcm: Int16Array | null = null;
+  private ordinarySampleRateHz = 0;
+  private ordinaryBuffer: AudioBuffer | null = null;
+
+  get currentGeneration(): number {
+    return this.generation;
+  }
+
+  get playheadClockRate(): number | null {
+    return this.transport ? this.playingRate : null;
+  }
 
   setPlaybackRate(rate: number): void {
-    this.playbackRate = rate > 0 ? rate : 1;
-    if (this.source) this.source.playbackRate.value = this.playbackRate;
+    this.scheduledRate = rate > 0 ? rate : 1;
   }
 
   isPlaying(): boolean {
@@ -108,11 +129,16 @@ export class ClipLabPlayback {
       this.transport,
       this.ctx.currentTime - this.startedAt,
       this.fileSampleRateHz,
-      this.playbackRate,
+      this.playingRate,
     );
   }
 
   stop(): void {
+    this.stopInternal(true);
+  }
+
+  private stopInternal(emitEnded: boolean): void {
+    this.generation += 1;
     if (this.raf) {
       cancelAnimationFrame(this.raf);
       this.raf = 0;
@@ -130,7 +156,21 @@ export class ClipLabPlayback {
     this.transport = null;
     const cb = this.onStop;
     this.onStop = null;
-    cb?.();
+    if (emitEnded) cb?.();
+  }
+
+  private ordinaryAudioBuffer(ctx: AudioContext, pcm: Int16Array, sampleRateHz: number): AudioBuffer {
+    if (
+      this.ordinaryBuffer &&
+      canReuseOrdinaryAudioBuffer(this.ordinaryPcm, this.ordinarySampleRateHz, pcm, sampleRateHz)
+    ) {
+      return this.ordinaryBuffer;
+    }
+    const buffer = pcm16ToAudioBuffer(ctx, pcm, sampleRateHz);
+    this.ordinaryPcm = pcm;
+    this.ordinarySampleRateHz = sampleRateHz;
+    this.ordinaryBuffer = buffer;
+    return buffer;
   }
 
   async playPcm(
@@ -139,21 +179,28 @@ export class ClipLabPlayback {
     transport: Transport,
     onFrame: (sample: number | null) => void,
     onEnded: () => void,
+    options?: { cacheOrdinaryBuffer?: boolean },
   ): Promise<void> {
-    this.stop();
+    this.stopInternal(false);
+    const generation = this.generation;
     if (pcm.length === 0) {
-      onEnded();
+      if (generation === this.generation) onEnded();
       return;
     }
     this.fileSampleRateHz = fileSampleRateHz;
+    this.playingRate = this.scheduledRate;
     this.transport = transport;
     this.onStop = onEnded;
     const ctx = this.ctx ?? new AudioContext();
     this.ctx = ctx;
     if (ctx.state === "suspended") await ctx.resume();
+    if (generation !== this.generation) return;
+    const cacheOrdinary = options?.cacheOrdinaryBuffer !== false;
     const source = ctx.createBufferSource();
-    source.buffer = pcm16ToAudioBuffer(ctx, pcm, fileSampleRateHz);
-    source.playbackRate.value = this.playbackRate;
+    source.buffer = cacheOrdinary
+      ? this.ordinaryAudioBuffer(ctx, pcm, fileSampleRateHz)
+      : pcm16ToAudioBuffer(ctx, pcm, fileSampleRateHz);
+    source.playbackRate.value = this.playingRate;
     source.connect(ctx.destination);
     source.onended = () => {
       if (this.source !== source) return;
@@ -168,6 +215,10 @@ export class ClipLabPlayback {
       this.onStop = null;
       cb?.();
     };
+    if (generation !== this.generation) {
+      source.disconnect();
+      return;
+    }
     this.source = source;
     this.startedAt = ctx.currentTime;
     let offsetSec = 0;
@@ -177,6 +228,17 @@ export class ClipLabPlayback {
       durationSec = Math.max(0, transport.endSample - transport.startSample) / fileSampleRateHz;
     }
     source.start(0, offsetSec, durationSec);
+    if (generation !== this.generation) {
+      try {
+        source.onended = null;
+        source.stop();
+      } catch {
+        // already stopped
+      }
+      source.disconnect();
+      if (this.source === source) this.source = null;
+      return;
+    }
     const tick = () => {
       if (!this.source) return;
       onFrame(this.currentPlayheadSample());

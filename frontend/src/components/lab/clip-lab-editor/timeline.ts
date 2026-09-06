@@ -24,7 +24,11 @@ export type DeleteResult =
 
 export const INSERT_SILENCE_SECONDS = 0.2;
 export const MIN_VIEW_SAMPLES = 2;
-export const ZERO_CROSS_WINDOW_SAMPLES = 1024;
+export const ZERO_CROSS_WINDOW_SECONDS = 0.02;
+
+export function zeroCrossWindowSamples(sampleRateHz: number): number {
+  return Math.max(1, Math.round(sampleRateHz * ZERO_CROSS_WINDOW_SECONDS));
+}
 
 export function clampInt(value: number, lo: number, hi: number): number {
   if (value < lo) return lo;
@@ -435,7 +439,7 @@ export function nearestZeroCrossing(pcm: Int16Array, sample: number, windowSampl
 export function snapSelectionToZeroCrossings(
   state: TimelineState,
   pcm: Int16Array,
-  windowSamples: number = ZERO_CROSS_WINDOW_SAMPLES,
+  windowSamples: number = zeroCrossWindowSamples(state.sampleRateHz),
 ): TimelineState {
   if (!state.selection) return state;
   const start = selectionStart(state.selection);

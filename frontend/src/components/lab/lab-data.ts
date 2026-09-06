@@ -32,6 +32,7 @@ export type LabClip = {
   transcript: string;
   originalTranscript: string;
   durationSeconds: number;
+  durationSamples?: number | null;
   status: ReviewStatus;
   machineBucket: MachineBucket;
   qcScore: number; // 0..1 aggregate
@@ -109,6 +110,11 @@ export const REASON_CODE_LABELS: Record<string, string> = {
 };
 
 // ── Formatting ──────────────────────────────────────────────────────────
+
+/** Authoritative clip length in samples. Never reconstruct from durationSeconds. */
+export function clipLabDurationSamples(clip: Pick<LabClip, "durationSamples">): number | null {
+  return typeof clip.durationSamples === "number" ? clip.durationSamples : null;
+}
 
 /** "5.37s" style duration. */
 export function formatSeconds(seconds: number): string {

@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { AudioEditMutex } from "./clip-lab-editor/audio-edit-mutex";
 import { ClipLabPanel } from "./clip-lab-panel";
 import { ClipQueue } from "./clip-queue";
 import { DatasetHealthPage } from "./dataset-health-page";
@@ -78,6 +79,31 @@ export function LabWorkstation() {
   const { toast, update } = useToast();
   const queryClient = useQueryClient();
   const demo = demoEnabled(searchParams);
+  const audioEditMutexRef = useRef(new AudioEditMutex());
+  const [audioEditInFlight, setAudioEditInFlight] = useState(false);
+
+  const tryBeginAudioEdit = useCallback(() => {
+    const started = audioEditMutexRef.current.tryBegin();
+    if (started) setAudioEditInFlight(true);
+    return started;
+  }, []);
+
+  const endAudioEdit = useCallback(() => {
+    audioEditMutexRef.current.end();
+    setAudioEditInFlight(false);
+  }, []);
+
+  const runAudioEdit = useCallback(
+    async (fn: () => Promise<boolean>): Promise<boolean> => {
+      if (!tryBeginAudioEdit()) return false;
+      try {
+        return await fn();
+      } finally {
+        endAudioEdit();
+      }
+    },
+    [tryBeginAudioEdit, endAudioEdit],
+  );
 
   // ── Real data chain: projects → dataset runs → clip-lab view ──
   const { data: projects = [] } = useQuery({
@@ -433,23 +459,27 @@ export function LabWorkstation() {
 
   const undoEdit = useCallback(() => {
     if (!activeClipId) return;
-    void applyClipWrite(
-      activeClipId,
-      (c) => c,
-      (c) => undoAudioOperation(runId!, c.id, tokensFor(c)),
-      "Undo",
+    void runAudioEdit(() =>
+      applyClipWrite(
+        activeClipId,
+        (c) => c,
+        (c) => undoAudioOperation(runId!, c.id, tokensFor(c)),
+        "Undo",
+      ),
     );
-  }, [activeClipId, applyClipWrite, runId]);
+  }, [activeClipId, applyClipWrite, runId, runAudioEdit]);
 
   const redoEdit = useCallback(() => {
     if (!activeClipId) return;
-    void applyClipWrite(
-      activeClipId,
-      (c) => c,
-      (c) => redoAudioOperation(runId!, c.id, tokensFor(c)),
-      "Redo",
+    void runAudioEdit(() =>
+      applyClipWrite(
+        activeClipId,
+        (c) => c,
+        (c) => redoAudioOperation(runId!, c.id, tokensFor(c)),
+        "Redo",
+      ),
     );
-  }, [activeClipId, applyClipWrite, runId]);
+  }, [activeClipId, applyClipWrite, runId, runAudioEdit]);
 
   const markReference = useCallback(() => {
     const clip = clips.find((c) => c.id === activeClipId);
@@ -501,12 +531,13 @@ export function LabWorkstation() {
   }, [activeClip, toast, update, updateClip]);
 
   const hotkeyEnabled = mode === "lab" && !!activeClipId;
+  const audioHotkeyEnabled = hotkeyEnabled && !audioEditInFlight;
   useHotkeys("enter", (e) => { e.preventDefault(); decide("accepted"); }, { enabled: hotkeyEnabled }, [decide]);
   useHotkeys("shift+enter", (e) => { e.preventDefault(); decide("rejected"); }, { enabled: hotkeyEnabled }, [decide]);
   useHotkeys("up", (e) => { e.preventDefault(); navigate("prev"); }, { enabled: hotkeyEnabled }, [navigate]);
   useHotkeys("down", (e) => { e.preventDefault(); navigate("next"); }, { enabled: hotkeyEnabled }, [navigate]);
-  useHotkeys("mod+z", (e) => { e.preventDefault(); undoEdit(); }, { enabled: hotkeyEnabled }, [undoEdit]);
-  useHotkeys("mod+shift+z", (e) => { e.preventDefault(); redoEdit(); }, { enabled: hotkeyEnabled }, [redoEdit]);
+  useHotkeys("mod+z", (e) => { e.preventDefault(); undoEdit(); }, { enabled: audioHotkeyEnabled }, [undoEdit]);
+  useHotkeys("mod+shift+z", (e) => { e.preventDefault(); redoEdit(); }, { enabled: audioHotkeyEnabled }, [redoEdit]);
 
   const isLoading =
     !demo &&
@@ -654,6 +685,9 @@ export function LabWorkstation() {
                     onReject={() => decide("rejected")}
                     onAppendEdit={appendEdit}
                     onCommitAudioOp={commitAudioOp}
+                    audioEditInFlight={audioEditInFlight}
+                    tryBeginAudioEdit={tryBeginAudioEdit}
+                    endAudioEdit={endAudioEdit}
                     onUndo={undoEdit}
                     onRedo={redoEdit}
                     onMarkReference={markReference}

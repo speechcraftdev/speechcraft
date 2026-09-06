@@ -1253,6 +1253,7 @@ class ClipLabAudioRouteHttpTests(unittest.TestCase):
         expected_source_duration = round(60 / SAMPLE_RATE, 6)
         self.assertEqual(failed_clip["render_status"], "failed")
         self.assertEqual(failed_clip["current_duration_sec"], expected_source_duration)
+        self.assertEqual(failed_clip["current_duration_samples"], 60)
 
     def test_ready_edit_reports_edited_duration(self) -> None:
         clip = self._clip_row()
@@ -1270,6 +1271,7 @@ class ClipLabAudioRouteHttpTests(unittest.TestCase):
         self.assertEqual(body["render_status"], "ready")
         self.assertEqual(body["effective_audio_kind"], "rendered_revision")
         self.assertLess(body["current_duration_sec"], round(60 / SAMPLE_RATE, 6))
+        self.assertEqual(body["current_duration_samples"], 50)
 
     def test_accept_edited_clip_with_missing_render_cache_returns_422(self) -> None:
         clip = self._clip_row()

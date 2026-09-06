@@ -76,6 +76,7 @@ export function parseClipLabPcm16MonoWav(buffer: ArrayBuffer): ParsedClipLabWav 
       const audioFormat = u16(view, dataStart);
       const channels = u16(view, dataStart + 2);
       const sampleRate = u32(view, dataStart + 4);
+      const byteRate = u32(view, dataStart + 8);
       const blockAlign = u16(view, dataStart + 12);
       const bitsPerSample = u16(view, dataStart + 14);
       if (audioFormat !== PCM_FORMAT) {
@@ -92,6 +93,10 @@ export function parseClipLabPcm16MonoWav(buffer: ArrayBuffer): ParsedClipLabWav 
       }
       if (blockAlign !== BLOCK_ALIGN) {
         throw new ClipLabWavError(`expected blockAlign ${BLOCK_ALIGN}, got ${blockAlign}`);
+      }
+      const expectedByteRate = sampleRate * BLOCK_ALIGN;
+      if (byteRate !== expectedByteRate) {
+        throw new ClipLabWavError(`expected byteRate ${expectedByteRate}, got ${byteRate}`);
       }
       sampleRateHz = sampleRate;
       sawFmt = true;
@@ -118,9 +123,11 @@ export function parseClipLabPcm16MonoWav(buffer: ArrayBuffer): ParsedClipLabWav 
   if (!Number.isInteger(sampleCount) || sampleCount < 0) {
     throw new ClipLabWavError("PCM sample count is invalid");
   }
-  const copy = new ArrayBuffer(dataSize);
-  new Uint8Array(copy).set(new Uint8Array(buffer, dataOffset, dataSize));
-  return { sampleRateHz, pcm: new Int16Array(copy) };
+  const pcm = new Int16Array(sampleCount);
+  for (let i = 0; i < sampleCount; i++) {
+    pcm[i] = view.getInt16(dataOffset + i * 2, true);
+  }
+  return { sampleRateHz, pcm };
 }
 
 export function assertClipLabWavMatchesManifest(

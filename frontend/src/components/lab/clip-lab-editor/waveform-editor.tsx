@@ -80,7 +80,8 @@ type WaveformEditorProps = {
   statusRefs: WaveformStatusRefs;
   onPlayingChange: (playing: boolean) => void;
   onHasSelectionChange: (hasSelection: boolean) => void;
-  onEditInFlightChange: (inFlight: boolean) => void;
+  tryBeginAudioEdit: () => boolean;
+  endAudioEdit: () => void;
   onCommitAudioOp: (op: DatasetAudioEditOperation) => Promise<boolean>;
   onRefuseEntireClip: () => void;
 };
@@ -124,7 +125,8 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
       statusRefs,
       onPlayingChange,
       onHasSelectionChange,
-      onEditInFlightChange,
+      tryBeginAudioEdit,
+      endAudioEdit,
       onCommitAudioOp,
       onRefuseEntireClip,
     },
@@ -147,7 +149,6 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
     const autoScrollRafRef = useRef(0);
     const playbackRef = useRef(new ClipLabPlayback());
     const playingRef = useRef(false);
-    const editInFlightRef = useRef(false);
     const preserveTimelineRef = useRef(false);
     const snapshotRef = useRef<EditorSnapshot | null>(null);
     const loadGenRef = useRef(0);
@@ -159,7 +160,8 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
       onAutoplayConsumed,
       onPlayingChange,
       onHasSelectionChange,
-      onEditInFlightChange,
+      tryBeginAudioEdit,
+      endAudioEdit,
       onCommitAudioOp,
       onRefuseEntireClip,
     });
@@ -172,7 +174,8 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
       onAutoplayConsumed,
       onPlayingChange,
       onHasSelectionChange,
-      onEditInFlightChange,
+      tryBeginAudioEdit,
+      endAudioEdit,
       onCommitAudioOp,
       onRefuseEntireClip,
     };
@@ -254,6 +257,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
           hoverEdge: hoverEdgeRef.current,
         },
         themeRef.current,
+        dpr,
       );
       writeStatus();
     };
@@ -273,6 +277,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
         height,
         peakRef.current,
         themeRef.current,
+        dpr,
       );
       paintOverlay();
     };
@@ -280,9 +285,9 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
     const measure = () => {
       const el = rootRef.current;
       if (!el) return;
-      const width = el.clientWidth;
+      const width = el.getBoundingClientRect().width;
       const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
-      if (width === sizeRef.current.width && dpr === sizeRef.current.dpr) {
+      if (Math.abs(width - sizeRef.current.width) < 0.01 && dpr === sizeRef.current.dpr) {
         cacheRect();
         return;
       }
@@ -382,6 +387,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
           }
           paintOverlay();
         },
+        { cacheOrdinaryBuffer: false },
       );
     };
 
@@ -465,8 +471,6 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
     };
 
     const commitEdit = async (op: DatasetAudioEditOperation, snapshot: EditorSnapshot) => {
-      editInFlightRef.current = true;
-      callbacksRef.current.onEditInFlightChange(true);
       preserveTimelineRef.current = true;
       const ok = await callbacksRef.current.onCommitAudioOp(op);
       if (!ok) {
@@ -477,59 +481,65 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
         paintWaveform();
         publishHasSelection();
       }
-      editInFlightRef.current = false;
-      callbacksRef.current.onEditInFlightChange(false);
     };
 
     const deleteSelection = async () => {
-      if (editInFlightRef.current) return;
-      stopPlayback();
-      const result = rippleDelete(stateRef.current);
-      if (!result.ok) {
-        if (result.reason === "entire_clip") callbacksRef.current.onRefuseEntireClip();
-        return;
+      if (!callbacksRef.current.tryBeginAudioEdit()) return;
+      try {
+        stopPlayback();
+        const result = rippleDelete(stateRef.current);
+        if (!result.ok) {
+          if (result.reason === "entire_clip") callbacksRef.current.onRefuseEntireClip();
+          return;
+        }
+        const snapshot: EditorSnapshot = {
+          state: stateRef.current,
+          pcm: pcmRef.current,
+          peak: peakRef.current,
+        };
+        snapshotRef.current = snapshot;
+        pcmRef.current = splicePcmDelete(pcmRef.current, result.startSample, result.endSample);
+        peakRef.current = clipPeakAbs(pcmRef.current);
+        stateRef.current = result.state;
+        paintWaveform();
+        publishHasSelection();
+        await commitEdit(
+          { kind: "delete_range", start_sample: result.startSample, end_sample: result.endSample },
+          snapshot,
+        );
+      } finally {
+        callbacksRef.current.endAudioEdit();
       }
-      const snapshot: EditorSnapshot = {
-        state: stateRef.current,
-        pcm: pcmRef.current,
-        peak: peakRef.current,
-      };
-      snapshotRef.current = snapshot;
-      pcmRef.current = splicePcmDelete(pcmRef.current, result.startSample, result.endSample);
-      peakRef.current = clipPeakAbs(pcmRef.current);
-      stateRef.current = result.state;
-      paintWaveform();
-      publishHasSelection();
-      await commitEdit(
-        { kind: "delete_range", start_sample: result.startSample, end_sample: result.endSample },
-        snapshot,
-      );
     };
 
     const insertSilenceAtCursor = async () => {
-      if (editInFlightRef.current) return;
-      stopPlayback();
-      const durationSamples = insertSilenceSampleCount(stateRef.current.sampleRateHz);
-      if (durationSamples <= 0) return;
-      const snapshot: EditorSnapshot = {
-        state: stateRef.current,
-        pcm: pcmRef.current,
-        peak: peakRef.current,
-      };
-      const inserted = insertSilence(stateRef.current, durationSamples);
-      pcmRef.current = splicePcmInsertSilence(pcmRef.current, inserted.atSample, inserted.durationSamples);
-      peakRef.current = clipPeakAbs(pcmRef.current);
-      stateRef.current = inserted.state;
-      paintWaveform();
-      publishHasSelection();
-      await commitEdit(
-        {
-          kind: "insert_silence",
-          at_sample: inserted.atSample,
-          duration_samples: inserted.durationSamples,
-        },
-        snapshot,
-      );
+      if (!callbacksRef.current.tryBeginAudioEdit()) return;
+      try {
+        stopPlayback();
+        const durationSamples = insertSilenceSampleCount(stateRef.current.sampleRateHz);
+        if (durationSamples <= 0) return;
+        const snapshot: EditorSnapshot = {
+          state: stateRef.current,
+          pcm: pcmRef.current,
+          peak: peakRef.current,
+        };
+        const inserted = insertSilence(stateRef.current, durationSamples);
+        pcmRef.current = splicePcmInsertSilence(pcmRef.current, inserted.atSample, inserted.durationSamples);
+        peakRef.current = clipPeakAbs(pcmRef.current);
+        stateRef.current = inserted.state;
+        paintWaveform();
+        publishHasSelection();
+        await commitEdit(
+          {
+            kind: "insert_silence",
+            at_sample: inserted.atSample,
+            duration_samples: inserted.durationSamples,
+          },
+          snapshot,
+        );
+      } finally {
+        callbacksRef.current.endAudioEdit();
+      }
     };
 
     useImperativeHandle(ref, () => ({
@@ -576,7 +586,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
           if (gen !== loadGenRef.current) return;
           const parsed = parseClipLabPcm16MonoWav(buffer);
           const expected = expectedDurationRef.current;
-          if (expected == null || Math.abs(parsed.pcm.length - expected) <= 1) {
+          if (expected == null) {
             if (parsed.sampleRateHz !== sampleRateRef.current) {
               throw new Error(
                 `sample rate mismatch: wav ${parsed.sampleRateHz} Hz vs manifest ${sampleRateRef.current} Hz`,
@@ -834,13 +844,16 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
           tabIndex={0}
           role="application"
           aria-label="Waveform editor"
-          className="relative w-full outline-none focus-visible:ring-1 focus-visible:ring-foreground/40"
+          className="relative w-full overflow-hidden outline-none focus-visible:ring-1 focus-visible:ring-foreground/40"
           style={{ height: HEIGHT_CSS, lineHeight: 0, fontSize: 0 }}
         >
-          <canvas ref={waveRef} className="absolute inset-0 block h-full w-full" />
+          <canvas
+            ref={waveRef}
+            className="absolute inset-0 block h-full w-full [image-rendering:pixelated]"
+          />
           <canvas
             ref={overlayRef}
-            className="pointer-events-none absolute inset-0 block h-full w-full"
+            className="pointer-events-none absolute inset-0 block h-full w-full [image-rendering:pixelated]"
           />
         </div>
         {loadState !== "ready" ? (

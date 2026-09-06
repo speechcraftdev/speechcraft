@@ -881,6 +881,7 @@ class DatasetClipLabClipView(SQLModel):
     audio_url: str | None = None
     waveform_peaks_url: str | None = None
     current_duration_sec: float | None = None
+    current_duration_samples: int | None = None
     audio_edit_op_count: int = 0
     audio_edit_ops: list[dict[str, Any]] = Field(default_factory=list)
     can_undo_audio: bool = False

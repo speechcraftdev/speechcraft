@@ -23,8 +23,10 @@ import {
   selectionFromAnchorFocus,
   selectionStart,
   shiftClick,
+  nearestZeroCrossing,
   snapSelectionToZeroCrossings,
   splicePcmDelete,
+  zeroCrossWindowSamples,
   splicePcmInsertSilence,
   xFromSample,
   zoomAround,
@@ -318,6 +320,12 @@ describe("selectionFromAnchorFocus", () => {
 });
 
 describe("zero-cross snap", () => {
+  test("search window is a fixed duration converted to samples", () => {
+    expect(zeroCrossWindowSamples(16000)).toBe(320);
+    expect(zeroCrossWindowSamples(48000)).toBe(960);
+    expect(zeroCrossWindowSamples(96000)).toBe(1920);
+  });
+
   test("snaps both edges inside a bounded window without changing PCM", () => {
     const pcm = new Int16Array([8, 8, 0, 0, 8, 8]);
     const selected = dragSelect(createTimelineState(pcm.length, 16000), 1, 4);
@@ -325,5 +333,12 @@ describe("zero-cross snap", () => {
     expect(selectionStart(snapped.selection!)).toBe(2);
     expect(selectionEnd(snapped.selection!)).toBe(3);
     expect(Array.from(pcm)).toEqual([8, 8, 0, 0, 8, 8]);
+  });
+
+  test("does not snap to a closer crossing outside the time window", () => {
+    const pcm = new Int16Array(200);
+    pcm[2] = -8;
+    pcm[3] = 8;
+    expect(nearestZeroCrossing(pcm, 100, zeroCrossWindowSamples(16000))).toBe(100);
   });
 });

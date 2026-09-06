@@ -77,6 +77,7 @@ export type ClipLabApiClip = {
   audio_url: string;
   waveform_peaks_url: string | null;
   current_duration_sec: number | null;
+  current_duration_samples: number | null;
   audio_edit_op_count: number;
   audio_edit_ops: unknown[];
   can_undo_audio: boolean;
@@ -320,6 +321,7 @@ export function mapApiClip(
     transcript,
     originalTranscript: clip.original_transcript ?? transcript,
     durationSeconds: clip.current_duration_sec ?? 0,
+    durationSamples: clip.current_duration_samples ?? null,
     status: normalizeStatus(clip.review_status),
     machineBucket,
     qcScore: Number(qcScore.toFixed(3)),

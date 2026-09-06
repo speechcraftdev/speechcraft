@@ -1,5 +1,4 @@
 import {
-  sampleRangeForPixelColumn,
   samplesPerPixel,
   xFromSample,
   type ViewMapping,
@@ -43,26 +42,44 @@ export function resizeCanvasToCss(
   const height = Math.max(1, Math.round(heightCssPx * dpr));
   if (canvas.width !== width) canvas.width = width;
   if (canvas.height !== height) canvas.height = height;
-  canvas.style.width = `${widthCssPx}px`;
-  canvas.style.height = `${heightCssPx}px`;
+  const styleWidth = `${widthCssPx}px`;
+  const styleHeight = `${heightCssPx}px`;
+  if (canvas.style.width !== styleWidth) canvas.style.width = styleWidth;
+  if (canvas.style.height !== styleHeight) canvas.style.height = styleHeight;
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.beginPath();
   return ctx;
+}
+
+function columnSampleRange(
+  x: number,
+  columns: number,
+  mapping: ViewMapping,
+): { start: number; end: number } {
+  const span = mapping.viewEndSample - mapping.viewStartSample;
+  return {
+    start: mapping.viewStartSample + (x / columns) * span,
+    end: mapping.viewStartSample + ((x + 1) / columns) * span,
+  };
 }
 
 function drawMinMax(
   ctx: CanvasRenderingContext2D,
   pcm: Int16Array,
   mapping: ViewMapping,
-  widthCssPx: number,
-  heightCssPx: number,
   peak: number,
+  widthCssPx: number,
+  devicePixelRatio: number,
 ): void {
-  const columns = Math.max(1, Math.ceil(widthCssPx));
-  ctx.beginPath();
+  const columns = Math.max(1, Math.round(widthCssPx));
+  const height = ctx.canvas.height;
+  const dpr = devicePixelRatio > 0 ? devicePixelRatio : 1;
+  if (columns <= 0 || height <= 0) return;
   for (let x = 0; x < columns; x++) {
-    const { start, end } = sampleRangeForPixelColumn(x, mapping);
+    const { start, end } = columnSampleRange(x, columns, mapping);
     const i0 = Math.max(0, Math.floor(start));
     const i1 = Math.min(pcm.length, Math.max(i0 + 1, Math.ceil(end)));
     if (i0 >= pcm.length) continue;
@@ -73,13 +90,14 @@ function drawMinMax(
       if (v < min) min = v;
       if (v > max) max = v;
     }
-    const y0 = yFromPcmValue(max, heightCssPx, peak);
-    const y1 = yFromPcmValue(min, heightCssPx, peak);
-    const cx = x + 0.5;
-    ctx.moveTo(cx, y0);
-    ctx.lineTo(cx, y1 === y0 ? y0 + 1 : y1);
+    const x0 = Math.round(x * dpr);
+    const x1 = Math.round((x + 1) * dpr);
+    const y0 = yFromPcmValue(max, height, peak);
+    const y1 = yFromPcmValue(min, height, peak);
+    const top = Math.round(Math.min(y0, y1));
+    const bottom = Math.round(Math.max(y0, y1));
+    ctx.fillRect(x0, top, Math.max(1, x1 - x0), Math.max(1, bottom - top));
   }
-  ctx.stroke();
 }
 
 function drawPolyline(
@@ -89,14 +107,16 @@ function drawPolyline(
   heightCssPx: number,
   peak: number,
   withPoints: boolean,
+  devicePixelRatio: number,
 ): void {
   const start = Math.max(0, Math.floor(mapping.viewStartSample));
   const end = Math.min(pcm.length, Math.ceil(mapping.viewEndSample) + 1);
   if (end <= start) return;
+  const dpr = devicePixelRatio > 0 ? devicePixelRatio : 1;
   ctx.beginPath();
   for (let i = start; i < end; i++) {
-    const x = xFromSample(i, mapping);
-    const y = yFromPcmValue(pcm[i], heightCssPx, peak);
+    const x = xFromSample(i, mapping) * dpr;
+    const y = yFromPcmValue(pcm[i], heightCssPx, peak) * dpr;
     if (i === start) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   }
@@ -104,10 +124,10 @@ function drawPolyline(
   if (!withPoints) return;
   ctx.beginPath();
   for (let i = start; i < end; i++) {
-    const x = xFromSample(i, mapping);
-    const y = yFromPcmValue(pcm[i], heightCssPx, peak);
-    ctx.moveTo(x + 1.5, y);
-    ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+    const x = xFromSample(i, mapping) * dpr;
+    const y = yFromPcmValue(pcm[i], heightCssPx, peak) * dpr;
+    ctx.moveTo(x + 1.5 * dpr, y);
+    ctx.arc(x, y, 1.5 * dpr, 0, Math.PI * 2);
   }
   ctx.fill();
 }
@@ -120,17 +140,28 @@ export function drawWaveform(
   heightCssPx: number,
   peak: number,
   theme: WaveformTheme,
+  devicePixelRatio = 1,
 ): void {
-  ctx.clearRect(0, 0, widthCssPx, heightCssPx);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.imageSmoothingEnabled = false;
   if (pcm.length === 0 || widthCssPx <= 0 || heightCssPx <= 0) return;
   ctx.strokeStyle = theme.wave;
   ctx.fillStyle = theme.wave;
   ctx.lineWidth = 1;
   const spp = samplesPerPixel(mapping);
   if (spp >= POLYLINE_SAMPLES_PER_PIXEL) {
-    drawMinMax(ctx, pcm, mapping, widthCssPx, heightCssPx, peak);
+    drawMinMax(ctx, pcm, mapping, peak, widthCssPx, devicePixelRatio);
   } else {
-    drawPolyline(ctx, pcm, mapping, heightCssPx, peak, spp < POINT_SAMPLES_PER_PIXEL);
+    drawPolyline(
+      ctx,
+      pcm,
+      mapping,
+      heightCssPx,
+      peak,
+      spp < POINT_SAMPLES_PER_PIXEL,
+      devicePixelRatio,
+    );
   }
 }
 
@@ -149,8 +180,12 @@ export function drawOverlay(
   heightCssPx: number,
   overlay: OverlayState,
   theme: WaveformTheme,
+  devicePixelRatio = 1,
 ): void {
-  ctx.clearRect(0, 0, widthCssPx, heightCssPx);
+  const dpr = devicePixelRatio > 0 ? devicePixelRatio : 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   if (overlay.playheadSample !== null) {
     const x = xFromSample(overlay.playheadSample, mapping);
     if (x > 0) {

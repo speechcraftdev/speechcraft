@@ -88,5 +88,29 @@ describe("parseClipLabPcm16MonoWav", () => {
       assertClipLabWavMatchesManifest(parsed, { sampleRateHz: 16000, durationSamples: 8 }),
     ).toThrow(/sample count mismatch/);
     assertClipLabWavMatchesManifest(parsed, { sampleRateHz: 16000, durationSamples: 4 });
+    expect(() =>
+      assertClipLabWavMatchesManifest(parsed, { sampleRateHz: 16000, durationSamples: 5 }),
+    ).toThrow(/sample count mismatch/);
+    expect(() =>
+      assertClipLabWavMatchesManifest(parsed, { sampleRateHz: 16000, durationSamples: 3 }),
+    ).toThrow(/sample count mismatch/);
+  });
+
+  test("rejects contradictory byteRate", () => {
+    const buffer = encodePcm16MonoWav(new Int16Array([1, 2, 3, 4]), 16000);
+    new DataView(buffer).setUint32(28, 999, true);
+    expect(() => parseClipLabPcm16MonoWav(buffer)).toThrow(/byteRate/);
+  });
+
+  test("decodes PCM samples as little-endian int16", () => {
+    const buffer = encodePcm16MonoWav(new Int16Array(2), 16000);
+    const view = new DataView(buffer);
+    // data chunk starts after RIFF/fmt: offset 44
+    view.setUint8(44, 0x00);
+    view.setUint8(45, 0x01);
+    view.setUint8(46, 0x00);
+    view.setUint8(47, 0x80);
+    const parsed = parseClipLabPcm16MonoWav(buffer);
+    expect(Array.from(parsed.pcm)).toEqual([256, -32768]);
   });
 });

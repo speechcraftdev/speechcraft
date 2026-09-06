@@ -951,6 +951,7 @@ def _serialize_clip_lab_clip(raw: dict[str, Any]) -> Any:
         audio_url=raw.get("audio_url"),
         waveform_peaks_url=raw.get("waveform_peaks_url"),
         current_duration_sec=raw.get("current_duration_sec"),
+        current_duration_samples=raw.get("current_duration_samples"),
         audio_edit_op_count=int(raw.get("audio_edit_op_count") or 0),
         audio_edit_ops=list(raw.get("audio_edit_ops") or []),
         can_undo_audio=bool(raw.get("can_undo_audio")),

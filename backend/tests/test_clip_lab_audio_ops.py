@@ -256,16 +256,19 @@ class ClipLabAudioOpsLifecycleTests(unittest.TestCase):
         pending_view = audio_view_fields(run_id="run-1", manifest_row=manifest_row, clip_entry=clip_entry)
         self.assertEqual(pending_view["effective_audio_kind"], "candidate_original")
         self.assertEqual(pending_view["current_duration_sec"], source_duration)
+        self.assertEqual(pending_view["current_duration_samples"], 60)
 
         clip_entry["audio_edit"]["render_status"] = "failed"
         failed_view = audio_view_fields(run_id="run-1", manifest_row=manifest_row, clip_entry=clip_entry)
         self.assertEqual(failed_view["current_duration_sec"], source_duration)
+        self.assertEqual(failed_view["current_duration_samples"], 60)
 
         clip_entry["audio_edit"]["render_status"] = "ready"
         clip_entry["audio_edit"]["rendered_audio_sha256"] = "abc"
         ready_view = audio_view_fields(run_id="run-1", manifest_row=manifest_row, clip_entry=clip_entry)
         self.assertEqual(ready_view["effective_audio_kind"], "rendered_revision")
         self.assertLess(ready_view["current_duration_sec"], source_duration)
+        self.assertEqual(ready_view["current_duration_samples"], 50)
 
     def test_ready_rendered_peaks_missing_raises_without_rendering(self) -> None:
         edited = self._append_delete(version=0)

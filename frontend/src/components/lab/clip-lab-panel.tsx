@@ -18,7 +18,7 @@ import {
   WaveformEditor,
   type WaveformEditorHandle,
 } from "./clip-lab-editor/waveform-editor";
-import { type ClipEdit, type LabClip, formatClock, formatSeconds } from "./lab-data";
+import { type ClipEdit, type LabClip, clipLabDurationSamples, formatClock, formatSeconds } from "./lab-data";
 import type { DatasetAudioEditOperation } from "./speechcraft-write-api";
 
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
@@ -32,6 +32,9 @@ type ClipLabPanelProps = {
   onReject: () => void;
   onAppendEdit: (edit: ClipEdit) => void;
   onCommitAudioOp: (op: DatasetAudioEditOperation) => Promise<boolean>;
+  audioEditInFlight: boolean;
+  tryBeginAudioEdit: () => boolean;
+  endAudioEdit: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onMarkReference: () => void;
@@ -48,6 +51,9 @@ export function ClipLabPanel({
   onReject,
   onAppendEdit,
   onCommitAudioOp,
+  audioEditInFlight,
+  tryBeginAudioEdit,
+  endAudioEdit,
   onUndo,
   onRedo,
   onMarkReference,
@@ -62,7 +68,6 @@ export function ClipLabPanel({
   const [isPlaying, setIsPlaying] = useState(false);
   const [rate, setRate] = useState(DEFAULT_PLAYBACK_RATE);
   const [hasSelection, setHasSelection] = useState(false);
-  const [editInFlight, setEditInFlight] = useState(false);
 
   const duration = clip.durationSeconds;
 
@@ -70,7 +75,6 @@ export function ClipLabPanel({
     setIsPlaying(false);
     setRate(DEFAULT_PLAYBACK_RATE);
     setHasSelection(false);
-    setEditInFlight(false);
     editorRef.current?.setPlaybackRate(DEFAULT_PLAYBACK_RATE);
   }, [clip.id]);
 
@@ -90,8 +94,7 @@ export function ClipLabPanel({
     onAppendEdit({ op: "merge_next" });
   };
 
-  const expectedDurationSamples =
-    clip.sampleRateHz > 0 ? Math.round(clip.durationSeconds * clip.sampleRateHz) : null;
+  const expectedDurationSamples = clipLabDurationSamples(clip);
 
   return (
     <section className="flex flex-col border border-border">
@@ -146,7 +149,8 @@ export function ClipLabPanel({
             statusRefs={{ selection: selectionReadoutRef, time: timeReadoutRef }}
             onPlayingChange={setIsPlaying}
             onHasSelectionChange={setHasSelection}
-            onEditInFlightChange={setEditInFlight}
+            tryBeginAudioEdit={tryBeginAudioEdit}
+            endAudioEdit={endAudioEdit}
             onCommitAudioOp={onCommitAudioOp}
             onRefuseEntireClip={() => {
               toast({
@@ -199,7 +203,7 @@ export function ClipLabPanel({
           size="sm"
           className="h-8"
           onClick={onUndo}
-          disabled={!canUndo || editInFlight}
+          disabled={!canUndo || audioEditInFlight}
         >
           Undo
         </Button>
@@ -209,7 +213,7 @@ export function ClipLabPanel({
           size="sm"
           className="h-8"
           onClick={onRedo}
-          disabled={!canRedo || editInFlight}
+          disabled={!canRedo || audioEditInFlight}
         >
           Redo
         </Button>
@@ -228,7 +232,7 @@ export function ClipLabPanel({
           size="sm"
           className="h-8"
           onClick={() => void editorRef.current?.insertSilenceAtCursor()}
-          disabled={editInFlight || !clip.audioUrl}
+          disabled={audioEditInFlight || !clip.audioUrl}
         >
           Insert silence
         </Button>
@@ -239,7 +243,7 @@ export function ClipLabPanel({
             size="sm"
             className="h-8"
             onClick={() => void editorRef.current?.deleteSelection()}
-            disabled={editInFlight}
+            disabled={audioEditInFlight}
           >
             Delete selection
           </Button>
