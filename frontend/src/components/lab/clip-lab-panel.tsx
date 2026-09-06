@@ -173,14 +173,14 @@ export function ClipLabPanel({
           type="button"
           variant="ghost"
           size="icon"
-          className="h-8 w-8"
+          className="h-8 w-8 text-neutral-200 hover:text-foreground"
           onClick={() => editorRef.current?.togglePlayback()}
         >
           {isPlaying ? <Icons.Pause className="size-4" /> : <Icons.Play className="size-4" />}
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button type="button" variant="ghost" size="sm" className="h-8 tabular-nums">
+            <Button type="button" variant="ghost" size="sm" className="h-8 tabular-nums text-neutral-200 hover:text-foreground">
               Speed {rate}×
             </Button>
           </DropdownMenuTrigger>
@@ -201,7 +201,7 @@ export function ClipLabPanel({
           type="button"
           variant="ghost"
           size="sm"
-          className="h-8"
+          className="h-8 text-neutral-200 hover:text-foreground"
           onClick={onUndo}
           disabled={!canUndo || audioEditInFlight}
         >
@@ -211,7 +211,7 @@ export function ClipLabPanel({
           type="button"
           variant="ghost"
           size="sm"
-          className="h-8"
+          className="h-8 text-neutral-200 hover:text-foreground"
           onClick={onRedo}
           disabled={!canRedo || audioEditInFlight}
         >
@@ -220,17 +220,17 @@ export function ClipLabPanel({
 
         <Separator orientation="vertical" className="mx-1 h-5" />
 
-        <Button type="button" variant="ghost" size="sm" className="h-8" onClick={splitClip}>
+        <Button type="button" variant="ghost" size="sm" className="h-8 text-neutral-200 hover:text-foreground" onClick={splitClip}>
           Split
         </Button>
-        <Button type="button" variant="ghost" size="sm" className="h-8" onClick={mergeClip}>
+        <Button type="button" variant="ghost" size="sm" className="h-8 text-neutral-200 hover:text-foreground" onClick={mergeClip}>
           Merge next
         </Button>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-8"
+          className="h-8 text-neutral-200 hover:text-foreground"
           onClick={() => void editorRef.current?.insertSilenceAtCursor()}
           disabled={audioEditInFlight || !clip.audioUrl}
         >
@@ -241,7 +241,7 @@ export function ClipLabPanel({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-8"
+            className="h-8 text-neutral-200 hover:text-foreground"
             onClick={() => void editorRef.current?.deleteSelection()}
             disabled={audioEditInFlight}
           >
@@ -249,11 +249,11 @@ export function ClipLabPanel({
           </Button>
         ) : null}
 
-        <div className="ml-auto flex items-center gap-3 pr-1 text-xs tabular-nums text-muted-foreground">
-          <span ref={selectionReadoutRef} className={cn(hasSelection && "text-foreground")}>
+        <div className="ml-auto flex items-center gap-3 pr-1 text-xs tabular-nums text-neutral-400">
+          <span ref={selectionReadoutRef} className={cn(hasSelection && "text-neutral-200")}>
             Sel none
           </span>
-          <span ref={timeReadoutRef} className="text-foreground">
+          <span ref={timeReadoutRef} className="text-neutral-200">
             {formatClock(0)} / {formatClock(duration)}
           </span>
         </div>

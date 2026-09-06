@@ -242,11 +242,11 @@ export function readWaveformTheme(dark: boolean): WaveformTheme {
         ? "0 0% 98%"
         : "240 5.9% 10%";
   return {
-    wave: dark ? "#454545" : "#cfcfcf",
-    selectionFill: hslColor(primary, 0.12),
-    selectionEdge: dark ? "#737373" : "#a3a3a3",
+    wave: dark ? "#8d8d8d" : "#cfcfcf",
+    selectionFill: dark ? "rgba(255,255,255,0.09)" : hslColor(primary, 0.1),
+    selectionEdge: dark ? "#b4b4b4" : "#a3a3a3",
     cursor: dark ? "#f5f5f5" : "#171717",
-    playhead: dark ? "#d4d4d4" : "#404040",
-    progress: dark ? "rgba(154,154,154,0.18)" : "rgba(107,107,107,0.14)",
+    playhead: dark ? "#c8c8c8" : "#404040",
+    progress: dark ? "rgba(220,220,220,0.08)" : "rgba(107,107,107,0.14)",
   };
 }
