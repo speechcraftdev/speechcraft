@@ -844,7 +844,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
           tabIndex={0}
           role="application"
           aria-label="Waveform editor"
-          className="relative w-full overflow-hidden outline-none focus-visible:ring-1 focus-visible:ring-foreground/40"
+          className="relative w-full overflow-hidden border border-border outline-none focus-visible:ring-1 focus-visible:ring-foreground/40"
           style={{ height: HEIGHT_CSS, lineHeight: 0, fontSize: 0 }}
         >
           <canvas
