@@ -88,7 +88,8 @@ class DatasetRunTests(TestCase):
         config = json.loads((self.repository.media_root / run.artifact_root / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(config["vad_threshold"], 0.6)
         self.assertEqual(config["faster_whisper_beam_size"], 5)
-        self.assertEqual(config["mfa_dictionary"], "english_us_mfa")
+        self.assertEqual(config["slicer"], "VR")
+        self.assertNotIn("mfa_dictionary", config)
 
     def test_repository_migrates_old_processingrun_schema(self) -> None:
         self.repository.close()
@@ -182,7 +183,7 @@ class DatasetRunTests(TestCase):
         run = create_dataset_run(
             self.repository,
             "project-1",
-            DatasetRunCreateRequest(config={"faster_whisper_model": "medium.en"}),
+            DatasetRunCreateRequest(config={"faster_whisper_model": "medium.en"}, stop_after="transcript_qc"),
         )
 
         with (
@@ -216,7 +217,7 @@ class DatasetRunTests(TestCase):
             DatasetRunCreateRequest(single_speaker=False),
         )
         self.assertFalse(run.input_summary["single_speaker"])
-        self.assertEqual(run.input_summary["requested_stop_after"], "alignment_qc")
+        self.assertEqual(run.input_summary["requested_stop_after"], "candidate_review_clips")
 
     def test_create_run_rejects_multi_speaker_multi_source_until_cross_file_identity_exists(self) -> None:
         root = Path(self.temp_dir.name)
@@ -387,8 +388,8 @@ class DatasetRunTests(TestCase):
         run_root = self.repository.media_root / str(run.artifact_root)
         artifacts = run_root / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
-        for relative in ("asr_mfa_queue.json", "aligned_words.jsonl", "alignment_qc_by_buffer.json"):
-            (artifacts / relative).write_text("[]" if relative.endswith(".json") else "", encoding="utf-8")
+        (artifacts / "processing_buffers.json").write_text("[]", encoding="utf-8")
+        (artifacts / "audio_variants_manifest.json").write_text(json.dumps({"variants": []}), encoding="utf-8")
         process = Mock(pid=5432)
         with (
             patch("app.dataset_runs.dataset_worker_python", return_value=Path("/bin/true")),
@@ -405,20 +406,20 @@ class DatasetRunTests(TestCase):
         self.assertIn("speechcraft_dataset.rerun_slicer", popen.call_args.args[0])
         config = json.loads((run_root / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(config["cutpoint_min_gap_ms"], 40)
-        self.assertEqual(config["candidate_target_clip_sec"], 8)
-        self.assertEqual(config["cutpoint_frame_ms"], 10)
-        self.assertEqual(config["cutpoint_hop_ms"], 5)
+        self.assertEqual(config["candidate_target_clip_sec"], 8.0)
+        self.assertNotIn("cutpoint_frame_ms", config)
+        self.assertNotIn("cutpoint_hop_ms", config)
         status = json.loads((run_root / "status.json").read_text(encoding="utf-8"))
         self.assertIsNone(status["ok"])
-        self.assertEqual(status["stage"], "safe_cutpoints")
+        self.assertEqual(status["stage"], "candidate_review_clips")
 
     def test_slicer_rerun_rejects_hardcoded_config_keys(self) -> None:
         run = create_dataset_run(self.repository, "project-1", DatasetRunCreateRequest())
         run_root = self.repository.media_root / str(run.artifact_root)
         artifacts = run_root / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
-        for relative in ("asr_mfa_queue.json", "aligned_words.jsonl", "alignment_qc_by_buffer.json"):
-            (artifacts / relative).write_text("[]" if relative.endswith(".json") else "", encoding="utf-8")
+        (artifacts / "processing_buffers.json").write_text("[]", encoding="utf-8")
+        (artifacts / "audio_variants_manifest.json").write_text(json.dumps({"variants": []}), encoding="utf-8")
 
         with self.assertRaisesRegex(ValueError, "Unsupported slicer config keys: cutpoint_frame_ms"):
             rerun_dataset_slicer(
@@ -434,8 +435,8 @@ class DatasetRunTests(TestCase):
         run_root = self.repository.media_root / str(run.artifact_root)
         artifacts = run_root / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
-        for relative in ("asr_mfa_queue.json", "aligned_words.jsonl", "alignment_qc_by_buffer.json"):
-            (artifacts / relative).write_text("[]" if relative.endswith(".json") else "", encoding="utf-8")
+        (artifacts / "processing_buffers.json").write_text("[]", encoding="utf-8")
+        (artifacts / "audio_variants_manifest.json").write_text(json.dumps({"variants": []}), encoding="utf-8")
 
         with clip_lab_run_lock(run_root):
             with self.assertRaisesRegex(ValueError, "Clip Lab state is busy"):
@@ -657,8 +658,8 @@ class DatasetRunTests(TestCase):
             resumed = resume_dataset_run_processing(self.repository, run.id)
 
         self.assertEqual(resumed.status, ProcessingRunStatus.RUNNING)
-        self.assertEqual(resumed.input_summary["active_stop_after"], "alignment_qc")
-        self.assertIn("alignment_qc", popen.call_args.args[0])
+        self.assertEqual(resumed.input_summary["active_stop_after"], "candidate_review_clips")
+        self.assertIn("candidate_review_clips", popen.call_args.args[0])
         config = json.loads((self.repository.media_root / resumed.artifact_root / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(config["mode"], "selected_speaker")
         self.assertEqual(config["target_speaker_label"], "speaker_1")

@@ -1,24 +1,20 @@
 from __future__ import annotations
 
 import shutil
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
 from .buffers import read_analysis_audio, sec_to_sample, write_pcm16_mono
-from .io import read_json_value, read_jsonl, resolve_under_root, sha256_file, write_json
-
-
-def reconstruct_training_text(words: list[dict[str, Any]]) -> str:
-    raw_tokens: list[str] = []
-    previous_raw_token_id = None
-    for word in words:
-        raw_token_id = word.get("raw_token_id")
-        if raw_token_id and raw_token_id == previous_raw_token_id:
-            continue
-        raw_tokens.append(str(word.get("raw_token") or word["word"]))
-        previous_raw_token_id = raw_token_id
-    return " ".join(raw_tokens).strip()
+from .io import read_json_value, resolve_under_root, sha256_file, write_json, write_jsonl
+from .vr_slicer import (
+    TRUSTED_GEOMETRY_FINGERPRINT,
+    BufferScope,
+    VR_O0_4,
+    VrSlicerResult,
+    assert_locked_geometry,
+    slice_wav,
+)
 
 
 def assemble_candidate_review_clips(
@@ -28,222 +24,196 @@ def assemble_candidate_review_clips(
     artifact_root: Path | None = None,
 ) -> dict[str, Any]:
     destination_root = artifact_root or run_root
-    sample_rate = int(config.get("analysis_sample_rate") or 16000)
-    min_clip_sec = float(config.get("candidate_min_clip_sec", 3.0))
-    target_clip_sec = float(config.get("candidate_target_clip_sec", 8.0))
-    max_clip_sec = float(config.get("candidate_max_clip_sec", 15.0))
-    min_samples = sec_to_sample(min_clip_sec, sample_rate)
-    target_samples = sec_to_sample(target_clip_sec, sample_rate)
-    max_samples = sec_to_sample(max_clip_sec, sample_rate)
-    if not 0 < min_samples <= target_samples <= max_samples:
-        raise ValueError("Candidate clip durations must satisfy 0 < min <= target <= max")
-
-    queue_path = resolve_under_root(run_root, "artifacts/asr_mfa_queue.json")
-    words_path = resolve_under_root(run_root, "artifacts/aligned_words.jsonl")
-    cutpoints_path = resolve_under_root(run_root, "artifacts/safe_cutpoints.jsonl")
-    qc_path = resolve_under_root(run_root, "artifacts/alignment_qc_by_buffer.json")
-    buffers = {row["buffer_id"]: row for row in read_json_value(queue_path)}
-    qc_by_buffer = {row["buffer_id"]: row for row in read_json_value(qc_path)}
-    words_by_buffer: dict[str, list[dict[str, Any]]] = {buffer_id: [] for buffer_id in buffers}
-    cutpoints_by_buffer: dict[str, list[dict[str, Any]]] = {buffer_id: [] for buffer_id in buffers}
-    for word in read_jsonl(words_path):
-        words_by_buffer.setdefault(str(word["buffer_id"]), []).append(word)
-    for cutpoint in read_jsonl(cutpoints_path):
-        cutpoints_by_buffer.setdefault(str(cutpoint["buffer_id"]), []).append(cutpoint)
+    sample_rate = int(config.get("analysis_sample_rate") or VR_O0_4.sample_rate_hz)
+    if sample_rate != VR_O0_4.sample_rate_hz:
+        raise ValueError(
+            f"VR slicer requires analysis_sample_rate {VR_O0_4.sample_rate_hz}, got {sample_rate}"
+        )
+    fingerprint = assert_locked_geometry(VR_O0_4)
+    buffers_path = resolve_under_root(run_root, "artifacts/processing_buffers.json")
+    buffers = list(read_json_value(buffers_path))
+    if not isinstance(buffers, list):
+        raise ValueError("processing_buffers.json must contain a list")
 
     review_dir = resolve_under_root(destination_root, "artifacts/candidate_review_clips")
     if review_dir.exists():
         shutil.rmtree(review_dir)
     review_dir.mkdir(parents=True, exist_ok=True)
+
+    by_source: dict[str, dict[str, Any]] = {}
+    source_buffers: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in buffers:
+        if not isinstance(row, dict):
+            raise ValueError("processing buffer row must be an object")
+        source_audio_id = str(row.get("source_audio_id") or "")
+        if not source_audio_id:
+            raise ValueError("processing buffer is missing source_audio_id")
+        audio_rel = str(row.get("analysis_audio_path") or row.get("audio_path") or "")
+        if not audio_rel:
+            raise ValueError(f"processing buffer {row.get('buffer_id')} is missing analysis audio path")
+        existing = by_source.get(source_audio_id)
+        if existing is None:
+            by_source[source_audio_id] = {"audio_rel": audio_rel, "sample_rate": int(row.get("sample_rate") or sample_rate)}
+        elif existing["audio_rel"] != audio_rel:
+            raise ValueError(f"source {source_audio_id} has mixed analysis audio paths")
+        source_buffers[source_audio_id].append(row)
+
+    slicer_results: dict[str, VrSlicerResult] = {}
+    for source_audio_id, source_rows in sorted(source_buffers.items()):
+        meta = by_source[source_audio_id]
+        audio_path = resolve_under_root(run_root, meta["audio_rel"])
+        scopes = []
+        for row in source_rows:
+            start_sec = float(row.get("trusted_start_sec", row.get("source_start_sec")))
+            end_sec = float(row.get("trusted_end_sec", row.get("source_end_sec")))
+            if end_sec <= start_sec:
+                continue
+            scopes.append(
+                BufferScope(
+                    buffer_id=str(row["buffer_id"]),
+                    start_sec=start_sec,
+                    end_sec=end_sec,
+                )
+            )
+        if not scopes:
+            continue
+        slicer_results[source_audio_id] = slice_wav(
+            audio_path,
+            recording_id=source_audio_id,
+            sample_rate_hz=int(meta["sample_rate"]),
+            buffers=scopes,
+            source_id=source_audio_id,
+        )
+
+    buffer_by_id = {str(row["buffer_id"]): row for row in buffers}
+    packed: list[tuple[str, dict[str, Any], Any]] = []
+    for source_audio_id in sorted(slicer_results):
+        result = slicer_results[source_audio_id]
+        for clip in result.clips:
+            packed.append((source_audio_id, buffer_by_id[clip.buffer_id], clip))
+
     manifest: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
+    for source_audio_id, source_rows in sorted(source_buffers.items()):
+        if source_audio_id not in slicer_results or not slicer_results[source_audio_id].clips:
+            for row in source_rows:
+                rejected.append(
+                    {
+                        "buffer_id": row["buffer_id"],
+                        "source_audio_id": source_audio_id,
+                        "reason_codes": ["vr_slicer_emitted_no_clips"],
+                    }
+                )
 
-    for buffer_id, buffer in sorted(buffers.items()):
-        words = sorted(words_by_buffer.get(buffer_id, []), key=lambda row: int(row["source_start_sample"]))
-        cutpoints = sorted(cutpoints_by_buffer.get(buffer_id, []), key=lambda row: int(row["cut_local_sample"]))
-        qc = qc_by_buffer.get(buffer_id)
-        if qc is None:
-            rejected.append(
-                {
-                    "buffer_id": buffer_id,
-                    "reason_codes": ["missing_alignment_qc_for_buffer", "buffer_excluded_from_clip_assembly"],
-                }
-            )
-            continue
-        if qc.get("automatic_cutpoints_disabled") or qc.get("fatal_reason_codes"):
-            rejected.append(
-                {
-                    "buffer_id": buffer_id,
-                    "reason_codes": ["alignment_qc_fatal", "buffer_excluded_from_clip_assembly"],
-                    "alignment_qc_fatal_reason_codes": list(qc.get("fatal_reason_codes") or []),
-                }
-            )
-            continue
-        if not words:
-            rejected.append(
-                {
-                    "buffer_id": buffer_id,
-                    "reason_codes": ["no_aligned_words", "buffer_excluded_from_clip_assembly"],
-                }
-            )
-            continue
-        if len(cutpoints) < 2:
-            rejected.append(
-                {
-                    "buffer_id": buffer_id,
-                    "reason_codes": ["insufficient_safe_cutpoints", "buffer_excluded_from_clip_assembly"],
-                }
-            )
-            continue
-
-        audio_path = resolve_under_root(run_root, str(buffer.get("queue_audio_path") or buffer["audio_path"]))
-        audio, actual_sample_rate = read_analysis_audio(audio_path)
+    for source_audio_id, buffer, clip in packed:
+        audio_rel = str(buffer.get("analysis_audio_path") or buffer["audio_path"])
+        audio, actual_sample_rate = read_analysis_audio(resolve_under_root(run_root, audio_rel))
         if actual_sample_rate != sample_rate:
-            raise ValueError(f"Candidate review audio sample-rate mismatch for {buffer_id}: {actual_sample_rate} != {sample_rate}")
-        start_index = 0
-        while start_index < len(cutpoints) - 1:
-            start = cutpoints[start_index]
-            start_local = int(start["cut_local_sample"])
-            candidates = [
-                end
-                for end in cutpoints[start_index + 1 :]
-                if min_samples <= int(end["cut_local_sample"]) - start_local <= max_samples
-            ]
-            if not candidates:
-                rejected.append(
-                    {
-                        "buffer_id": buffer_id,
-                        "start_cutpoint_ref": start["id"],
-                        "reason_codes": ["no_valid_end_cutpoint"],
-                    }
-                )
-                start_index += 1
-                continue
-            end = min(
-                candidates,
-                key=lambda row: (
-                    abs((int(row["cut_local_sample"]) - start_local) - target_samples),
-                    int(row["cut_local_sample"]),
-                ),
+            raise ValueError(
+                f"Candidate review audio sample-rate mismatch for {clip.buffer_id}: "
+                f"{actual_sample_rate} != {sample_rate}"
             )
-            end_local = int(end["cut_local_sample"])
-            if start_local < 0 or end_local > len(audio) or end_local <= start_local:
-                raise RuntimeError(f"Invalid candidate review clip bounds for {buffer_id}: {start_local}:{end_local}")
-            source_start = int(buffer["source_start_sample"]) + start_local
-            source_end = int(buffer["source_start_sample"]) + end_local
-            if int(start["source_sample"]) != source_start or int(end["source_sample"]) != source_end:
-                raise RuntimeError(f"SafeCutPoint source/local coordinate mismatch for {buffer_id}")
-            included_words = [
-                word
-                for word in words
-                if int(word["source_start_sample"]) >= source_start and int(word["source_end_sample"]) <= source_end
-            ]
-            if not included_words:
-                rejected.append(
-                    {
-                        "buffer_id": buffer_id,
-                        "start_cutpoint_ref": start["id"],
-                        "end_cutpoint_ref": end["id"],
-                        "reason_codes": ["no_words_inside_candidate_span"],
-                    }
-                )
-                start_index = cutpoints.index(end)
-                continue
-            review_reasons = {
-                reason
-                for word in included_words
-                for reason in word.get("review_reason_codes", [])
+        start_sample = sec_to_sample(clip.start_sec, sample_rate)
+        end_sample = sec_to_sample(clip.end_sec, sample_rate)
+        if start_sample < 0 or end_sample > len(audio) or end_sample <= start_sample:
+            raise RuntimeError(
+                f"Invalid VR clip bounds for {clip.buffer_id}: {start_sample}:{end_sample}"
+            )
+        duration_sec = clip.duration_sec
+        if duration_sec < VR_O0_4.min_clip_sec - 1e-6 or duration_sec > VR_O0_4.max_clip_sec + 1e-6:
+            raise RuntimeError(
+                f"VR clip duration outside locked bounds for {clip.clip_id}: {duration_sec}"
+            )
+        clip_id = f"candidate_review_clip_{len(manifest):06d}"
+        rel_audio_path = f"artifacts/candidate_review_clips/{clip_id}.wav"
+        clip_path = resolve_under_root(destination_root, rel_audio_path)
+        write_pcm16_mono(clip_path, audio[start_sample:end_sample], sample_rate)
+        audio_sha256 = sha256_file(clip_path)
+        trusted_start = int(buffer.get("trusted_start_sample") or buffer.get("source_start_sample") or 0)
+        manifest.append(
+            {
+                "id": clip_id,
+                "buffer_id": clip.buffer_id,
+                "source_audio_id": source_audio_id,
+                "audio_path": rel_audio_path,
+                "audio_sha256": audio_sha256,
+                "audio_hash": audio_sha256,
+                "sample_rate": sample_rate,
+                "start_cutpoint_ref": clip.start_cutpoint_id,
+                "end_cutpoint_ref": clip.end_cutpoint_id,
+                "buffer_local_start_sample": start_sample - trusted_start,
+                "buffer_local_end_sample": end_sample - trusted_start,
+                "source_start_sample": start_sample,
+                "source_end_sample": end_sample,
+                "duration_samples": end_sample - start_sample,
+                "duration_sec": round((end_sample - start_sample) / sample_rate, 6),
+                "slicer": "VR",
+                "slicer_geometry": "O0_4",
+                "geometry_fingerprint": fingerprint,
+                "training_text": "",
+                "needs_review": False,
+                "review_reason_codes": [],
+                "status": "candidate_review",
             }
-            buffer_warning_reasons = sorted(
-                set(qc.get("warning_reason_codes") or [])
-                | set(start.get("buffer_warning_reason_codes") or [])
-                | set(end.get("buffer_warning_reason_codes") or [])
-            )
-            if any(word.get("contains_danger_symbol") for word in included_words):
-                review_reasons.update(["clip_contains_symbol_hazard", "transcript_requires_review"])
-            if any(word.get("contains_numeric") for word in included_words):
-                review_reasons.update(["clip_contains_numeric_token", "transcript_requires_review"])
-            if any(word.get("is_oov") for word in included_words):
-                review_reasons.update(["clip_contains_oov", "transcript_requires_review"])
+        )
 
-            clip_id = f"candidate_review_clip_{len(manifest):06d}"
-            rel_audio_path = f"artifacts/candidate_review_clips/{clip_id}.wav"
-            clip_path = resolve_under_root(destination_root, rel_audio_path)
-            write_pcm16_mono(clip_path, audio[start_local:end_local], sample_rate)
-            duration_samples = end_local - start_local
-            audio_sha256 = sha256_file(clip_path)
-            # Compatibility release: emit both fields with the same value. New code reads
-            # audio_sha256; audio_hash remains a legacy alias until consumers migrate.
-            manifest.append(
+    cutpoints_payload = []
+    for source_audio_id in sorted(slicer_results):
+        for cut in slicer_results[source_audio_id].selected_cutpoints:
+            cutpoints_payload.append(
                 {
-                    "id": clip_id,
-                    "buffer_id": buffer_id,
-                    "source_audio_id": buffer.get("source_audio_id"),
-                    "audio_path": rel_audio_path,
-                    "audio_sha256": audio_sha256,
-                    "audio_hash": audio_sha256,
-                    "sample_rate": sample_rate,
-                    "start_cutpoint_ref": start["id"],
-                    "end_cutpoint_ref": end["id"],
-                    "buffer_local_start_sample": start_local,
-                    "buffer_local_end_sample": end_local,
-                    "source_start_sample": source_start,
-                    "source_end_sample": source_end,
-                    "duration_samples": duration_samples,
-                    "duration_sec": round(duration_samples / sample_rate, 6),
-                    "word_ids": [word["id"] for word in included_words],
-                    "training_text": reconstruct_training_text(included_words),
-                    "alignment_text": " ".join(str(word["word"]) for word in included_words),
-                    "needs_review": bool(review_reasons),
-                    "review_reason_codes": sorted(review_reasons),
-                    "buffer_warning_reason_codes": buffer_warning_reasons,
-                    "status": "candidate_review",
+                    "id": cut.cutpoint_id,
+                    "buffer_id": cut.buffer_id,
+                    "source_audio_id": source_audio_id,
+                    "time_sec": cut.time_sec,
+                    "interval_start_sec": cut.interval_start_sec,
+                    "interval_end_sec": cut.interval_end_sec,
+                    "score": cut.score,
+                    "detector_name": cut.detector_name,
                 }
             )
-            start_index = cutpoints.index(end)
+    cutpoints_path = resolve_under_root(destination_root, "artifacts/vr_cutpoints.jsonl")
+    write_jsonl(cutpoints_path, cutpoints_payload)
 
     manifest_path = resolve_under_root(destination_root, "artifacts/candidate_review_manifest.json")
     rejected_path = resolve_under_root(destination_root, "artifacts/candidate_review_rejected.json")
     write_json(manifest_path, manifest)
     write_json(rejected_path, rejected)
     durations = [float(row["duration_sec"]) for row in manifest]
-    review_reason_counts = Counter(reason for row in manifest for reason in row["review_reason_codes"])
-    rejection_reason_counts = Counter(reason for row in rejected for reason in row["reason_codes"])
     summary = {
         "stage": "candidate_review_clips",
+        "slicer": "VR",
+        "slicer_geometry": "O0_4",
+        "geometry_fingerprint": fingerprint,
+        "trusted_geometry_fingerprint": TRUSTED_GEOMETRY_FINGERPRINT,
         "config_hash": str(config.get("config_hash") or ""),
         "input_artifact_hashes": {
-            "asr_mfa_queue_json": sha256_file(queue_path),
-            "aligned_words_jsonl": sha256_file(words_path),
-            "safe_cutpoints_jsonl": sha256_file(cutpoints_path),
-            "alignment_qc_by_buffer_json": sha256_file(qc_path),
+            "processing_buffers_json": sha256_file(buffers_path),
         },
         "output_hashes": {
             "candidate_review_manifest_json": sha256_file(manifest_path),
             "candidate_review_rejected_json": sha256_file(rejected_path),
-            "candidate_review_wavs": {row["id"]: row["audio_hash"] for row in manifest},
+            "vr_cutpoints_jsonl": sha256_file(cutpoints_path),
+            "candidate_review_wavs": {row["id"]: row["audio_sha256"] for row in manifest},
         },
         "candidate_review_clips": len(manifest),
         "rejected_spans": len(rejected),
         "total_duration_sec": round(sum(durations), 6),
         "min_clip_duration_sec": min(durations, default=None),
         "max_clip_duration_sec": max(durations, default=None),
-        "clips_needing_review": sum(row["needs_review"] for row in manifest),
-        "clips_needing_review_for_symbols": sum(
-            "clip_contains_symbol_hazard" in row["review_reason_codes"] for row in manifest
+        "clips_needing_review": 0,
+        "review_reason_counts": {},
+        "rejection_reason_counts": dict(
+            sorted(
+                Counter(reason for row in rejected for reason in row["reason_codes"]).items()
+            )
         ),
-        "clips_needing_review_for_numbers": sum(
-            "clip_contains_numeric_token" in row["review_reason_codes"] for row in manifest
-        ),
-        "clips_needing_review_for_oovs": sum(
-            "clip_contains_oov" in row["review_reason_codes"] for row in manifest
-        ),
-        "review_reason_counts": dict(sorted(review_reason_counts.items())),
-        "rejection_reason_counts": dict(sorted(rejection_reason_counts.items())),
         "thresholds": {
-            "min_clip_sec": min_clip_sec,
-            "target_clip_sec": target_clip_sec,
-            "max_clip_sec": max_clip_sec,
+            "min_clip_sec": VR_O0_4.min_clip_sec,
+            "preferred_min_sec": VR_O0_4.preferred_min_sec,
+            "preferred_max_sec": VR_O0_4.preferred_max_sec,
+            "target_clip_sec": VR_O0_4.target_clip_sec,
+            "max_clip_sec": VR_O0_4.max_clip_sec,
         },
         "output_dir": "artifacts/candidate_review_clips",
     }

@@ -8,11 +8,10 @@ from .io import read_json, write_json
 from .qc_artifacts import clear_downstream_after_candidate_regeneration
 from .qc_score_stages import run_speaker_purity_stage, run_transcript_qc_stage
 from .run import config_hash, log_line, utc_now_iso, write_status
-from .safecut import generate_safe_cutpoint_diagnostics
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Rerun SpeechCraft SafeCutPoints and candidate assembly")
+    parser = argparse.ArgumentParser(description="Rerun SpeechCraft VR slicer and candidate assembly")
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--config", required=True)
     args = parser.parse_args(argv)
@@ -22,10 +21,7 @@ def main(argv: list[str] | None = None) -> int:
         config["config_hash"] = config_hash(config)
         write_json(run_root / "config.json", config)
         clear_downstream_after_candidate_regeneration(run_root)
-        write_status(run_root, {"ok": None, "stage": "safe_cutpoints", "started_at": utc_now_iso()})
-        safe_summary = generate_safe_cutpoint_diagnostics(run_root, config)
-        log_line(run_root, f"safe_cutpoints rerun completed summary={safe_summary}")
-        write_status(run_root, {"ok": None, "stage": "candidate_review_clips", "summary": safe_summary})
+        write_status(run_root, {"ok": None, "stage": "candidate_review_clips", "started_at": utc_now_iso()})
         candidate_summary = assemble_candidate_review_clips_locked(run_root, config)
         log_line(run_root, f"candidate_review_clips rerun completed summary={candidate_summary}")
         try:
@@ -61,7 +57,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 0
     except Exception as exc:
-        write_status(run_root, {"ok": False, "stage": "speaker_purity", "error": f"{type(exc).__name__}: {exc}", "reason_codes": ["dataset_slicer_rerun_failed"], "completed_at": utc_now_iso()})
+        write_status(
+            run_root,
+            {
+                "ok": False,
+                "stage": "candidate_review_clips",
+                "error": f"{type(exc).__name__}: {exc}",
+                "reason_codes": ["dataset_slicer_rerun_failed"],
+                "completed_at": utc_now_iso(),
+            },
+        )
         log_line(run_root, f"dataset slicer rerun failed: {type(exc).__name__}: {exc}")
         return 1
 

@@ -297,14 +297,13 @@ class WorkerStageContractTests(unittest.TestCase):
             "source_audio",
             "audio_variants",
             "vad",
+            "diarization",
             "buffers",
-            "asr_queue",
-            "asr",
-            "normalization",
-            "mfa",
-            "alignment_qc",
-            "safe_cutpoints",
             "candidate_review_clips",
+            "transcript_qc",
+            "speaker_purity",
             "native_export",
         }
         self.assertTrue(worker_stages <= set(WORKER_STAGE_MAP))
+        self.assertNotIn("asr_queue", worker_stages)
+        self.assertNotIn("mfa", worker_stages)

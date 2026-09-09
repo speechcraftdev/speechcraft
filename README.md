@@ -35,7 +35,7 @@ Preparation creates derived recordings with lineage instead of mutating raw impo
 
 Slicer is run-centric.
 
-It launches slicer runs over the active prepared output group and requires prepared recordings to have alignment artifacts before slicing. Every slicer execution creates a distinct run; prior runs are preserved. Runs can be deleted to reclaim generated slices, jobs, QC runs, and media.
+It launches slicer runs over the active prepared output group. Production slicing uses Silero VAD plus the locked VR `O0_4` geometry; Whisper and MFA are not required to create candidate clips. Every slicer execution creates a distinct run; prior runs are preserved. Runs can be deleted to reclaim generated slices, jobs, QC runs, and media.
 
 ### QC
 
@@ -96,8 +96,6 @@ make dev-frontend
 ```
 
 `make dev-backend` starts both the FastAPI API and the processing worker. The worker is required for preparation, ASR, alignment, and slicer jobs.
-If the local MFA conda env exists at `~/.conda/envs/speechcraft-mfa/bin/mfa`,
-the Makefile auto-exports it for dataset-worker alignment runs.
 The combined backend/API dev output is also written to `backend/logs/dev-backend.log`.
 
 ## URLs

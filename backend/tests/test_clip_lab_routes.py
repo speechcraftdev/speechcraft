@@ -898,10 +898,8 @@ class ClipLabRouteHttpTests(unittest.TestCase):
         from app.clip_lab_state import clip_lab_run_lock
 
         artifacts = self.run_root / "artifacts"
-        for relative in ("asr_mfa_queue.json", "aligned_words.jsonl", "alignment_qc_by_buffer.json"):
-            path = artifacts / relative
-            if not path.exists():
-                path.write_text("[]" if relative.endswith(".json") else "", encoding="utf-8")
+        (artifacts / "processing_buffers.json").write_text("[]", encoding="utf-8")
+        (artifacts / "audio_variants_manifest.json").write_text(json.dumps({"variants": []}), encoding="utf-8")
 
         with clip_lab_run_lock(self.run_root):
             with (

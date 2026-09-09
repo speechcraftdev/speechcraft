@@ -54,16 +54,17 @@ WORKER_STAGE_MAP = {
     "vad": RfcStage.VAD,
     "diarization": RfcStage.DIARIZATION,
     "buffers": RfcStage.PROCESSING_BUFFERS,
+    "candidate_review_clips": RfcStage.CANDIDATE_CLIPS,
+    "transcript_qc": RfcStage.TRANSCRIPT_QC,
+    "speaker_purity": RfcStage.SPEAKER_PURITY,
+    "native_export": RfcStage.EXPORT,
+    # Historical worker stage names kept only so refresh can map old in-flight runs.
     "asr_queue": RfcStage.PROCESSING_BUFFERS,
     "asr": RfcStage.ASR,
     "normalization": RfcStage.NORMALIZATION,
     "mfa": RfcStage.MFA,
     "alignment_qc": RfcStage.MFA,
     "safe_cutpoints": RfcStage.SAFE_CUTPOINTS,
-    "candidate_review_clips": RfcStage.CANDIDATE_CLIPS,
-    "transcript_qc": RfcStage.TRANSCRIPT_QC,
-    "speaker_purity": RfcStage.SPEAKER_PURITY,
-    "native_export": RfcStage.EXPORT,
 }
 ARTIFACT_KINDS = {
     "config.json": RunArtifactKind.RUN_CONFIG_JSON,
@@ -106,6 +107,7 @@ ARTIFACT_KINDS = {
     "artifacts/candidate_review_manifest.json": RunArtifactKind.CANDIDATE_REVIEW_MANIFEST_JSON,
     "artifacts/candidate_review_rejected.json": RunArtifactKind.CANDIDATE_REVIEW_REJECTED_JSON,
     "artifacts/candidate_review_summary.json": RunArtifactKind.CANDIDATE_REVIEW_SUMMARY_JSON,
+    "artifacts/vr_cutpoints.jsonl": RunArtifactKind.VR_CUTPOINTS_JSONL,
     "artifacts/transcript_qc.json": RunArtifactKind.TRANSCRIPT_QC_JSON,
     "artifacts/transcript_qc_summary.json": RunArtifactKind.TRANSCRIPT_QC_SUMMARY_JSON,
     "artifacts/target_voiceprint.json": RunArtifactKind.TARGET_VOICEPRINT_JSON,
@@ -242,7 +244,7 @@ def _launch_worker(repository: Any, run: ProcessingRun, *, stop_after: str) -> i
 
 
 def _stop_after_requires_asr(stop_after: str) -> bool:
-    return stop_after not in {"diarization", "buffers"}
+    return stop_after in {"transcript_qc", "speaker_purity", "native_export"}
 
 
 def _assert_asr_model_available(repository: Any, run: ProcessingRun) -> None:
@@ -270,6 +272,11 @@ def _prepare_run_config_for_launch(repository: Any, run: ProcessingRun, *, stop_
     config_path = _run_root(repository, run) / "config.json"
     config = _read_json_object(config_path)
     target_speaker_label = str(run.input_summary.get("target_speaker_label") or DEFAULT_SINGLE_SPEAKER_ID)
+    if not bool(run.input_summary.get("single_speaker", True)):
+        selection = _read_speaker_selection(repository, run)
+        selected_id = str(selection.get("target_speaker_id") or "").strip()
+        if bool(selection.get("selected")) and selected_id:
+            target_speaker_label = selected_id
     config["target_speaker_label"] = target_speaker_label
     if bool(run.input_summary.get("single_speaker", True)):
         config["mode"] = "single_speaker"
@@ -346,7 +353,7 @@ def start_dataset_run(repository: Any, run_id: str) -> DatasetRunView:
             raise KeyError("Dataset run not found")
         if run.status != ProcessingRunStatus.PENDING:
             raise ValueError(f"Only pending dataset runs can start; current status is {run.status.value}")
-        requested_stop_after = str(run.input_summary.get("requested_stop_after") or "alignment_qc")
+        requested_stop_after = str(run.input_summary.get("requested_stop_after") or "candidate_review_clips")
         stop_after = requested_stop_after
         if not bool(run.input_summary.get("single_speaker", True)):
             selection = _read_speaker_selection(repository, run)
@@ -481,7 +488,7 @@ def resume_dataset_run_processing(
         requested_stop_after = str(
             (request.stop_after if request is not None else None)
             or run.input_summary.get("requested_stop_after")
-            or "alignment_qc"
+            or "candidate_review_clips"
         )
         run.input_summary = {**run.input_summary, "requested_stop_after": requested_stop_after}
         if _stop_after_requires_asr(requested_stop_after):
@@ -504,7 +511,7 @@ def rerun_dataset_slicer(repository: Any, run_id: str, request: DatasetSlicerRer
         if run.status == ProcessingRunStatus.RUNNING:
             raise ValueError("Dataset run is already running")
         run_root = _run_root(repository, run)
-        required = ("artifacts/asr_mfa_queue.json", "artifacts/aligned_words.jsonl", "artifacts/alignment_qc_by_buffer.json")
+        required = ("artifacts/processing_buffers.json", "artifacts/audio_variants_manifest.json")
         missing = [path for path in required if not (run_root / path).exists()]
         if missing:
             raise ValueError(f"Dataset run is not slicer-ready; missing: {', '.join(missing)}")
@@ -526,7 +533,7 @@ def rerun_dataset_slicer(repository: Any, run_id: str, request: DatasetSlicerRer
             json.dumps(
                 {
                     "ok": None,
-                    "stage": "safe_cutpoints",
+                    "stage": "candidate_review_clips",
                     "started_at": utc_now().isoformat(),
                     "completed_at": None,
                 },
@@ -543,7 +550,7 @@ def rerun_dataset_slicer(repository: Any, run_id: str, request: DatasetSlicerRer
         with log_path.open("ab") as log_handle:
             process = subprocess.Popen(command, cwd=str(dataset_worker_root()), env=env, stdout=log_handle, stderr=subprocess.STDOUT, start_new_session=True)
         run.status = ProcessingRunStatus.RUNNING
-        run.stage = RfcStage.SAFE_CUTPOINTS
+        run.stage = RfcStage.CANDIDATE_CLIPS
         run.started_at = utc_now()
         run.completed_at = None
         run.reason_codes = []

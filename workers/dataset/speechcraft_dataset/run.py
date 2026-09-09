@@ -10,22 +10,30 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .alignment_qc import run_alignment_qc
 from .clip_lab_coordination import assemble_candidate_review_clips_locked
 from .audio import create_analysis_audio_variants, inspect_wav
-from .asr import build_asr_queue, run_asr
 from .buffers import run_processing_buffers
 from .diarization import run_diarization
 from .export import export_native_candidate_clips
 from .io import read_json, resolve_under_root, write_json
-from .mfa import run_mfa_alignment
-from .normalization import normalize_transcripts
 from .qc_score_stages import run_speaker_purity_stage, run_transcript_qc_stage
-from .safecut import generate_safe_cutpoint_diagnostics
 from .vad import run_silero_vad
+from .vr_slicer import TRUSTED_GEOMETRY_FINGERPRINT, VR_O0_4
 
 
 PIPELINE_VERSION = "pretraining_rfc_v1"
+
+WORKER_STAGE_ORDER = [
+    "source_audio",
+    "audio_variants",
+    "vad",
+    "diarization",
+    "buffers",
+    "candidate_review_clips",
+    "transcript_qc",
+    "speaker_purity",
+    "native_export",
+]
 
 
 def utc_now_iso() -> str:
@@ -38,7 +46,7 @@ def default_config(source_wavs: list[Path], *, single_speaker: bool, target_spea
         "mode": "single_speaker" if single_speaker else "diarization",
         "source_wavs": [str(path.resolve()) for path in source_wavs],
         "target_speaker_label": target_speaker_label,
-        "analysis_sample_rate": 16000,
+        "analysis_sample_rate": VR_O0_4.sample_rate_hz,
         "vad_backend": "silero",
         "vad_threshold": 0.5,
         "vad_min_speech_ms": 250,
@@ -52,25 +60,13 @@ def default_config(source_wavs: list[Path], *, single_speaker: bool, target_spea
         "diarization_save_embeddings": False,
         "speaker_sample_count": 3,
         "speaker_sample_duration_sec": 6.0,
-        "max_processing_buffer_sec": 29.5,
-        "processing_buffer_pad_sec": 0.5,
-        "target_processing_chunk_sec": 24.0,
-        "min_split_gap_sec": 0.12,
-        "cutpoint_left_word_edge_guard_ms": 30,
-        "cutpoint_min_gap_ms": 80,
-        "cutpoint_right_word_edge_guard_ms": 30,
-        "cutpoint_noise_margin_db": 6.0,
-        "cutpoint_frame_ms": 10,
-        "cutpoint_hop_ms": 5,
-        "oov_cut_guard_sec": 0.5,
-        "symbol_cut_guard_sec": 0.5,
-        "numeric_cut_guard_sec": 0.5,
-        "provisional_split_guard_sec": 0.5,
-        "candidate_min_clip_sec": 3.0,
-        "candidate_target_clip_sec": 8.0,
-        "candidate_max_clip_sec": 15.0,
-        "min_asr_mfa_buffer_sec": 5.0,
-        "faster_whisper_model": "small.en",
+        "slicer": "VR",
+        "slicer_geometry": VR_O0_4.name,
+        "geometry_fingerprint": TRUSTED_GEOMETRY_FINGERPRINT,
+        "candidate_min_clip_sec": VR_O0_4.min_clip_sec,
+        "candidate_target_clip_sec": VR_O0_4.target_clip_sec,
+        "candidate_max_clip_sec": VR_O0_4.max_clip_sec,
+        "faster_whisper_model": "large-v3",
         "faster_whisper_beam_size": 5,
         "asr_model_load_timeout_sec": 180,
         "asr_transcribe_timeout_sec": 600,
@@ -78,14 +74,7 @@ def default_config(source_wavs: list[Path], *, single_speaker: bool, target_spea
         "asr_task": "transcribe",
         "asr_vad_filter": False,
         "asr_condition_on_previous_text": False,
-        "asr_word_timestamps": False,
-        "mfa_dictionary": "english_us_mfa",
-        "mfa_acoustic_model": "english_mfa",
-        "mfa_single_speaker": True,
-        "mfa_timeout_sec": 3600,
-        "alignment_tiny_word_sec": 0.020,
-        "alignment_long_word_sec": 2.0,
-        "alignment_trusted_edge_warn_sec": 0.080,
+        "asr_word_timestamps": True,
     }
 
 
@@ -96,6 +85,13 @@ def load_config(config_path: Path | None, source_wavs: list[Path], *, single_spe
         config.update(overrides)
     if not config.get("source_wavs"):
         raise ValueError("At least one source WAV is required")
+    config["slicer"] = "VR"
+    config["slicer_geometry"] = VR_O0_4.name
+    config["geometry_fingerprint"] = TRUSTED_GEOMETRY_FINGERPRINT
+    config["candidate_min_clip_sec"] = VR_O0_4.min_clip_sec
+    config["candidate_target_clip_sec"] = VR_O0_4.target_clip_sec
+    config["candidate_max_clip_sec"] = VR_O0_4.max_clip_sec
+    config["analysis_sample_rate"] = VR_O0_4.sample_rate_hz
     config["config_hash"] = config_hash(config)
     return config
 
@@ -161,24 +157,7 @@ def run_audio_variants(run_root: Path, config: dict[str, Any]) -> dict[str, Any]
 
 
 def should_stop(current_stage: str, stop_after: str) -> bool:
-    order = [
-        "source_audio",
-        "audio_variants",
-        "vad",
-        "diarization",
-        "buffers",
-        "asr_queue",
-        "asr",
-        "normalization",
-        "mfa",
-        "alignment_qc",
-        "safe_cutpoints",
-        "candidate_review_clips",
-        "transcript_qc",
-        "speaker_purity",
-        "native_export",
-    ]
-    return order.index(current_stage) >= order.index(stop_after)
+    return WORKER_STAGE_ORDER.index(current_stage) >= WORKER_STAGE_ORDER.index(stop_after)
 
 
 def failure_reason_codes(stage: str, exc: Exception) -> list[str]:
@@ -193,32 +172,16 @@ def failure_reason_codes(stage: str, exc: Exception) -> list[str]:
         return ["diarization_failed"]
     if stage == "buffers":
         return ["processing_buffer_build_failed"]
-    if stage == "asr" and "ASR dependencies are unavailable" in message:
-        return ["missing_asr_dependency"]
-    if stage == "asr" and "ASR model load timed out" in message:
-        return ["asr_model_load_timeout"]
-    if stage == "asr" and "ASR transcription timed out" in message:
-        return ["asr_transcription_timeout"]
-    if stage == "asr" and ("Hub" in message or "snapshot" in message or "model" in message.lower()):
-        return ["asr_model_unavailable"]
-    if stage == "asr":
-        return ["asr_failed"]
-    if stage == "asr_queue":
-        return ["asr_queue_build_failed"]
-    if stage == "normalization":
-        return ["normalization_failed"]
-    if stage == "mfa" and ("MFA binary not configured" in message or "MFA binary path does not exist" in message or "MFA binary not found on PATH" in message):
-        return ["missing_mfa_binary"]
-    if stage == "mfa" and "mfa_timeout" in message:
-        return ["mfa_timeout"]
-    if stage == "mfa":
-        return ["mfa_failed"]
-    if stage == "alignment_qc":
-        return ["alignment_qc_failed"]
-    if stage == "safe_cutpoints":
-        return ["safe_cutpoint_generation_failed"]
     if stage == "candidate_review_clips":
         return ["candidate_review_clip_assembly_failed"]
+    if stage == "transcript_qc" and "ASR dependencies are unavailable" in message:
+        return ["missing_asr_dependency"]
+    if stage == "transcript_qc" and "ASR model load timed out" in message:
+        return ["asr_model_load_timeout"]
+    if stage == "transcript_qc" and "ASR transcription timed out" in message:
+        return ["asr_transcription_timeout"]
+    if stage == "transcript_qc" and ("Hub" in message or "snapshot" in message or "model" in message.lower()):
+        return ["asr_model_unavailable"]
     if stage == "transcript_qc":
         return ["transcript_qc_failed"]
     if stage == "speaker_purity":
@@ -226,6 +189,19 @@ def failure_reason_codes(stage: str, exc: Exception) -> list[str]:
     if stage == "native_export":
         return ["native_export_failed"]
     return ["dataset_worker_failed"]
+
+
+def _complete_ok(run_root: Path, status: dict[str, Any], stage: str, summary: dict[str, Any]) -> int:
+    status.update(
+        {
+            "ok": True,
+            "stage": stage,
+            "summary": summary,
+            "completed_at": utc_now_iso(),
+        }
+    )
+    write_status(run_root, status)
+    return 0
 
 
 def run_dataset_worker(args: argparse.Namespace) -> int:
@@ -250,39 +226,21 @@ def run_dataset_worker(args: argparse.Namespace) -> int:
         write_json(resolve_under_root(run_root, "config.json"), config)
         write_json(resolve_under_root(run_root, "runtime_versions.json"), runtime_versions())
         log_line(run_root, "dataset worker started")
-        log_line(run_root, f"mode={config['mode']} source_count={len(config['source_wavs'])}")
+        log_line(run_root, f"mode={config['mode']} source_count={len(config['source_wavs'])} slicer=VR")
 
         status.update({"stage": "source_audio", "reason_codes": []})
         write_status(run_root, status)
         source_summary = run_prepare_sources(run_root, config)
         log_line(run_root, f"source_audio completed summary={source_summary}")
         if should_stop("source_audio", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "source_audio",
-                    "summary": source_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
-            return 0
+            return _complete_ok(run_root, status, "source_audio", source_summary)
 
         status.update({"stage": "audio_variants", "summary": source_summary})
         write_status(run_root, status)
         audio_variant_summary = run_audio_variants(run_root, config)
         log_line(run_root, f"audio_variants completed summary={audio_variant_summary}")
         if should_stop("audio_variants", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "audio_variants",
-                    "summary": audio_variant_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
-            return 0
+            return _complete_ok(run_root, status, "audio_variants", audio_variant_summary)
 
         status.update({"stage": "vad", "summary": audio_variant_summary})
         write_status(run_root, status)
@@ -292,17 +250,8 @@ def run_dataset_worker(args: argparse.Namespace) -> int:
         vad_summary = run_silero_vad(run_root, config)
         log_line(run_root, f"vad completed summary={vad_summary}")
         if should_stop("vad", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "vad",
-                    "summary": vad_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
             log_line(run_root, "dataset worker completed VAD")
-            return 0
+            return _complete_ok(run_root, status, "vad", vad_summary)
 
         status.update({"stage": "diarization", "summary": vad_summary})
         write_status(run_root, status)
@@ -332,184 +281,39 @@ def run_dataset_worker(args: argparse.Namespace) -> int:
         buffer_summary = run_processing_buffers(run_root, config)
         log_line(run_root, f"buffers completed summary={buffer_summary}")
         if should_stop("buffers", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "buffers",
-                    "summary": buffer_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
             log_line(run_root, "dataset worker completed processing buffers")
-            return 0
+            return _complete_ok(run_root, status, "buffers", buffer_summary)
 
-        status.update({"stage": "asr_queue", "summary": buffer_summary})
-        write_status(run_root, status)
-        asr_queue_summary = build_asr_queue(run_root, config)
-        log_line(run_root, f"asr_queue completed summary={asr_queue_summary}")
-        if should_stop("asr_queue", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "asr_queue",
-                    "summary": asr_queue_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
-            return 0
-
-        status.update({"stage": "asr", "summary": asr_queue_summary})
-        write_status(run_root, status)
-        asr_summary = run_asr(run_root, config)
-        log_line(run_root, f"asr completed summary={asr_summary}")
-        if should_stop("asr", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "asr",
-                    "summary": asr_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
-            return 0
-
-        status.update({"stage": "normalization", "summary": asr_summary})
-        write_status(run_root, status)
-        normalization_summary = normalize_transcripts(run_root, config)
-        log_line(run_root, f"normalization completed summary={normalization_summary}")
-        if should_stop("normalization", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "normalization",
-                    "summary": normalization_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
-            log_line(run_root, "dataset worker completed normalization")
-            return 0
-
-        status.update({"stage": "mfa", "summary": normalization_summary})
-        write_status(run_root, status)
-        mfa_summary = run_mfa_alignment(run_root, config)
-        log_line(run_root, f"mfa completed summary={mfa_summary}")
-        if should_stop("mfa", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "mfa",
-                    "summary": mfa_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
-            log_line(run_root, "dataset worker completed MFA")
-            return 0
-
-        status.update({"stage": "alignment_qc", "summary": mfa_summary})
-        write_status(run_root, status)
-        alignment_qc_summary = run_alignment_qc(run_root, config)
-        log_line(run_root, f"alignment_qc completed summary={alignment_qc_summary}")
-        if should_stop("alignment_qc", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "alignment_qc",
-                    "summary": alignment_qc_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
-            log_line(run_root, "dataset worker completed alignment QC")
-            return 0
-
-        status.update({"stage": "safe_cutpoints", "summary": alignment_qc_summary})
-        write_status(run_root, status)
-        safe_cutpoint_summary = generate_safe_cutpoint_diagnostics(run_root, config)
-        log_line(run_root, f"safe_cutpoints completed summary={safe_cutpoint_summary}")
-        if should_stop("safe_cutpoints", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "safe_cutpoints",
-                    "summary": safe_cutpoint_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
-            log_line(run_root, "dataset worker completed SafeCutPoint diagnostics")
-            return 0
-
-        status.update({"stage": "candidate_review_clips", "summary": safe_cutpoint_summary})
+        status.update({"stage": "candidate_review_clips", "summary": buffer_summary})
         write_status(run_root, status)
         candidate_review_summary = assemble_candidate_review_clips_locked(run_root, config)
         log_line(run_root, f"candidate_review_clips completed summary={candidate_review_summary}")
         if should_stop("candidate_review_clips", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "candidate_review_clips",
-                    "summary": candidate_review_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
             log_line(run_root, "dataset worker completed candidate review clips")
-            return 0
+            return _complete_ok(run_root, status, "candidate_review_clips", candidate_review_summary)
 
         status.update({"stage": "transcript_qc", "summary": candidate_review_summary})
         write_status(run_root, status)
         transcript_qc_summary = run_transcript_qc_stage(run_root, config)
         log_line(run_root, f"transcript_qc completed summary={transcript_qc_summary}")
         if should_stop("transcript_qc", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "transcript_qc",
-                    "summary": transcript_qc_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
             log_line(run_root, "dataset worker completed transcript QC")
-            return 0
+            return _complete_ok(run_root, status, "transcript_qc", transcript_qc_summary)
 
         status.update({"stage": "speaker_purity", "summary": transcript_qc_summary})
         write_status(run_root, status)
         speaker_purity_summary = run_speaker_purity_stage(run_root, config)
         log_line(run_root, f"speaker_purity completed summary={speaker_purity_summary}")
         if should_stop("speaker_purity", args.stop_after):
-            status.update(
-                {
-                    "ok": True,
-                    "stage": "speaker_purity",
-                    "summary": speaker_purity_summary,
-                    "completed_at": utc_now_iso(),
-                }
-            )
-            write_status(run_root, status)
             log_line(run_root, "dataset worker completed speaker purity")
-            return 0
+            return _complete_ok(run_root, status, "speaker_purity", speaker_purity_summary)
 
         status.update({"stage": "native_export", "summary": speaker_purity_summary})
         write_status(run_root, status)
         native_export_summary = export_native_candidate_clips(run_root, config)
         log_line(run_root, f"native_export completed summary={native_export_summary}")
-        status.update(
-            {
-                "ok": True,
-                "stage": "native_export",
-                "summary": native_export_summary,
-                "completed_at": utc_now_iso(),
-            }
-        )
-        write_status(run_root, status)
         log_line(run_root, "dataset worker completed native export")
-        return 0
+        return _complete_ok(run_root, status, "native_export", native_export_summary)
     except Exception as exc:
         status.update(
             {
@@ -534,24 +338,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-speaker-label", default="speaker_0")
     parser.add_argument(
         "--stop-after",
-        choices=[
-            "source_audio",
-            "audio_variants",
-            "vad",
-            "diarization",
-            "buffers",
-            "asr_queue",
-            "asr",
-            "normalization",
-            "mfa",
-            "alignment_qc",
-            "safe_cutpoints",
-            "candidate_review_clips",
-            "transcript_qc",
-            "speaker_purity",
-            "native_export",
-        ],
-        default="alignment_qc",
+        choices=WORKER_STAGE_ORDER,
+        default="candidate_review_clips",
     )
     return parser
 

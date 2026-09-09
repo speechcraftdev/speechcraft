@@ -14,7 +14,6 @@ dependencies = [
   "numpy==2.4.6",
   "omegaconf==2.3.0",
   "onnxruntime==1.26.0",
-  "praatio==6.2.2",
   "scipy==1.17.1",
   "silero-vad==6.2.1",
   "soundfile==0.13.1",

@@ -242,6 +242,7 @@ class RunArtifactKind(str, Enum):
     CANDIDATE_REVIEW_MANIFEST_JSON = "candidate_review_manifest_json"
     CANDIDATE_REVIEW_REJECTED_JSON = "candidate_review_rejected_json"
     CANDIDATE_REVIEW_SUMMARY_JSON = "candidate_review_summary_json"
+    VR_CUTPOINTS_JSONL = "vr_cutpoints_jsonl"
     QUALITY_DROPPED_JSON = "quality_dropped_json"
     TRANSCRIPT_QC_JSON = "transcript_qc_json"
     TRANSCRIPT_QC_SUMMARY_JSON = "transcript_qc_summary_json"
@@ -268,11 +269,7 @@ RFC_PRETRAINING_JOB_DAG: tuple[tuple[RfcStage, tuple[RfcStage, ...]], ...] = (
     (RfcStage.SPEAKER_IDENTITY, (RfcStage.DIARIZATION,)),
     (RfcStage.TRUSTED_REGIONS, (RfcStage.SPEAKER_IDENTITY,)),
     (RfcStage.PROCESSING_BUFFERS, (RfcStage.TRUSTED_REGIONS,)),
-    (RfcStage.ASR, (RfcStage.PROCESSING_BUFFERS,)),
-    (RfcStage.NORMALIZATION, (RfcStage.ASR,)),
-    (RfcStage.MFA, (RfcStage.NORMALIZATION,)),
-    (RfcStage.SAFE_CUTPOINTS, (RfcStage.MFA,)),
-    (RfcStage.CANDIDATE_CLIPS, (RfcStage.SAFE_CUTPOINTS,)),
+    (RfcStage.CANDIDATE_CLIPS, (RfcStage.PROCESSING_BUFFERS,)),
     (RfcStage.TRANSCRIPT_QC, (RfcStage.CANDIDATE_CLIPS,)),
     (RfcStage.SPEAKER_PURITY, (RfcStage.TRANSCRIPT_QC,)),
     (RfcStage.DATASET_QC, (RfcStage.SPEAKER_PURITY,)),
@@ -658,17 +655,11 @@ class DatasetRunCreateRequest(SQLModel):
         "vad",
         "diarization",
         "buffers",
-        "asr_queue",
-        "asr",
-        "normalization",
-        "mfa",
-        "alignment_qc",
-        "safe_cutpoints",
         "candidate_review_clips",
         "transcript_qc",
         "speaker_purity",
         "native_export",
-    ] = "alignment_qc"
+    ] = "candidate_review_clips"
 
 
 class DatasetRunArtifactView(SQLModel):
@@ -736,7 +727,7 @@ class DatasetSpeakerResultsView(SQLModel):
 
 
 class DatasetRunResumeRequest(SQLModel):
-    stop_after: Literal["buffers", "normalization", "mfa", "alignment_qc"] = "alignment_qc"
+    stop_after: Literal["buffers", "candidate_review_clips", "transcript_qc", "speaker_purity", "native_export"] = "candidate_review_clips"
 
 
 class DatasetSlicerRerunRequest(SQLModel):

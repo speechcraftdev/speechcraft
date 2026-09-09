@@ -7,13 +7,10 @@ files from the run root. The backend must not import this package.
 Runtime boundary:
 
 - `backend/`: light API, database, run orchestration, artifact indexing.
-- `workers/dataset/`: CUDA/audio stack for VAD, NeMo, ASR, MFA glue, alignment
-  QC, SafeCutPoints, candidate assembly, and native-rate export.
-- MFA is configured as an external binary through `SPEECHCRAFT_MFA_BIN`.
-- MFA's shared pretrained model root can be configured through `SPEECHCRAFT_MFA_MODEL_ROOT_DIR`.
-- `SPEECHCRAFT_MFA_ROOT_DIR` remains as a legacy alias for the shared model root.
-- MFA uses a per-run temporary directory under `artifacts/mfa_runtime` by default.
-- MFA runs with `--single_speaker` by default for processing-buffer WAVs.
+- `workers/dataset/`: CUDA/audio stack for VAD, NeMo diarization, locked VR
+  slicing, candidate assembly, transcript QC, speaker purity, and native-rate
+  export.
+- Production slicing does not invoke MFA, Whisper, or word-alignment QC.
 
 Initial check:
 
@@ -42,9 +39,9 @@ the worker config:
 }
 ```
 
-The pipeline should not rely on surprise model downloads during ASR execution.
-Preflight reports local ASR model availability, and ASR has bounded model-load
-and transcription timeouts.
+faster-whisper remains a later Transcript Correctness dependency, not a slicer
+dependency. Preflight reports local ASR model availability for stages that
+actually transcribe.
 
 First CLI path:
 
@@ -58,40 +55,36 @@ uv run python -m speechcraft_dataset.run \
 
 Repeat `--source-wav` for multi-WAV datasets.
 
-Current Phase 2 scope is source preparation, mono 16 kHz analysis-audio
-materialization, Silero VAD, single-speaker processing buffers, ASR queue,
-faster-whisper ASR, transcript normalization, MFA alignment, alignment QC, and
-SafeCutPoint diagnostics:
+Current production slicing is the locked VR `O0_4` path: source preparation,
+mono 16 kHz analysis audio, Silero timestamp VAD for diarization regions,
+trusted-region packing buffers, then Silero ONNX frames + percentile RMS +
+duration-only packing.
 
 ```text
-source_audio -> audio_variants -> vad -> buffers -> asr_queue -> asr -> normalization -> mfa -> alignment_qc -> safe_cutpoints -> candidate_review_clips -> native_export
+source_audio -> audio_variants -> vad -> diarization -> buffers -> candidate_review_clips -> transcript_qc -> speaker_purity -> native_export
 ```
+
+Default `--stop-after` is `candidate_review_clips`. Whisper Large-v3 is used
+later for Transcript Correctness, not to create slices.
 
 Use `--stop-after audio_variants` when checking the run-root/audio contract
 without the heavy Silero/PyTorch worker environment.
 
-Use `--stop-after buffers` to generate padded ASR/MFA processing buffers after
-real VAD succeeds. Use `--stop-after normalization` to continue through ASR and
-MFA-ready transcript normalization. Use `--stop-after mfa` to build the MFA
-corpus, run external MFA, parse TextGrids, and write `aligned_words.jsonl`.
-Use `--stop-after alignment_qc` to validate aligned-word timing sanity before
-SafeCutPoint generation.
-Use `--stop-after safe_cutpoints` to write accepted and rejected cutpoint
-diagnostics. This stage does not assemble or export candidate WAV clips.
-Use `--stop-after candidate_review_clips` to greedily assemble 3-15 second
-review WAVs targeting 8 seconds. These are review artifacts, not final training
-exports.
+Use `--stop-after buffers` to write trusted-region packing scopes after VAD
+and speaker selection. These are not ASR/MFA chunks and do not emit buffer WAVs.
+
+Use `--stop-after candidate_review_clips` to run the locked VR slicer and write
+3-15 second review WAVs targeting 8 seconds, plus `vr_cutpoints.jsonl`. These
+are review artifacts, not final training exports. `training_text` is empty until
+TC transcribes the clip.
+
 Use `--stop-after native_export` to cut the candidate clips from the original
 source WAV sample rate using the analysis-to-native sample mapping. Native
 exports write `export_manifest.json`, `export_audit.json`, `export_summary.json`,
 and `native_export_clips/*.wav`.
 
-The ASR stage intentionally does not use a faster-whisper `initial_prompt`; the
-tracer found prompt echo contamination. Number/symbol handling is done by the
-normalization hazard tracker instead.
-
-NeMo, speaker-purity QC, dataset QC, review-decision persistence, and VoxCPM
-manifest export remain after this stage contract is stable.
+NeMo diarization, speaker-purity QC, dataset QC, review-decision persistence,
+and VoxCPM manifest export remain after this stage contract is stable.
 
 ## Transcript confidence QC (Whisper B1-LJ)
 
@@ -120,8 +113,7 @@ Behavior notes:
 - Number/symbol hazards are review metadata, not score penalties.
 - Config keys such as `transcript_qc_backend=ctc` or Wav2Vec2 model ids fail with
   an actionable removal error.
-- TC scoring is independent of the current ASR+MFA slicer; it does not score
-  transient processing buffers.
+- TC scoring is independent of VR slicing; it does not score packing buffers.
 
 ## Backend Run Lifecycle
 

@@ -18,10 +18,6 @@ if str(WORKER_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKER_ROOT))
 
 
-DEFAULT_MFA_DICTIONARY = "english_us_mfa"
-DEFAULT_MFA_ACOUSTIC_MODEL = "english_mfa"
-
-
 def resolve_asr_device_and_compute_type() -> tuple[str, str]:
     try:
         import torch
@@ -115,67 +111,6 @@ def ffmpeg_check() -> dict[str, Any]:
     }
 
 
-def mfa_check(binary: str | None, dictionary: str, acoustic_model: str, model_root_dir: str | None) -> dict[str, Any]:
-    mfa = binary or shutil.which("mfa")
-    if not mfa:
-        return {
-            "ok": False,
-            "binary": None,
-            "version": None,
-            "dictionary": dictionary,
-            "acoustic_model": acoustic_model,
-            "checks": [],
-            "error": "MFA binary not configured and not found on PATH",
-        }
-
-    mfa_env = dict(os.environ)
-    bin_dir = str(Path(mfa).resolve().parent)
-    path_entries = [entry for entry in mfa_env.get("PATH", "").split(os.pathsep) if entry]
-    if bin_dir not in path_entries:
-        mfa_env["PATH"] = os.pathsep.join([bin_dir, *path_entries])
-    if model_root_dir:
-        mfa_root = Path(model_root_dir)
-        mfa_root.mkdir(parents=True, exist_ok=True)
-        mfa_env["MFA_ROOT_DIR"] = str(mfa_root)
-    mfa_env.setdefault("TMPDIR", "/tmp")
-
-    fstcompile = shutil.which("fstcompile", path=mfa_env["PATH"])
-    checks = [
-        {
-            "name": "openfst_fstcompile",
-            "ok": fstcompile is not None,
-            "returncode": 0 if fstcompile else 1,
-            "stdout": fstcompile or "",
-            "stderr": "" if fstcompile else "fstcompile not found on MFA runtime PATH",
-        },
-        {"name": "version", **run_command([mfa, "version"], env=mfa_env)},
-    ]
-    checks.append(
-        {
-            "name": "dictionary",
-            **run_command([mfa, "model", "inspect", "dictionary", dictionary], env=mfa_env),
-        }
-    )
-    checks.append(
-        {
-            "name": "acoustic_model",
-            **run_command([mfa, "model", "inspect", "acoustic", acoustic_model], env=mfa_env),
-        }
-    )
-    version_check = checks[1]
-    return {
-        "ok": all(check["ok"] for check in checks),
-        "binary": mfa,
-        "mfa_model_root_dir": mfa_env.get("MFA_ROOT_DIR"),
-        "fstcompile": fstcompile,
-        "version": version_check["stdout"].splitlines()[0] if version_check["stdout"] else None,
-        "dictionary": dictionary,
-        "acoustic_model": acoustic_model,
-        "checks": checks,
-        "error": None if all(check["ok"] for check in checks) else "One or more MFA checks failed",
-    }
-
-
 def artifact_root_check(path: str | None) -> dict[str, Any]:
     if not path:
         return {"ok": True, "path": None, "error": None}
@@ -231,11 +166,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         module_check("ctranslate2"),
         module_check("silero_vad"),
         module_check("soundfile"),
-        module_check("praatio"),
         module_check("numpy"),
         module_check("scipy"),
+        module_check("onnxruntime"),
     ]
-    mfa_model_root_dir = args.mfa_model_root_dir or args.mfa_root_dir
     report = {
         "python": {
             "executable": sys.executable,
@@ -245,14 +179,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "modules": modules,
         "ffmpeg": ffmpeg_check(),
         "asr_model": asr_model_check(args),
-        "mfa": mfa_check(args.mfa_bin, args.mfa_dictionary, args.mfa_acoustic_model, mfa_model_root_dir),
         "artifact_root": artifact_root_check(args.artifact_root),
+        "slicer": "VR",
+        "slicer_geometry": "O0_4",
     }
     report["ok"] = (
         all(module["ok"] for module in modules)
         and bool(report["ffmpeg"]["ok"])
         and bool(report["asr_model"]["ok"])
-        and bool(report["mfa"]["ok"])
         and bool(report["artifact_root"]["ok"])
     )
     return report
@@ -269,14 +203,6 @@ def main() -> None:
     parser.add_argument("--asr-compute-type", default=os.environ.get("SPEECHCRAFT_ASR_COMPUTE_TYPE"))
     parser.add_argument("--asr-model-timeout-seconds", type=int, default=120)
     parser.add_argument("--check-asr-model-load", action="store_true")
-    parser.add_argument("--mfa-bin", default=os.environ.get("SPEECHCRAFT_MFA_BIN"))
-    parser.add_argument("--mfa-model-root-dir", default=os.environ.get("SPEECHCRAFT_MFA_MODEL_ROOT_DIR"))
-    parser.add_argument("--mfa-root-dir", default=os.environ.get("SPEECHCRAFT_MFA_ROOT_DIR"))
-    parser.add_argument("--mfa-dictionary", default=os.environ.get("SPEECHCRAFT_MFA_DICTIONARY", DEFAULT_MFA_DICTIONARY))
-    parser.add_argument(
-        "--mfa-acoustic-model",
-        default=os.environ.get("SPEECHCRAFT_MFA_ACOUSTIC_MODEL", DEFAULT_MFA_ACOUSTIC_MODEL),
-    )
     args = parser.parse_args()
     report = build_report(args)
     if args.json:

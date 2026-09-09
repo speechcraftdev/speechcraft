@@ -203,7 +203,7 @@ class DatasetRunRouteTests(TestCase):
             )
             resume_response = resume_project_dataset_run(
                 run.id,
-                DatasetRunResumeRequest(stop_after="alignment_qc"),
+                DatasetRunResumeRequest(stop_after="candidate_review_clips"),
             )
 
         self.assertEqual(results_response.speaker_regions_summary["speaker_count"], 2)

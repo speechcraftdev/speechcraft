@@ -271,6 +271,7 @@ class RfcArtifactSpineTests(TestCase):
             "candidate_review_manifest_json",
             "candidate_review_rejected_json",
             "candidate_review_summary_json",
+            "vr_cutpoints_jsonl",
             "clip_lab_state_json",
             "export_manifest_json",
             "export_audit_json",
@@ -295,11 +296,8 @@ class RfcArtifactSpineTests(TestCase):
                 "speaker_identity",
                 "trusted_regions",
                 "processing_buffers",
-                "asr",
-                "normalization",
-                "mfa",
-                "safe_cutpoints",
                 "candidate_clips",
+                "transcript_qc",
                 "speaker_purity",
                 "dataset_qc",
                 "export",
@@ -316,7 +314,21 @@ class RfcArtifactSpineTests(TestCase):
 
     def test_rfc_job_dag_dependencies_exist_and_are_acyclic(self) -> None:
         dag = {stage: dependencies for stage, dependencies in RFC_PRETRAINING_JOB_DAG}
-        self.assertEqual(set(dag), set(RfcStage))
+        self.assertTrue(set(dag).issubset(set(RfcStage)))
+        self.assertTrue(
+            {
+                RfcStage.INGEST,
+                RfcStage.PROCESSING_BUFFERS,
+                RfcStage.CANDIDATE_CLIPS,
+                RfcStage.TRANSCRIPT_QC,
+                RfcStage.SPEAKER_PURITY,
+                RfcStage.EXPORT,
+            }.issubset(set(dag))
+        )
+        self.assertNotIn(RfcStage.ASR, dag)
+        self.assertNotIn(RfcStage.NORMALIZATION, dag)
+        self.assertNotIn(RfcStage.MFA, dag)
+        self.assertNotIn(RfcStage.SAFE_CUTPOINTS, dag)
 
         for stage, dependencies in dag.items():
             for dependency in dependencies:
