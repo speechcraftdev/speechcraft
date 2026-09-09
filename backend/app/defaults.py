@@ -32,7 +32,7 @@ DATASET_PROCESSING_DEFAULTS: dict[str, Any] = {
 DATASET_SLICER_HARDCODED: dict[str, Any] = {
     "slicer": "VR",
     "slicer_geometry": "O0_4",
-    "geometry_fingerprint": "87130029b5443647ed1f1febd32ab768bf957a0a1698217eb3cf14b2d00c6ecf",
+    "geometry_fingerprint": "0ecfe5c7b67aeec535d6cc7435e8e43f3269487d88bb0cefc69891bb86e186d7",
     "candidate_min_clip_sec": 3.0,
     "candidate_target_clip_sec": 8.0,
     "candidate_max_clip_sec": 15.0,

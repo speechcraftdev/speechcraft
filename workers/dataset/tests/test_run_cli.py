@@ -7,7 +7,7 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 from speechcraft_dataset.assembly import assemble_candidate_review_clips
-from speechcraft_dataset.buffers import run_processing_buffers
+from speechcraft_dataset.buffers import read_analysis_audio, run_processing_buffers
 from speechcraft_dataset.export import export_native_candidate_clips
 from speechcraft_dataset.generate_qc_scores import main as generate_qc_scores_main
 from speechcraft_dataset.io import sha256_file
@@ -569,6 +569,149 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             self.assertEqual(clip['start_cutpoint_ref'], 'cut-a')
             self.assertEqual(clip['end_cutpoint_ref'], 'cut-b')
             self.assertTrue((artifacts / 'vr_cutpoints.jsonl').exists())
+
+    @unittest.skipUnless(HAS_WORKER_AUDIO_DEPS, 'requires worker audio deps')
+    def test_candidate_assembly_reads_each_source_wav_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_raw:
+            run_root = Path(temp_dir_raw)
+            artifacts = run_root / 'artifacts'
+            analysis = run_root / 'audio' / 'analysis' / 'source_audio_0000.mono16000.wav'
+            analysis.parent.mkdir(parents=True)
+            write_silent_wav(analysis, sample_rate=16000, duration_sec=20.0)
+            artifacts.mkdir()
+            (artifacts / 'processing_buffers.json').write_text(
+                json.dumps(
+                    [
+                        {
+                            'buffer_id': 'buffer_000000',
+                            'source_audio_id': 'source_audio_0000',
+                            'analysis_audio_path': 'audio/analysis/source_audio_0000.mono16000.wav',
+                            'audio_path': 'audio/analysis/source_audio_0000.mono16000.wav',
+                            'sample_rate': 16000,
+                            'trusted_start_sample': 0,
+                            'trusted_end_sample': 320000,
+                            'trusted_start_sec': 0.0,
+                            'trusted_end_sec': 20.0,
+                            'source_start_sample': 0,
+                            'source_end_sample': 320000,
+                        }
+                    ]
+                ),
+                encoding='utf-8',
+            )
+            clips = (
+                VrPackedClip(
+                    detector_name='vad_percentile_rms',
+                    packer_name='optimal_weighted_interval',
+                    source_id='source_audio_0000',
+                    recording_id='source_audio_0000',
+                    buffer_id='buffer_000000',
+                    clip_id='clip-0',
+                    start_sec=1.0,
+                    end_sec=9.0,
+                    duration_sec=8.0,
+                    start_cutpoint_id='cut-a',
+                    end_cutpoint_id='cut-b',
+                    selected_weight=1.0,
+                ),
+                VrPackedClip(
+                    detector_name='vad_percentile_rms',
+                    packer_name='optimal_weighted_interval',
+                    source_id='source_audio_0000',
+                    recording_id='source_audio_0000',
+                    buffer_id='buffer_000000',
+                    clip_id='clip-1',
+                    start_sec=10.0,
+                    end_sec=18.0,
+                    duration_sec=8.0,
+                    start_cutpoint_id='cut-c',
+                    end_cutpoint_id='cut-d',
+                    selected_weight=1.0,
+                ),
+            )
+            fake_result = VrSlicerResult(
+                geometry_fingerprint=TRUSTED_GEOMETRY_FINGERPRINT,
+                cutpoints=(),
+                clips=clips,
+                selected_cutpoints=(),
+            )
+            with (
+                patch('speechcraft_dataset.assembly.slice_wav', return_value=fake_result),
+                patch('speechcraft_dataset.assembly.read_analysis_audio', wraps=read_analysis_audio) as read_audio,
+            ):
+                summary = assemble_candidate_review_clips(run_root, {'analysis_sample_rate': 16000, 'config_hash': 'sha256:test'})
+            self.assertEqual(summary['candidate_review_clips'], 2)
+            self.assertEqual(read_audio.call_count, 1)
+
+    @unittest.skipUnless(HAS_WORKER_AUDIO_DEPS, 'requires worker audio deps')
+    def test_candidate_assembly_rejects_empty_buffers_even_when_source_emits_clips(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_raw:
+            run_root = Path(temp_dir_raw)
+            artifacts = run_root / 'artifacts'
+            analysis = run_root / 'audio' / 'analysis' / 'source_audio_0000.mono16000.wav'
+            analysis.parent.mkdir(parents=True)
+            write_silent_wav(analysis, sample_rate=16000, duration_sec=20.0)
+            artifacts.mkdir()
+            (artifacts / 'processing_buffers.json').write_text(
+                json.dumps(
+                    [
+                        {
+                            'buffer_id': 'buffer_000000',
+                            'source_audio_id': 'source_audio_0000',
+                            'analysis_audio_path': 'audio/analysis/source_audio_0000.mono16000.wav',
+                            'audio_path': 'audio/analysis/source_audio_0000.mono16000.wav',
+                            'sample_rate': 16000,
+                            'trusted_start_sample': 0,
+                            'trusted_end_sample': 160000,
+                            'trusted_start_sec': 0.0,
+                            'trusted_end_sec': 10.0,
+                            'source_start_sample': 0,
+                            'source_end_sample': 160000,
+                        },
+                        {
+                            'buffer_id': 'buffer_000001',
+                            'source_audio_id': 'source_audio_0000',
+                            'analysis_audio_path': 'audio/analysis/source_audio_0000.mono16000.wav',
+                            'audio_path': 'audio/analysis/source_audio_0000.mono16000.wav',
+                            'sample_rate': 16000,
+                            'trusted_start_sample': 160000,
+                            'trusted_end_sample': 320000,
+                            'trusted_start_sec': 10.0,
+                            'trusted_end_sec': 20.0,
+                            'source_start_sample': 160000,
+                            'source_end_sample': 320000,
+                        },
+                    ]
+                ),
+                encoding='utf-8',
+            )
+            fake_clip = VrPackedClip(
+                detector_name='vad_percentile_rms',
+                packer_name='optimal_weighted_interval',
+                source_id='source_audio_0000',
+                recording_id='source_audio_0000',
+                buffer_id='buffer_000000',
+                clip_id='clip-0',
+                start_sec=1.0,
+                end_sec=9.0,
+                duration_sec=8.0,
+                start_cutpoint_id='cut-a',
+                end_cutpoint_id='cut-b',
+                selected_weight=1.0,
+            )
+            fake_result = VrSlicerResult(
+                geometry_fingerprint=TRUSTED_GEOMETRY_FINGERPRINT,
+                cutpoints=(),
+                clips=(fake_clip,),
+                selected_cutpoints=(),
+            )
+            with patch('speechcraft_dataset.assembly.slice_wav', return_value=fake_result):
+                summary = assemble_candidate_review_clips(run_root, {'analysis_sample_rate': 16000, 'config_hash': 'sha256:test'})
+            rejected = read_json(artifacts / 'candidate_review_rejected.json')
+            self.assertEqual(summary['candidate_review_clips'], 1)
+            self.assertEqual(len(rejected), 1)
+            self.assertEqual(rejected[0]['buffer_id'], 'buffer_000001')
+            self.assertEqual(rejected[0]['reason_codes'], ['vr_slicer_emitted_no_clips'])
 
     @unittest.skipUnless(HAS_WORKER_AUDIO_DEPS, 'requires worker audio deps')
     def test_pipeline_ingest_to_candidates_does_not_require_whisper_or_mfa(self) -> None:

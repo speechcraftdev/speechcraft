@@ -7,9 +7,9 @@ Authoritative source (do not import at runtime):
 - ``speaker_ts_eval.repaired_buckeye_benchmark.generate_legal_candidate_clips_in_buffers``
 - ``speaker_ts_eval.buckeye_safecut_benchmark._compute_recording_vad_frames``
 
-Geometry fingerprint must stay:
-
-    87130029b5443647ed1f1febd32ab768bf957a0a1698217eb3cf14b2d00c6ecf
+Production fingerprint hashes every ``VrGeometry`` field that affects VAD,
+RMS cutpoints, or packing. The lab's older window/hop/offset hash is not
+this value.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import json
 import math
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -27,7 +27,7 @@ from typing import Any, Sequence
 EPSILON_SEC = 1e-9
 BOUNDARY_EPSILON_SEC = 0.001
 TRUSTED_GEOMETRY_FINGERPRINT = (
-    "87130029b5443647ed1f1febd32ab768bf957a0a1698217eb3cf14b2d00c6ecf"
+    "0ecfe5c7b67aeec535d6cc7435e8e43f3269487d88bb0cefc69891bb86e186d7"
 )
 DETECTOR_NAME = "vad_percentile_rms"
 PACKER_NAME = "optimal_weighted_interval"
@@ -102,14 +102,18 @@ class VrSlicerResult:
     selected_cutpoints: tuple[VrCutpoint, ...]
 
 
+def _canonicalize_geometry_value(value: Any) -> Any:
+    if isinstance(value, tuple):
+        return [_canonicalize_geometry_value(item) for item in value]
+    if isinstance(value, list):
+        return [_canonicalize_geometry_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _canonicalize_geometry_value(item) for key, item in value.items()}
+    return value
+
+
 def geometry_canonical_payload(geometry: VrGeometry) -> dict[str, Any]:
-    return {
-        "hop_samples": int(geometry.hop_samples),
-        "offsets": [int(value) for value in geometry.offsets],
-        "sample_rate_hz": int(geometry.sample_rate_hz),
-        "vad_backend": str(geometry.vad_backend),
-        "window_samples": int(geometry.window_samples),
-    }
+    return _canonicalize_geometry_value(asdict(geometry))
 
 
 def geometry_fingerprint(geometry: VrGeometry = VR_O0_4) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 from collections import Counter, defaultdict
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
@@ -92,70 +93,76 @@ def assemble_candidate_review_clips(
         for clip in result.clips:
             packed.append((source_audio_id, buffer_by_id[clip.buffer_id], clip))
 
-    manifest: list[dict[str, Any]] = []
+    emitted_buffer_ids = {clip.buffer_id for result in slicer_results.values() for clip in result.clips}
     rejected: list[dict[str, Any]] = []
     for source_audio_id, source_rows in sorted(source_buffers.items()):
-        if source_audio_id not in slicer_results or not slicer_results[source_audio_id].clips:
-            for row in source_rows:
-                rejected.append(
-                    {
-                        "buffer_id": row["buffer_id"],
-                        "source_audio_id": source_audio_id,
-                        "reason_codes": ["vr_slicer_emitted_no_clips"],
-                    }
-                )
+        for row in source_rows:
+            if str(row["buffer_id"]) in emitted_buffer_ids:
+                continue
+            rejected.append(
+                {
+                    "buffer_id": row["buffer_id"],
+                    "source_audio_id": source_audio_id,
+                    "reason_codes": ["vr_slicer_emitted_no_clips"],
+                }
+            )
 
-    for source_audio_id, buffer, clip in packed:
-        audio_rel = str(buffer.get("analysis_audio_path") or buffer["audio_path"])
+    manifest: list[dict[str, Any]] = []
+    for source_audio_id, group in groupby(packed, key=lambda item: item[0]):
+        source_clips = list(group)
+        first_buffer = source_clips[0][1]
+        audio_rel = str(first_buffer.get("analysis_audio_path") or first_buffer["audio_path"])
         audio, actual_sample_rate = read_analysis_audio(resolve_under_root(run_root, audio_rel))
         if actual_sample_rate != sample_rate:
             raise ValueError(
-                f"Candidate review audio sample-rate mismatch for {clip.buffer_id}: "
+                f"Candidate review audio sample-rate mismatch for {source_audio_id}: "
                 f"{actual_sample_rate} != {sample_rate}"
             )
-        start_sample = sec_to_sample(clip.start_sec, sample_rate)
-        end_sample = sec_to_sample(clip.end_sec, sample_rate)
-        if start_sample < 0 or end_sample > len(audio) or end_sample <= start_sample:
-            raise RuntimeError(
-                f"Invalid VR clip bounds for {clip.buffer_id}: {start_sample}:{end_sample}"
+        for _, buffer, clip in source_clips:
+            start_sample = sec_to_sample(clip.start_sec, sample_rate)
+            end_sample = sec_to_sample(clip.end_sec, sample_rate)
+            if start_sample < 0 or end_sample > len(audio) or end_sample <= start_sample:
+                raise RuntimeError(
+                    f"Invalid VR clip bounds for {clip.buffer_id}: {start_sample}:{end_sample}"
+                )
+            duration_sec = clip.duration_sec
+            if duration_sec < VR_O0_4.min_clip_sec - 1e-6 or duration_sec > VR_O0_4.max_clip_sec + 1e-6:
+                raise RuntimeError(
+                    f"VR clip duration outside locked bounds for {clip.clip_id}: {duration_sec}"
+                )
+            clip_id = f"candidate_review_clip_{len(manifest):06d}"
+            rel_audio_path = f"artifacts/candidate_review_clips/{clip_id}.wav"
+            clip_path = resolve_under_root(destination_root, rel_audio_path)
+            write_pcm16_mono(clip_path, audio[start_sample:end_sample], sample_rate)
+            audio_sha256 = sha256_file(clip_path)
+            trusted_start = int(buffer.get("trusted_start_sample") or buffer.get("source_start_sample") or 0)
+            manifest.append(
+                {
+                    "id": clip_id,
+                    "buffer_id": clip.buffer_id,
+                    "source_audio_id": source_audio_id,
+                    "audio_path": rel_audio_path,
+                    "audio_sha256": audio_sha256,
+                    "audio_hash": audio_sha256,
+                    "sample_rate": sample_rate,
+                    "start_cutpoint_ref": clip.start_cutpoint_id,
+                    "end_cutpoint_ref": clip.end_cutpoint_id,
+                    "buffer_local_start_sample": start_sample - trusted_start,
+                    "buffer_local_end_sample": end_sample - trusted_start,
+                    "source_start_sample": start_sample,
+                    "source_end_sample": end_sample,
+                    "duration_samples": end_sample - start_sample,
+                    "duration_sec": round((end_sample - start_sample) / sample_rate, 6),
+                    "slicer": "VR",
+                    "slicer_geometry": "O0_4",
+                    "geometry_fingerprint": fingerprint,
+                    "training_text": "",
+                    "needs_review": False,
+                    "review_reason_codes": [],
+                    "status": "candidate_review",
+                }
             )
-        duration_sec = clip.duration_sec
-        if duration_sec < VR_O0_4.min_clip_sec - 1e-6 or duration_sec > VR_O0_4.max_clip_sec + 1e-6:
-            raise RuntimeError(
-                f"VR clip duration outside locked bounds for {clip.clip_id}: {duration_sec}"
-            )
-        clip_id = f"candidate_review_clip_{len(manifest):06d}"
-        rel_audio_path = f"artifacts/candidate_review_clips/{clip_id}.wav"
-        clip_path = resolve_under_root(destination_root, rel_audio_path)
-        write_pcm16_mono(clip_path, audio[start_sample:end_sample], sample_rate)
-        audio_sha256 = sha256_file(clip_path)
-        trusted_start = int(buffer.get("trusted_start_sample") or buffer.get("source_start_sample") or 0)
-        manifest.append(
-            {
-                "id": clip_id,
-                "buffer_id": clip.buffer_id,
-                "source_audio_id": source_audio_id,
-                "audio_path": rel_audio_path,
-                "audio_sha256": audio_sha256,
-                "audio_hash": audio_sha256,
-                "sample_rate": sample_rate,
-                "start_cutpoint_ref": clip.start_cutpoint_id,
-                "end_cutpoint_ref": clip.end_cutpoint_id,
-                "buffer_local_start_sample": start_sample - trusted_start,
-                "buffer_local_end_sample": end_sample - trusted_start,
-                "source_start_sample": start_sample,
-                "source_end_sample": end_sample,
-                "duration_samples": end_sample - start_sample,
-                "duration_sec": round((end_sample - start_sample) / sample_rate, 6),
-                "slicer": "VR",
-                "slicer_geometry": "O0_4",
-                "geometry_fingerprint": fingerprint,
-                "training_text": "",
-                "needs_review": False,
-                "review_reason_codes": [],
-                "status": "candidate_review",
-            }
-        )
+        del audio
 
     cutpoints_payload = []
     for source_audio_id in sorted(slicer_results):

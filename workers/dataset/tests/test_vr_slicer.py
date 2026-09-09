@@ -16,10 +16,12 @@ from speechcraft_dataset.vr_slicer import (
     candidate_clip_weight,
     detect_cutpoints,
     generate_legal_candidates,
+    geometry_canonical_payload,
     geometry_fingerprint,
     schedule_candidates_by_buffer,
     slice_wav,
 )
+from dataclasses import replace
 
 
 HAS_SLICE_DEPS = bool(
@@ -30,6 +32,9 @@ HAS_SLICE_DEPS = bool(
     and importlib.util.find_spec("silero_vad")
 )
 
+LAB_WINDOW_GEOMETRY_FINGERPRINT = (
+    "87130029b5443647ed1f1febd32ab768bf957a0a1698217eb3cf14b2d00c6ecf"
+)
 LAB_ROOT = Path("/home/aaravthegreat/Projects/buckeye-slicer-lab")
 SPEAKER_TS_EVAL_SRC = Path("/home/aaravthegreat/Projects/speaker_ts_eval/src")
 
@@ -63,22 +68,29 @@ def _frame(*, center: float, speech_prob: float, rms_dbfs: float, hop: float = 0
 
 class VrSlicerContractTests(unittest.TestCase):
     def test_geometry_fingerprint_matches_locked_o0_4(self) -> None:
+        payload = geometry_canonical_payload(VR_O0_4)
         self.assertEqual(geometry_fingerprint(VR_O0_4), TRUSTED_GEOMETRY_FINGERPRINT)
-        self.assertEqual(VR_O0_4.name, "O0_4")
+        self.assertEqual(payload["name"], "O0_4")
+        self.assertEqual(payload["vad_threshold"], 0.2)
+        self.assertEqual(payload["vad_min_run_ms"], 40.0)
+        self.assertEqual(payload["percentile_rms_percentile"], 10.0)
+        self.assertEqual(payload["percentile_rms_margin_db"], 3.0)
+        self.assertEqual(payload["min_clip_sec"], 3.0)
+        self.assertEqual(payload["preferred_min_sec"], 6.0)
+        self.assertEqual(payload["preferred_max_sec"], 8.0)
+        self.assertEqual(payload["target_clip_sec"], 8.0)
+        self.assertEqual(payload["max_clip_sec"], 15.0)
         self.assertEqual(VR_O0_4.window_samples, 512)
         self.assertEqual(VR_O0_4.hop_samples, 512)
         self.assertEqual(VR_O0_4.offsets, (0, 64, 128, 192, 256, 320, 384, 448))
         self.assertEqual(VR_O0_4.sample_rate_hz, 16000)
         self.assertEqual(VR_O0_4.vad_backend, "silero_official_onnx")
-        self.assertEqual(VR_O0_4.vad_threshold, 0.2)
-        self.assertEqual(VR_O0_4.vad_min_run_ms, 40.0)
-        self.assertEqual(VR_O0_4.percentile_rms_percentile, 10.0)
-        self.assertEqual(VR_O0_4.percentile_rms_margin_db, 3.0)
-        self.assertEqual(VR_O0_4.min_clip_sec, 3.0)
-        self.assertEqual(VR_O0_4.preferred_min_sec, 6.0)
-        self.assertEqual(VR_O0_4.preferred_max_sec, 8.0)
-        self.assertEqual(VR_O0_4.target_clip_sec, 8.0)
-        self.assertEqual(VR_O0_4.max_clip_sec, 15.0)
+
+    def test_geometry_fingerprint_changes_when_behavior_knobs_change(self) -> None:
+        tweaked = replace(VR_O0_4, vad_threshold=0.35)
+        self.assertNotEqual(geometry_fingerprint(tweaked), TRUSTED_GEOMETRY_FINGERPRINT)
+        tweaked_packer = replace(VR_O0_4, max_clip_sec=12.0)
+        self.assertNotEqual(geometry_fingerprint(tweaked_packer), TRUSTED_GEOMETRY_FINGERPRINT)
 
     def test_production_module_does_not_import_asr_or_mfa(self) -> None:
         source = (
@@ -310,7 +322,8 @@ class VrSlicerAudioTests(unittest.TestCase):
                 except Exception as exc:
                     self.skipTest(f"authoritative VR adapter could not be imported: {exc}")
                 lab_fp = lab_fingerprint(VR_SLICER)
-                self.assertEqual(lab_fp, TRUSTED_GEOMETRY_FINGERPRINT)
+                self.assertEqual(lab_fp, LAB_WINDOW_GEOMETRY_FINGERPRINT)
+                self.assertEqual(local.geometry_fingerprint, TRUSTED_GEOMETRY_FINGERPRINT)
                 request = SlicerRequest(
                     recording_id="oracle",
                     audio_path=wav,
