@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-import gc
-import json
-import shutil
-from collections import Counter
+import os
+import re
 from pathlib import Path
 from typing import Any
 
 from .io import read_json, read_jsonl, resolve_under_root, run_command, sha256_file, write_json, write_jsonl
+from .vad import run_silero_vad
+
+COMMUNITY1_BACKEND = "pyannote_community_1"
+COMMUNITY1_EMBED_MIN_BYTES = 26646242
+COMMUNITY1_SEG_MIN_BYTES = 5906507
+_SPEAKER_NUMERIC = re.compile(r"(\d+)$")
 
 
 def sec_to_sample(seconds: float, sample_rate: int) -> int:
@@ -16,23 +20,6 @@ def sec_to_sample(seconds: float, sample_rate: int) -> int:
 
 def sample_to_sec(sample_index: int, sample_rate: int) -> float:
     return round(sample_index / sample_rate, 6)
-
-
-def window_ranges(duration_sec: float, window_sec: float, overlap_sec: float) -> list[tuple[float, float]]:
-    if duration_sec <= window_sec:
-        return [(0.0, duration_sec)]
-    step = window_sec - overlap_sec
-    if step <= 0:
-        raise ValueError("diarization_window_sec must be larger than diarization_window_overlap_sec")
-    rows: list[tuple[float, float]] = []
-    cursor = 0.0
-    while cursor < duration_sec:
-        end = min(duration_sec, cursor + window_sec)
-        rows.append((cursor, end))
-        if end >= duration_sec:
-            break
-        cursor += step
-    return rows
 
 
 def extract_audio_window(source_path: Path, output_path: Path, start_sec: float, end_sec: float, sample_rate: int) -> None:
@@ -58,282 +45,197 @@ def extract_audio_window(source_path: Path, output_path: Path, start_sec: float,
     )
 
 
-def local_vad_segments_for_window(vad_segments: list[dict[str, Any]], start_sec: float, end_sec: float, sample_rate: int) -> list[dict[str, Any]]:
+def speechcraft_speaker_id(label: str) -> str:
+    """Map a pyannote speaker label to a stable SpeechCraft speaker id."""
+    text = str(label).strip()
+    if not text:
+        raise ValueError("pyannote speaker label is empty")
+    if text.startswith("speaker_"):
+        suffix = text[len("speaker_") :]
+        if suffix.isdigit():
+            return f"speaker_{int(suffix)}"
+    match = _SPEAKER_NUMERIC.search(text)
+    if match is None:
+        raise ValueError(f"unrecognized pyannote speaker label: {label!r}")
+    return f"speaker_{int(match.group(1))}"
+
+
+def iter_pyannote_turns(annotation: Any):
+    if hasattr(annotation, "itertracks"):
+        yield from annotation.itertracks(yield_label=True)
+        return
+    for item in annotation:
+        if len(item) == 3:
+            yield item
+        else:
+            turn, speaker = item
+            yield turn, None, speaker
+
+
+def community1_annotation(output: Any) -> Any:
+    return getattr(output, "speaker_diarization", None) or output
+
+
+def annotation_to_speechcraft_regions(
+    annotation: Any,
+    *,
+    source_audio_id: str,
+    analysis_audio_path: str,
+    sample_rate: int,
+    backend_version: str | None = None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for segment in vad_segments:
-        clipped_start = max(float(segment["analysis_start_sec"]), start_sec)
-        clipped_end = min(float(segment["analysis_end_sec"]), end_sec)
-        if clipped_end <= clipped_start:
+    for turn, _, speaker in iter_pyannote_turns(annotation):
+        start_sec = float(turn.start)
+        end_sec = float(turn.end)
+        if end_sec <= start_sec:
             continue
-        local_start_sample = sec_to_sample(clipped_start - start_sec, sample_rate)
-        local_end_sample = sec_to_sample(clipped_end - start_sec, sample_rate)
+        speaker_id = speechcraft_speaker_id(str(speaker))
+        start_sample = sec_to_sample(start_sec, sample_rate)
+        end_sample = sec_to_sample(end_sec, sample_rate)
+        if end_sample <= start_sample:
+            continue
         rows.append(
             {
-                "id": str(segment["id"]),
-                "start_sec": sample_to_sec(local_start_sample, sample_rate),
-                "end_sec": sample_to_sec(local_end_sample, sample_rate),
-                "start_sample": local_start_sample,
-                "end_sample": local_end_sample,
+                "id": f"{speaker_id}-{source_audio_id}-{start_sample}-{end_sample}",
+                "source_audio_id": source_audio_id,
+                "analysis_audio_path": analysis_audio_path,
+                "speaker_id": speaker_id,
+                "start_sample": start_sample,
+                "end_sample": end_sample,
+                "start_sec": sample_to_sec(start_sample, sample_rate),
+                "end_sec": sample_to_sec(end_sample, sample_rate),
+                "backend": COMMUNITY1_BACKEND,
+                "backend_version": backend_version,
+                "rfc_compliant": True,
             }
         )
     return rows
 
 
-def write_manifest(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True) + "\n", encoding="utf-8")
+def community1_snapshot_ready(path: Path) -> tuple[bool, str]:
+    if not path.is_dir():
+        return False, f"pyannote Community-1 snapshot is missing or not a directory: {path}"
+    embed = path / "embedding" / "pytorch_model.bin"
+    seg = path / "segmentation" / "pytorch_model.bin"
+    if not embed.is_file() or embed.stat().st_size < COMMUNITY1_EMBED_MIN_BYTES:
+        return False, f"pyannote Community-1 snapshot is incomplete: embedding weights missing or too small at {embed}"
+    if not seg.is_file() or seg.stat().st_size < COMMUNITY1_SEG_MIN_BYTES:
+        return False, f"pyannote Community-1 snapshot is incomplete: segmentation weights missing or too small at {seg}"
+    return True, str(path)
 
 
-def write_external_vad_manifest(path: Path, audio_path: Path, vad_segments: list[dict[str, Any]], uniq_id: str) -> None:
-    rows = [
-        {
-            "audio_filepath": str(audio_path),
-            "offset": round(float(segment["start_sec"]), 5),
-            "duration": round(float(segment["end_sec"]) - float(segment["start_sec"]), 5),
-            "label": "UNK",
-            "uniq_id": uniq_id,
-        }
-        for segment in vad_segments
-        if int(segment["end_sample"]) > int(segment["start_sample"])
-    ]
-    write_jsonl(path, rows)
+def resolve_community1_model_path(config: dict[str, Any]) -> Path:
+    raw = str(config.get("diarization_model_path") or os.environ.get("SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH") or "").strip()
+    if not raw:
+        raise RuntimeError(
+            "pyannote Community-1 local model path is missing. "
+            "Set diarization_model_path or SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH to a local snapshot directory."
+        )
+    path = Path(raw).expanduser().resolve()
+    ok, reason = community1_snapshot_ready(path)
+    if not ok:
+        raise RuntimeError(reason)
+    return path
 
 
-def parse_rttm_line(line: str, sample_rate: int, backend_version: str | None) -> dict[str, Any]:
-    parts = line.strip().split()
-    if len(parts) < 8:
-        raise ValueError(f"Invalid RTTM line: {line!r}")
-    start_sec = float(parts[3])
-    duration_sec = float(parts[4])
-    end_sec = start_sec + duration_sec
-    local_label = parts[7]
-    start_sample = sec_to_sample(start_sec, sample_rate)
-    end_sample = sec_to_sample(end_sec, sample_rate)
-    return {
-        "window_local_speaker_label": local_label,
-        "start_sec": start_sec,
-        "end_sec": end_sec,
-        "start_sample": start_sample,
-        "end_sample": end_sample,
-        "backend": "nemo_clustering_diarizer",
-        "backend_version": backend_version,
-        "vad_source": "silero_external",
-        "rfc_compliant": True,
-        "source": "pred_rttm",
-    }
-
-
-def temporal_overlap(a: dict[str, Any], b: dict[str, Any], start_sec: float, end_sec: float) -> float:
-    start = max(float(a["start_sec"]), float(b["start_sec"]), start_sec)
-    end = min(float(a["end_sec"]), float(b["end_sec"]), end_sec)
-    return max(0.0, end - start)
-
-
-def load_window_regions(summary: dict[str, Any], backend_version: str | None, sample_rate: int) -> list[dict[str, Any]]:
-    pred_rttm_path = Path(str(summary["pred_rttm"]))
-    window_start_sec = float(summary["start_sec"])
-    rows: list[dict[str, Any]] = []
-    for line in pred_rttm_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        region = parse_rttm_line(line, sample_rate, backend_version)
-        region["window_id"] = str(summary["id"])
-        region["start_sec"] += window_start_sec
-        region["end_sec"] += window_start_sec
-        region["start_sample"] = sec_to_sample(float(region["start_sec"]), sample_rate)
-        region["end_sample"] = sec_to_sample(float(region["end_sec"]), sample_rate)
-        region["source"] = str(pred_rttm_path)
-        rows.append(region)
-    return rows
-
-
-def stitch_window_speaker_labels(window_summaries: list[dict[str, Any]], backend_version: str | None, sample_rate: int, overlap_sec: float) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    global_index = 0
-    previous_regions: list[dict[str, Any]] = []
-    previous_map: dict[str, str] = {}
-    kept_rows: list[dict[str, Any]] = []
-    window_label_mappings: dict[str, dict[str, str]] = {}
-
-    for window_index, summary in enumerate(window_summaries):
-        if summary.get("status") != "ok":
-            continue
-        regions = load_window_regions(summary, backend_version, sample_rate)
-        local_labels = sorted({str(row["window_local_speaker_label"]) for row in regions})
-        local_to_global: dict[str, str] = {}
-
-        if window_index > 0 and previous_regions:
-            overlap_start = float(summary["start_sec"])
-            overlap_end = overlap_start + overlap_sec
-            scores: dict[tuple[str, str], float] = {}
-            for current in regions:
-                current_label = str(current["window_local_speaker_label"])
-                for previous in previous_regions:
-                    previous_label = str(previous["window_local_speaker_label"])
-                    overlap = temporal_overlap(previous, current, overlap_start, overlap_end)
-                    if overlap > 0:
-                        scores[(current_label, previous_label)] = scores.get((current_label, previous_label), 0.0) + overlap
-
-            used_previous: set[str] = set()
-            for current_label in local_labels:
-                candidates = [
-                    (score, previous_label)
-                    for (score_label, previous_label), score in scores.items()
-                    if score_label == current_label and previous_label not in used_previous
-                ]
-                if candidates:
-                    score, previous_label = max(candidates)
-                    if score >= 1.0 and previous_label in previous_map:
-                        local_to_global[current_label] = previous_map[previous_label]
-                        used_previous.add(previous_label)
-
-        for local_label in local_labels:
-            if local_label not in local_to_global:
-                local_to_global[local_label] = f"speaker_{global_index}"
-                global_index += 1
-
-        keep_start = float(summary["start_sec"]) if window_index == 0 else float(summary["start_sec"]) + (overlap_sec / 2.0)
-        keep_end = float(summary["end_sec"])
-        for region in regions:
-            if float(region["end_sec"]) <= keep_start or float(region["start_sec"]) >= keep_end:
-                continue
-            start_sec = max(float(region["start_sec"]), keep_start)
-            end_sec = min(float(region["end_sec"]), keep_end)
-            start_sample = sec_to_sample(start_sec, sample_rate)
-            end_sample = sec_to_sample(end_sec, sample_rate)
-            speaker_id = local_to_global[str(region["window_local_speaker_label"])]
-            kept_rows.append(
-                {
-                    **region,
-                    "speaker_id": speaker_id,
-                    "start_sec": start_sec,
-                    "end_sec": end_sec,
-                    "start_sample": start_sample,
-                    "end_sample": end_sample,
-                    "id": f"{speaker_id}-{start_sample}-{end_sample}",
-                }
-            )
-
-        window_label_mappings[str(summary["id"])] = local_to_global
-        previous_regions = regions
-        previous_map = local_to_global
-
-    return kept_rows, {
-        "method": "adjacent_window_temporal_overlap",
-        "min_overlap_sec": 1.0,
-        "window_label_mappings": window_label_mappings,
-    }
-
-
-def run_nemo_window(
-    *,
-    analysis_path: Path,
-    source_audio_id: str,
-    window_dir: Path,
-    window_index: int,
-    start_sec: float,
-    end_sec: float,
-    sample_rate: int,
-    vad_segments: list[dict[str, Any]],
-    backend_version: str | None,
-    diarization_device: str,
-    speaker_model: str,
-    max_speakers: int,
-    batch_size: int,
-    save_embeddings: bool,
-) -> dict[str, Any]:
-    from nemo.collections.asr.models import ClusteringDiarizer
-    from nemo.collections.asr.models.configs.diarizer_config import NeuralDiarizerInferenceConfig
-
-    window_id = f"{source_audio_id}_window_{window_index:03d}"
-    if window_dir.exists():
-        shutil.rmtree(window_dir)
-    window_dir.mkdir(parents=True, exist_ok=True)
-
-    local_vad_segments = local_vad_segments_for_window(vad_segments, start_sec, end_sec, sample_rate)
-    if not local_vad_segments:
-        return {
-            "id": window_id,
-            "source_audio_id": source_audio_id,
-            "start_sec": start_sec,
-            "end_sec": end_sec,
-            "status": "skipped_no_vad",
-            "speaker_regions": 0,
-            "vad_segment_count": 0,
-        }
-
-    window_audio_path = window_dir / f"{window_id}.wav"
-    input_manifest_path = window_dir / "input_manifest.json"
-    external_vad_manifest_path = window_dir / "external_vad_manifest.json"
-    extract_audio_window(analysis_path, window_audio_path, start_sec, end_sec, sample_rate)
-    write_manifest(
-        input_manifest_path,
-        {
-            "audio_filepath": str(window_audio_path),
-            "offset": 0.0,
-            "duration": round(end_sec - start_sec, 5),
-            "label": "infer",
-            "text": "-",
-            "num_speakers": None,
-            "rttm_filepath": None,
-            "uem_filepath": None,
-            "ctm_filepath": None,
-            "uniq_id": window_id,
-        },
-    )
-    write_external_vad_manifest(external_vad_manifest_path, window_audio_path, local_vad_segments, window_id)
-
-    cfg = NeuralDiarizerInferenceConfig()
-    cfg.device = diarization_device
-    cfg.verbose = False
-    cfg.batch_size = batch_size
-    cfg.num_workers = 0
-    cfg.sample_rate = sample_rate
-    cfg.diarizer.manifest_filepath = str(input_manifest_path)
-    cfg.diarizer.out_dir = str(window_dir)
-    cfg.diarizer.oracle_vad = False
-    cfg.diarizer.vad.model_path = None
-    cfg.diarizer.vad.external_vad_manifest = str(external_vad_manifest_path)
-    cfg.diarizer.speaker_embeddings.model_path = speaker_model
-    cfg.diarizer.speaker_embeddings.parameters.window_length_in_sec = (1.5,)
-    cfg.diarizer.speaker_embeddings.parameters.shift_length_in_sec = (0.75,)
-    cfg.diarizer.speaker_embeddings.parameters.multiscale_weights = (1,)
-    cfg.diarizer.speaker_embeddings.parameters.save_embeddings = save_embeddings
-    cfg.diarizer.clustering.parameters.oracle_num_speakers = False
-    cfg.diarizer.clustering.parameters.max_num_speakers = max_speakers
-
-    diarizer = None
+def resolve_diarization_device(config: dict[str, Any]) -> str:
+    explicit = str(config.get("diarization_device") or "").strip()
+    if explicit:
+        return explicit
     try:
-        diarizer = ClusteringDiarizer(cfg=cfg)
-        diarizer.diarize()
-    finally:
-        if diarizer is not None:
-            del diarizer
-        gc.collect()
-        try:
-            import torch
+        import torch
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
 
-    pred_rttm_path = window_dir / "pred_rttms" / f"{window_id}.rttm"
-    if not pred_rttm_path.exists():
-        raise FileNotFoundError(f"Expected NeMo RTTM output at {pred_rttm_path}")
 
-    return {
-        "id": window_id,
-        "source_audio_id": source_audio_id,
-        "start_sec": start_sec,
-        "end_sec": end_sec,
-        "status": "ok",
-        "speaker_regions": 0,
-        "pred_rttm": str(pred_rttm_path),
-        "external_vad_manifest": str(external_vad_manifest_path),
-        "manifest": str(input_manifest_path),
-        "vad_segment_count": len(local_vad_segments),
-        "backend_version": backend_version,
-    }
+def load_analysis_waveform(path: Path, expected_sample_rate: int) -> tuple[Any, int]:
+    import numpy as np
+    import soundfile as sf
+
+    audio, rate = sf.read(str(path), dtype="float32", always_2d=True)
+    if int(rate) != int(expected_sample_rate):
+        raise ValueError(f"Analysis sample-rate mismatch for {path}: {rate} != {expected_sample_rate}")
+    waveform = np.asarray(audio.T, dtype=np.float32)
+    return waveform, int(rate)
+
+
+def concat_waveforms_with_gaps(waveforms: list[Any], sample_rate: int, gap_sec: float) -> Any:
+    """Concatenate channel-first waveforms with deterministic silence gaps."""
+    import numpy as np
+
+    arrays: list[Any] = []
+    for waveform in waveforms:
+        array = np.asarray(waveform, dtype=np.float32)
+        if array.ndim == 1:
+            array = array[None, :]
+        if array.ndim != 2:
+            raise ValueError("waveforms must be shaped (channel, time)")
+        arrays.append(array)
+    if not arrays:
+        raise ValueError("at least one waveform is required")
+    gap_samples = max(0, int(round(float(gap_sec) * sample_rate)))
+    channels = int(arrays[0].shape[0])
+    parts: list[Any] = []
+    for index, array in enumerate(arrays):
+        if int(array.shape[0]) != channels:
+            raise ValueError("concat waveforms must share a channel count")
+        parts.append(array)
+        if index < len(arrays) - 1 and gap_samples > 0:
+            parts.append(np.zeros((channels, gap_samples), dtype=np.float32))
+    return np.concatenate(parts, axis=1)
+
+
+def pyannote_audio_dict(waveform: Any, sample_rate: int) -> dict[str, Any]:
+    import numpy as np
+    import torch
+
+    if isinstance(waveform, torch.Tensor):
+        tensor = waveform
+        if tensor.dim() == 1:
+            tensor = tensor.unsqueeze(0)
+    else:
+        array = np.asarray(waveform, dtype=np.float32)
+        if array.ndim == 1:
+            array = array[None, :]
+        tensor = torch.from_numpy(np.ascontiguousarray(array))
+    return {"waveform": tensor, "sample_rate": int(sample_rate)}
+
+
+def load_community1_pipeline(model_path: Path, device: str) -> Any:
+    try:
+        import torch
+        from pyannote.audio import Pipeline
+    except Exception as exc:
+        raise RuntimeError(f"pyannote.audio is unavailable: {type(exc).__name__}: {exc}") from exc
+
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    try:
+        pipeline = Pipeline.from_pretrained(str(model_path))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to load pyannote Community-1 from {model_path}: {type(exc).__name__}: {exc}"
+        ) from exc
+    if pipeline is None:
+        raise RuntimeError(f"Failed to load pyannote Community-1 from {model_path}: Pipeline.from_pretrained returned None")
+    pipeline.to(torch.device(device))
+    return pipeline
+
+
+def run_community1_pipeline(pipeline: Any, waveform: Any, sample_rate: int) -> Any:
+    output = pipeline(pyannote_audio_dict(waveform, sample_rate))
+    return community1_annotation(output)
+
+
+def pyannote_audio_version() -> str | None:
+    try:
+        import pyannote.audio
+
+        return getattr(pyannote.audio, "__version__", None)
+    except Exception:
+        return None
 
 
 def build_single_speaker_regions(variants: list[dict[str, Any]], vad_segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -412,7 +314,19 @@ def write_speaker_samples(
     return manifest_rows
 
 
-def build_summary(rows: list[dict[str, Any]], sample_rows: list[dict[str, Any]], *, stage: str, config: dict[str, Any], input_hashes: dict[str, str], backend: str, backend_version: str | None, mode: str, reason_codes: list[str] | None = None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_summary(
+    rows: list[dict[str, Any]],
+    sample_rows: list[dict[str, Any]],
+    *,
+    stage: str,
+    config: dict[str, Any],
+    input_hashes: dict[str, str],
+    backend: str,
+    backend_version: str | None,
+    mode: str,
+    reason_codes: list[str] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     per_speaker: dict[str, dict[str, Any]] = {}
     for row in rows:
         speaker_id = str(row["speaker_id"])
@@ -442,9 +356,7 @@ def build_summary(rows: list[dict[str, Any]], sample_rows: list[dict[str, Any]],
     return summary
 
 
-def plan_concat_layout(
-    variants: list[dict[str, Any]], gap_sec: float
-) -> list[dict[str, Any]]:
+def plan_concat_layout(variants: list[dict[str, Any]], gap_sec: float) -> list[dict[str, Any]]:
     """Cumulative concat offsets (seconds) for each source variant, separated by
     a silence gap so no speech region spans a file boundary. Pure/testable."""
     layout: list[dict[str, Any]] = []
@@ -466,180 +378,67 @@ def plan_concat_layout(
     return layout
 
 
-def offset_vad_for_concat(
-    vad_segments: list[dict[str, Any]], layout: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Shift each source's VAD segments into concat time. Pure/testable."""
-    start_by_source = {row["source_audio_id"]: float(row["start_sec"]) for row in layout}
-    rows: list[dict[str, Any]] = []
-    for segment in vad_segments:
-        source_audio_id = str(segment["source_audio_id"])
-        offset = start_by_source.get(source_audio_id)
-        if offset is None:
-            continue
-        rows.append(
-            {
-                "id": str(segment["id"]),
-                "source_audio_id": "concat",
-                "analysis_start_sec": float(segment["analysis_start_sec"]) + offset,
-                "analysis_end_sec": float(segment["analysis_end_sec"]) + offset,
-            }
-        )
-    return rows
-
-
 def remap_concat_regions_to_sources(
     regions: list[dict[str, Any]], layout: list[dict[str, Any]], sample_rate: int
 ) -> list[dict[str, Any]]:
-    """Map concat-time speaker regions back to per-source local coordinates,
-    dropping anything that falls in an inter-file gap. Pure/testable."""
+    """Map concat-time speaker regions back to per-source local coordinates.
+
+    Pieces that fall entirely inside an inter-file silence gap are dropped.
+    Regions that cross a source boundary are split onto each overlapping source.
+    """
     rows: list[dict[str, Any]] = []
     for region in regions:
         r_start = float(region["start_sec"])
         r_end = float(region["end_sec"])
-        mid = (r_start + r_end) / 2.0
-        entry = next(
-            (e for e in layout if float(e["start_sec"]) <= mid < float(e["end_sec"])),
-            None,
-        )
-        if entry is None:
-            continue  # region sits in the silence gap between files
-        offset = float(entry["start_sec"])
-        local_start = max(r_start, float(entry["start_sec"])) - offset
-        local_end = min(r_end, float(entry["end_sec"])) - offset
-        if local_end <= local_start:
-            continue
-        start_sample = sec_to_sample(local_start, sample_rate)
-        end_sample = sec_to_sample(local_end, sample_rate)
         speaker_id = str(region["speaker_id"])
-        source_audio_id = str(entry["source_audio_id"])
-        rows.append(
-            {
-                **region,
-                "speaker_id": speaker_id,
-                "source_audio_id": source_audio_id,
-                "analysis_audio_path": str(entry["path"]),
-                "start_sec": sample_to_sec(start_sample, sample_rate),
-                "end_sec": sample_to_sec(end_sample, sample_rate),
-                "start_sample": start_sample,
-                "end_sample": end_sample,
-                "id": f"{speaker_id}-{source_audio_id}-{start_sample}-{end_sample}",
-            }
-        )
+        for entry in layout:
+            clip_start = max(r_start, float(entry["start_sec"]))
+            clip_end = min(r_end, float(entry["end_sec"]))
+            if clip_end <= clip_start:
+                continue
+            offset = float(entry["start_sec"])
+            local_start = clip_start - offset
+            local_end = clip_end - offset
+            start_sample = sec_to_sample(local_start, sample_rate)
+            end_sample = sec_to_sample(local_end, sample_rate)
+            if end_sample <= start_sample:
+                continue
+            source_audio_id = str(entry["source_audio_id"])
+            rows.append(
+                {
+                    **region,
+                    "speaker_id": speaker_id,
+                    "source_audio_id": source_audio_id,
+                    "analysis_audio_path": str(entry["path"]),
+                    "start_sec": sample_to_sec(start_sample, sample_rate),
+                    "end_sec": sample_to_sec(end_sample, sample_rate),
+                    "start_sample": start_sample,
+                    "end_sample": end_sample,
+                    "id": f"{speaker_id}-{source_audio_id}-{start_sample}-{end_sample}",
+                }
+            )
     return rows
 
 
-def build_concat_analysis_wav(
-    run_root: Path,
-    layout: list[dict[str, Any]],
-    *,
-    sample_rate: int,
-    gap_sec: float,
-) -> Path:
-    """Concatenate the per-source analysis variants (uniform mono @ sample_rate)
-    into one WAV with silence gaps between sources, via the ffmpeg concat demuxer."""
-    concat_dir = resolve_under_root(run_root, "artifacts/diarization/_concat")
-    if concat_dir.exists():
-        shutil.rmtree(concat_dir)
-    concat_dir.mkdir(parents=True, exist_ok=True)
-
-    silence_path = concat_dir / "silence.wav"
-    run_command(
-        [
-            "ffmpeg", "-y", "-f", "lavfi",
-            "-i", f"anullsrc=r={sample_rate}:cl=mono",
-            "-t", f"{gap_sec:.3f}", "-c:a", "pcm_s16le", str(silence_path),
-        ]
-    )
-
-    list_lines: list[str] = []
-    for index, entry in enumerate(layout):
-        abs_path = resolve_under_root(run_root, str(entry["path"])).resolve()
-        list_lines.append(f"file '{abs_path}'")
-        if index < len(layout) - 1:
-            list_lines.append(f"file '{silence_path.resolve()}'")
-    list_path = concat_dir / "concat_list.txt"
-    list_path.write_text("\n".join(list_lines) + "\n", encoding="utf-8")
-
-    concat_path = concat_dir / "concat_analysis.wav"
-    run_command(
-        [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-            "-i", str(list_path), "-ac", "1", "-ar", str(sample_rate),
-            "-c:a", "pcm_s16le", str(concat_path),
-        ]
-    )
-    return concat_path
-
-
-def _run_multi_file_diarization(
+def _write_diarization_artifacts(
     run_root: Path,
     config: dict[str, Any],
-    variants: list[dict[str, Any]],
-    vad_segments: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
     *,
     sample_rate_by_source: dict[str, int],
     analysis_path_by_source: dict[str, str],
     sample_count: int,
     sample_duration_sec: float,
+    backend: str,
+    backend_version: str | None,
+    mode: str,
+    extra: dict[str, Any],
+    input_hashes: dict[str, str],
+    auto_select_speaker_0: bool,
 ) -> dict[str, Any]:
-    """Diarize multiple sources on one concatenated timeline so speaker identity
-    is consistent across files, then remap regions back per source, and write
-    the same samples/selection/summary artifacts as the single-file path."""
-    import nemo  # noqa: F401
-    import torch
-
-    sample_rate = int(variants[0]["analysis_sample_rate"])
-    gap_sec = float(config.get("diarization_concat_gap_sec") or 1.0)
-    layout = plan_concat_layout(variants, gap_sec)
-    concat_path = build_concat_analysis_wav(run_root, layout, sample_rate=sample_rate, gap_sec=gap_sec)
-    concat_vad = offset_vad_for_concat(vad_segments, layout)
-    concat_duration = float(layout[-1]["end_sec"]) if layout else 0.0
-
-    window_sec = float(config.get("diarization_window_sec") or 900.0)
-    overlap_sec = float(config.get("diarization_window_overlap_sec") or 30.0)
-    diarization_device = str(config.get("diarization_device") or ("cuda" if torch.cuda.is_available() else "cpu"))
-    speaker_model = str(config.get("diarization_speaker_model") or "titanet_large")
-    max_speakers = int(config.get("diarization_max_speakers") or 6)
-    batch_size = int(config.get("diarization_batch_size") or 16)
-    save_embeddings = bool(config.get("diarization_save_embeddings", False))
-
-    diarization_dir = resolve_under_root(run_root, "artifacts/diarization/concat")
-    if diarization_dir.exists():
-        shutil.rmtree(diarization_dir)
-    diarization_dir.mkdir(parents=True, exist_ok=True)
-
-    window_summaries: list[dict[str, Any]] = []
-    for window_index, (start_sec, end_sec) in enumerate(window_ranges(concat_duration, window_sec, overlap_sec)):
-        window_summaries.append(
-            run_nemo_window(
-                analysis_path=concat_path,
-                source_audio_id="concat",
-                window_dir=diarization_dir / f"window_{window_index:03d}",
-                window_index=window_index,
-                start_sec=start_sec,
-                end_sec=end_sec,
-                sample_rate=sample_rate,
-                vad_segments=concat_vad,
-                backend_version=getattr(nemo, "__version__", None),
-                diarization_device=diarization_device,
-                speaker_model=speaker_model,
-                max_speakers=max_speakers,
-                batch_size=batch_size,
-                save_embeddings=save_embeddings,
-            )
-        )
-
-    concat_rows, _stitching = stitch_window_speaker_labels(
-        window_summaries, getattr(nemo, "__version__", None), sample_rate, overlap_sec
-    )
-    rows = remap_concat_regions_to_sources(concat_rows, layout, sample_rate)
-
     speaker_regions_path = resolve_under_root(run_root, "artifacts/speaker_regions.jsonl")
     samples_manifest_path = resolve_under_root(run_root, "artifacts/speaker_samples_manifest.json")
     selection_path = resolve_under_root(run_root, "artifacts/speaker_selection.json")
-    audio_variants_manifest_path = resolve_under_root(run_root, "artifacts/audio_variants_manifest.json")
-    vad_segments_path = resolve_under_root(run_root, "artifacts/vad_segments.jsonl")
 
     sample_rows = write_speaker_samples(
         run_root,
@@ -653,86 +452,8 @@ def _run_multi_file_diarization(
     write_json(samples_manifest_path, sample_rows)
 
     available_speaker_ids = sorted({str(row["speaker_id"]) for row in rows})
-    selection: dict[str, Any] = {
-        "mode": "diarization",
-        "selected": False,
-        "target_speaker_id": None,
-        "source": "pending_user_selection",
-        "available_speaker_ids": available_speaker_ids,
-        "updated_at": None,
-    }
-    if selection_path.exists():
-        existing = read_json(selection_path)
-        existing_target = str(existing.get("target_speaker_id") or "").strip()
-        if existing_target in available_speaker_ids:
-            selection = {
-                "mode": "diarization",
-                "selected": True,
-                "target_speaker_id": existing_target,
-                "source": str(existing.get("source") or "user"),
-                "available_speaker_ids": available_speaker_ids,
-                "updated_at": existing.get("updated_at"),
-            }
-    write_json(selection_path, selection)
-
-    summary = build_summary(
-        rows,
-        sample_rows,
-        stage="diarization",
-        config=config,
-        input_hashes={
-            "audio_variants_manifest": sha256_file(audio_variants_manifest_path),
-            "vad_segments_jsonl": sha256_file(vad_segments_path),
-        },
-        backend="nemo_clustering_diarizer_concat_multifile",
-        backend_version=getattr(nemo, "__version__", None),
-        mode=str(config.get("mode") or "diarization"),
-        reason_codes=[] if selection["selected"] else ["speaker_selection_required"],
-        extra={
-            "selection_written": True,
-            "multi_file": True,
-            "source_count": len(variants),
-            "source_audio_ids": [str(v["source_audio_id"]) for v in variants],
-            "concat_gap_sec": gap_sec,
-        },
-    )
-    summary["output_hashes"] = {
-        "speaker_regions_jsonl": sha256_file(speaker_regions_path),
-        "speaker_samples_manifest_json": sha256_file(samples_manifest_path),
-        "speaker_selection_json": sha256_file(selection_path),
-    }
-    write_json(resolve_under_root(run_root, "artifacts/speaker_regions_summary.json"), summary)
-    return summary
-
-
-def run_diarization(run_root: Path, config: dict[str, Any]) -> dict[str, Any]:
-    audio_variants_manifest_path = resolve_under_root(run_root, "artifacts/audio_variants_manifest.json")
-    vad_segments_path = resolve_under_root(run_root, "artifacts/vad_segments.jsonl")
-    speaker_regions_path = resolve_under_root(run_root, "artifacts/speaker_regions.jsonl")
-    samples_manifest_path = resolve_under_root(run_root, "artifacts/speaker_samples_manifest.json")
-    selection_path = resolve_under_root(run_root, "artifacts/speaker_selection.json")
-    variants = list(read_json(audio_variants_manifest_path).get("variants") or [])
-    vad_segments = read_jsonl(vad_segments_path)
-
-    sample_rate_by_source = {str(variant["source_audio_id"]): int(variant["analysis_sample_rate"]) for variant in variants}
-    analysis_path_by_source = {str(variant["source_audio_id"]): str(variant["path"]) for variant in variants}
-    mode = str(config.get("mode") or "single_speaker")
-    sample_count = int(config.get("speaker_sample_count") or 3)
-    sample_duration_sec = float(config.get("speaker_sample_duration_sec") or 6.0)
-
-    if mode == "single_speaker":
-        rows = build_single_speaker_regions(variants, vad_segments)
-        sample_rows = write_speaker_samples(
-            run_root,
-            rows,
-            sample_rate_by_source=sample_rate_by_source,
-            analysis_path_by_source=analysis_path_by_source,
-            sample_count=sample_count,
-            sample_duration_sec=sample_duration_sec,
-        )
-        write_jsonl(speaker_regions_path, rows)
-        write_json(samples_manifest_path, sample_rows)
-        selection = {
+    if auto_select_speaker_0:
+        selection: dict[str, Any] = {
             "mode": "single_speaker",
             "selected": True,
             "target_speaker_id": "speaker_0",
@@ -740,123 +461,29 @@ def run_diarization(run_root: Path, config: dict[str, Any]) -> dict[str, Any]:
             "available_speaker_ids": ["speaker_0"],
             "updated_at": None,
         }
-        write_json(selection_path, selection)
-        summary = build_summary(
-            rows,
-            sample_rows,
-            stage="diarization",
-            config=config,
-            input_hashes={
-                "audio_variants_manifest": sha256_file(audio_variants_manifest_path),
-                "vad_segments_jsonl": sha256_file(vad_segments_path),
-            },
-            backend="single_speaker_vad_passthrough",
-            backend_version=None,
-            mode=mode,
-            extra={"selection_written": True},
-        )
-        summary["output_hashes"] = {
-            "speaker_regions_jsonl": sha256_file(speaker_regions_path),
-            "speaker_samples_manifest_json": sha256_file(samples_manifest_path),
-            "speaker_selection_json": sha256_file(selection_path),
+        reason_codes: list[str] = []
+    else:
+        selection = {
+            "mode": "diarization",
+            "selected": False,
+            "target_speaker_id": None,
+            "source": "pending_user_selection",
+            "available_speaker_ids": available_speaker_ids,
+            "updated_at": None,
         }
-        write_json(resolve_under_root(run_root, "artifacts/speaker_regions_summary.json"), summary)
-        return summary
-
-    if len(variants) > 1:
-        return _run_multi_file_diarization(
-            run_root,
-            config,
-            variants,
-            vad_segments,
-            sample_rate_by_source=sample_rate_by_source,
-            analysis_path_by_source=analysis_path_by_source,
-            sample_count=sample_count,
-            sample_duration_sec=sample_duration_sec,
-        )
-
-    try:
-        import nemo
-        import torch
-    except Exception as exc:
-        raise RuntimeError(f"NeMo diarization dependencies are unavailable: {type(exc).__name__}: {exc}") from exc
-
-    variant = variants[0]
-    source_audio_id = str(variant["source_audio_id"])
-    analysis_path = resolve_under_root(run_root, str(variant["path"]))
-    sample_rate = int(variant["analysis_sample_rate"])
-    duration_sec = float(variant["analysis_duration_sec"])
-    source_vad_segments = [row for row in vad_segments if str(row["source_audio_id"]) == source_audio_id]
-    diarization_dir = resolve_under_root(run_root, f"artifacts/diarization/{source_audio_id}")
-    if diarization_dir.exists():
-        shutil.rmtree(diarization_dir)
-    diarization_dir.mkdir(parents=True, exist_ok=True)
-
-    window_sec = float(config.get("diarization_window_sec") or 900.0)
-    overlap_sec = float(config.get("diarization_window_overlap_sec") or 30.0)
-    diarization_device = str(config.get("diarization_device") or ("cuda" if torch.cuda.is_available() else "cpu"))
-    speaker_model = str(config.get("diarization_speaker_model") or "titanet_large")
-    max_speakers = int(config.get("diarization_max_speakers") or 6)
-    batch_size = int(config.get("diarization_batch_size") or 16)
-    save_embeddings = bool(config.get("diarization_save_embeddings", False))
-
-    window_summaries: list[dict[str, Any]] = []
-    for window_index, (start_sec, end_sec) in enumerate(window_ranges(duration_sec, window_sec, overlap_sec)):
-        summary = run_nemo_window(
-            analysis_path=analysis_path,
-            source_audio_id=source_audio_id,
-            window_dir=diarization_dir / f"window_{window_index:03d}",
-            window_index=window_index,
-            start_sec=start_sec,
-            end_sec=end_sec,
-            sample_rate=sample_rate,
-            vad_segments=source_vad_segments,
-            backend_version=getattr(nemo, "__version__", None),
-            diarization_device=diarization_device,
-            speaker_model=speaker_model,
-            max_speakers=max_speakers,
-            batch_size=batch_size,
-            save_embeddings=save_embeddings,
-        )
-        window_summaries.append(summary)
-
-    rows, stitching_summary = stitch_window_speaker_labels(window_summaries, getattr(nemo, "__version__", None), sample_rate, overlap_sec)
-    for row in rows:
-        row["source_audio_id"] = source_audio_id
-        row["analysis_audio_path"] = str(variant["path"])
-
-    sample_rows = write_speaker_samples(
-        run_root,
-        rows,
-        sample_rate_by_source=sample_rate_by_source,
-        analysis_path_by_source=analysis_path_by_source,
-        sample_count=sample_count,
-        sample_duration_sec=sample_duration_sec,
-    )
-    write_jsonl(speaker_regions_path, rows)
-    write_json(samples_manifest_path, sample_rows)
-
-    available_speaker_ids = sorted({str(row["speaker_id"]) for row in rows})
-    selection = {
-        "mode": "diarization",
-        "selected": False,
-        "target_speaker_id": None,
-        "source": "pending_user_selection",
-        "available_speaker_ids": available_speaker_ids,
-        "updated_at": None,
-    }
-    if selection_path.exists():
-        existing = read_json(selection_path)
-        existing_target = str(existing.get("target_speaker_id") or "").strip()
-        if existing_target in available_speaker_ids:
-            selection = {
-                "mode": "diarization",
-                "selected": True,
-                "target_speaker_id": existing_target,
-                "source": str(existing.get("source") or "user"),
-                "available_speaker_ids": available_speaker_ids,
-                "updated_at": existing.get("updated_at"),
-            }
+        if selection_path.exists():
+            existing = read_json(selection_path)
+            existing_target = str(existing.get("target_speaker_id") or "").strip()
+            if existing_target in available_speaker_ids:
+                selection = {
+                    "mode": "diarization",
+                    "selected": True,
+                    "target_speaker_id": existing_target,
+                    "source": str(existing.get("source") or "user"),
+                    "available_speaker_ids": available_speaker_ids,
+                    "updated_at": existing.get("updated_at"),
+                }
+        reason_codes = [] if selection["selected"] else ["speaker_selection_required"]
     write_json(selection_path, selection)
 
     summary = build_summary(
@@ -864,31 +491,12 @@ def run_diarization(run_root: Path, config: dict[str, Any]) -> dict[str, Any]:
         sample_rows,
         stage="diarization",
         config=config,
-        input_hashes={
-            "audio_variants_manifest": sha256_file(audio_variants_manifest_path),
-            "vad_segments_jsonl": sha256_file(vad_segments_path),
-        },
-        backend="nemo_clustering_diarizer_windowed",
-        backend_version=getattr(nemo, "__version__", None),
+        input_hashes=input_hashes,
+        backend=backend,
+        backend_version=backend_version,
         mode=mode,
-        reason_codes=[] if selection["selected"] else ["speaker_selection_required"],
-        extra={
-            "selection_written": True,
-            "source_audio_id": source_audio_id,
-            "window_sec": window_sec,
-            "window_overlap_sec": overlap_sec,
-            "device": diarization_device,
-            "speaker_model": speaker_model,
-            "batch_size": batch_size,
-            "max_speakers": max_speakers,
-            "window_count": len(window_summaries),
-            "window_status_counts": dict(Counter(str(row.get("status") or "unknown") for row in window_summaries)),
-            "speaker_label_stitching": {
-                "method": stitching_summary["method"],
-                "min_overlap_sec": stitching_summary["min_overlap_sec"],
-                "window_count": len(stitching_summary["window_label_mappings"]),
-            },
-        },
+        reason_codes=reason_codes,
+        extra={"selection_written": True, **extra},
     )
     summary["output_hashes"] = {
         "speaker_regions_jsonl": sha256_file(speaker_regions_path),
@@ -897,3 +505,117 @@ def run_diarization(run_root: Path, config: dict[str, Any]) -> dict[str, Any]:
     }
     write_json(resolve_under_root(run_root, "artifacts/speaker_regions_summary.json"), summary)
     return summary
+
+
+def _run_pyannote_diarization(
+    run_root: Path,
+    config: dict[str, Any],
+    variants: list[dict[str, Any]],
+    *,
+    sample_rate_by_source: dict[str, int],
+    analysis_path_by_source: dict[str, str],
+    sample_count: int,
+    sample_duration_sec: float,
+) -> dict[str, Any]:
+    if not variants:
+        raise ValueError("diarization requires at least one analysis audio variant")
+    model_path = resolve_community1_model_path(config)
+    device = resolve_diarization_device(config)
+    sample_rate = int(variants[0]["analysis_sample_rate"])
+    pipeline = load_community1_pipeline(model_path, device)
+    backend_version = pyannote_audio_version()
+    waveforms = [
+        load_analysis_waveform(resolve_under_root(run_root, str(variant["path"])), sample_rate)[0]
+        for variant in variants
+    ]
+    gap_sec = float(config.get("diarization_concat_gap_sec") or 1.0)
+    extra: dict[str, Any] = {
+        "device": device,
+        "model_path": str(model_path),
+        "source_audio_ids": [str(variant["source_audio_id"]) for variant in variants],
+        "source_count": len(variants),
+    }
+    if len(variants) == 1:
+        annotation = run_community1_pipeline(pipeline, waveforms[0], sample_rate)
+        rows = annotation_to_speechcraft_regions(
+            annotation,
+            source_audio_id=str(variants[0]["source_audio_id"]),
+            analysis_audio_path=str(variants[0]["path"]),
+            sample_rate=sample_rate,
+            backend_version=backend_version,
+        )
+        extra.update({"multi_file": False, "source_audio_id": str(variants[0]["source_audio_id"])})
+    else:
+        layout = plan_concat_layout(variants, gap_sec)
+        concat_waveform = concat_waveforms_with_gaps(waveforms, sample_rate, gap_sec)
+        annotation = run_community1_pipeline(pipeline, concat_waveform, sample_rate)
+        concat_rows = annotation_to_speechcraft_regions(
+            annotation,
+            source_audio_id="concat",
+            analysis_audio_path="concat",
+            sample_rate=sample_rate,
+            backend_version=backend_version,
+        )
+        rows = remap_concat_regions_to_sources(concat_rows, layout, sample_rate)
+        extra.update({"multi_file": True, "concat_gap_sec": gap_sec})
+
+    audio_variants_manifest_path = resolve_under_root(run_root, "artifacts/audio_variants_manifest.json")
+    return _write_diarization_artifacts(
+        run_root,
+        config,
+        rows,
+        sample_rate_by_source=sample_rate_by_source,
+        analysis_path_by_source=analysis_path_by_source,
+        sample_count=sample_count,
+        sample_duration_sec=sample_duration_sec,
+        backend=COMMUNITY1_BACKEND,
+        backend_version=backend_version,
+        mode=str(config.get("mode") or "diarization"),
+        extra=extra,
+        input_hashes={"audio_variants_manifest": sha256_file(audio_variants_manifest_path)},
+        auto_select_speaker_0=False,
+    )
+
+
+def run_diarization(run_root: Path, config: dict[str, Any]) -> dict[str, Any]:
+    audio_variants_manifest_path = resolve_under_root(run_root, "artifacts/audio_variants_manifest.json")
+    variants = list(read_json(audio_variants_manifest_path).get("variants") or [])
+    sample_rate_by_source = {str(variant["source_audio_id"]): int(variant["analysis_sample_rate"]) for variant in variants}
+    analysis_path_by_source = {str(variant["source_audio_id"]): str(variant["path"]) for variant in variants}
+    mode = str(config.get("mode") or "single_speaker")
+    sample_count = int(config.get("speaker_sample_count") or 3)
+    sample_duration_sec = float(config.get("speaker_sample_duration_sec") or 6.0)
+
+    if mode == "single_speaker":
+        run_silero_vad(run_root, config)
+        vad_segments_path = resolve_under_root(run_root, "artifacts/vad_segments.jsonl")
+        vad_segments = read_jsonl(vad_segments_path)
+        rows = build_single_speaker_regions(variants, vad_segments)
+        return _write_diarization_artifacts(
+            run_root,
+            config,
+            rows,
+            sample_rate_by_source=sample_rate_by_source,
+            analysis_path_by_source=analysis_path_by_source,
+            sample_count=sample_count,
+            sample_duration_sec=sample_duration_sec,
+            backend="single_speaker_vad_passthrough",
+            backend_version=None,
+            mode=mode,
+            extra={},
+            input_hashes={
+                "audio_variants_manifest": sha256_file(audio_variants_manifest_path),
+                "vad_segments_jsonl": sha256_file(vad_segments_path),
+            },
+            auto_select_speaker_0=True,
+        )
+
+    return _run_pyannote_diarization(
+        run_root,
+        config,
+        variants,
+        sample_rate_by_source=sample_rate_by_source,
+        analysis_path_by_source=analysis_path_by_source,
+        sample_count=sample_count,
+        sample_duration_sec=sample_duration_sec,
+    )

@@ -125,6 +125,30 @@ def artifact_root_check(path: str | None) -> dict[str, Any]:
         return {"ok": False, "path": str(root), "error": f"{type(exc).__name__}: {exc}"}
 
 
+def community1_model_check(args: argparse.Namespace) -> dict[str, Any]:
+    from speechcraft_dataset.diarization import resolve_community1_model_path
+
+    pyannote = module_check("pyannote.audio", "pyannote.audio")
+    model_path = args.diarization_model_path
+    result: dict[str, Any] = {
+        "ok": False,
+        "pyannote_audio": pyannote,
+        "model_path": model_path,
+        "error": None,
+    }
+    if not pyannote["ok"]:
+        result["error"] = pyannote["error"]
+        return result
+    try:
+        resolved = resolve_community1_model_path({"diarization_model_path": model_path or ""})
+        result["model_path"] = str(resolved)
+        result["ok"] = True
+        return result
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+
 def asr_model_check(args: argparse.Namespace) -> dict[str, Any]:
     try:
         from speechcraft_dataset.models import check_asr_model
@@ -162,6 +186,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         torch_check(),
         module_check("torchaudio"),
         module_check("nemo", "nemo"),
+        module_check("pyannote.audio", "pyannote.audio"),
         module_check("faster_whisper"),
         module_check("ctranslate2"),
         module_check("silero_vad"),
@@ -179,6 +204,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "modules": modules,
         "ffmpeg": ffmpeg_check(),
         "asr_model": asr_model_check(args),
+        "diarization_model": community1_model_check(args),
         "artifact_root": artifact_root_check(args.artifact_root),
         "slicer": "VR",
         "slicer_geometry": "O0_4",
@@ -187,6 +213,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         all(module["ok"] for module in modules)
         and bool(report["ffmpeg"]["ok"])
         and bool(report["asr_model"]["ok"])
+        and bool(report["diarization_model"]["ok"])
         and bool(report["artifact_root"]["ok"])
     )
     return report
@@ -203,6 +230,11 @@ def main() -> None:
     parser.add_argument("--asr-compute-type", default=os.environ.get("SPEECHCRAFT_ASR_COMPUTE_TYPE"))
     parser.add_argument("--asr-model-timeout-seconds", type=int, default=120)
     parser.add_argument("--check-asr-model-load", action="store_true")
+    parser.add_argument(
+        "--diarization-model-path",
+        default=os.environ.get("SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH"),
+        help="Local pyannote Community-1 snapshot directory. Does not download.",
+    )
     args = parser.parse_args()
     report = build_report(args)
     if args.json:

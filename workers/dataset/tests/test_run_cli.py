@@ -229,32 +229,37 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                 self.assertEqual(handle.getframerate(), 16000)
                 self.assertEqual(handle.getnchannels(), 1)
 
-    def test_vad_stage_writes_segments_and_summary(self) -> None:
+    def test_single_speaker_diarization_uses_internal_silero(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_raw:
             temp_dir = Path(temp_dir_raw)
             source = temp_dir / 'source.wav'
             run_root = temp_dir / 'run'
             write_silent_wav(source, sample_rate=16000, duration_sec=0.2)
-            fake_summary = {'backend': 'silero_vad', 'segment_count': 1, 'source_count': 1}
-            with patch('speechcraft_dataset.run.run_silero_vad', return_value=fake_summary) as vad:
-                exit_code = main(['--run-root', str(run_root), '--source-wav', str(source), '--single-speaker', '--stop-after', 'vad'])
+            fake_summary = {
+                'stage': 'diarization',
+                'backend': 'single_speaker_vad_passthrough',
+                'speaker_count': 1,
+                'reason_codes': [],
+            }
+            with patch('speechcraft_dataset.run.run_diarization', return_value=fake_summary) as diarization:
+                exit_code = main(['--run-root', str(run_root), '--source-wav', str(source), '--single-speaker', '--stop-after', 'diarization'])
             self.assertEqual(exit_code, 0)
-            self.assertEqual(read_json(run_root / 'status.json')['stage'], 'vad')
+            self.assertEqual(read_json(run_root / 'status.json')['stage'], 'diarization')
             self.assertEqual(read_json(run_root / 'status.json')['summary'], fake_summary)
             self.assertTrue((run_root / 'artifacts' / 'audio_variants_manifest.json').exists())
-            vad.assert_called_once()
+            diarization.assert_called_once()
 
-    def test_missing_vad_dependency_writes_stage_specific_reason(self) -> None:
+    def test_missing_single_speaker_vad_dependency_writes_stage_specific_reason(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_raw:
             temp_dir = Path(temp_dir_raw)
             source = temp_dir / 'source.wav'
             run_root = temp_dir / 'run'
             write_silent_wav(source, sample_rate=16000, duration_sec=0.2)
-            with patch('speechcraft_dataset.run.run_silero_vad', side_effect=RuntimeError('Silero VAD dependencies are unavailable: ModuleNotFoundError')):
-                exit_code = main(['--run-root', str(run_root), '--source-wav', str(source), '--single-speaker', '--stop-after', 'vad'])
+            with patch('speechcraft_dataset.run.run_diarization', side_effect=RuntimeError('Silero VAD dependencies are unavailable: ModuleNotFoundError')):
+                exit_code = main(['--run-root', str(run_root), '--source-wav', str(source), '--single-speaker', '--stop-after', 'diarization'])
             self.assertEqual(exit_code, 1)
             status = read_json(run_root / 'status.json')
-            self.assertEqual(status['stage'], 'vad')
+            self.assertEqual(status['stage'], 'diarization')
             self.assertEqual(status['reason_codes'], ['missing_silero_vad_dependency'])
 
     @unittest.skipUnless(HAS_WORKER_AUDIO_DEPS, 'requires worker audio deps')
@@ -269,7 +274,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                 (fake_run_root / 'artifacts' / 'vad_segments.jsonl').write_text(json.dumps({'id': 'source_audio_0000_vad_000000', 'source_audio_id': 'source_audio_0000', 'analysis_start_sample': 1600, 'analysis_end_sample': 12800, 'analysis_start_sec': 0.1, 'analysis_end_sec': 0.8, 'start_sample': 1600, 'end_sample': 12800}) + '\n', encoding='utf-8')
                 (fake_run_root / 'artifacts' / 'vad_summary.json').write_text(json.dumps({'segment_count': 1}), encoding='utf-8')
                 return {'segment_count': 1}
-            with patch('speechcraft_dataset.run.run_silero_vad', side_effect=fake_vad):
+            with patch('speechcraft_dataset.diarization.run_silero_vad', side_effect=fake_vad):
                 exit_code = main(['--run-root', str(run_root), '--source-wav', str(source), '--single-speaker', '--stop-after', 'buffers'])
             self.assertEqual(exit_code, 0)
             status = read_json(run_root / 'status.json')
@@ -298,7 +303,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             run_root = temp_dir / 'run'
             write_silent_wav(source, sample_rate=16000, duration_sec=1.0)
             fake_diarization_summary = {'stage': 'diarization', 'speaker_count': 2, 'speaker_ids': ['speaker_0', 'speaker_1'], 'reason_codes': ['speaker_selection_required']}
-            with patch('speechcraft_dataset.run.run_silero_vad', return_value={'segment_count': 2}), patch('speechcraft_dataset.run.run_diarization', return_value=fake_diarization_summary), patch('speechcraft_dataset.run.run_processing_buffers') as buffers:
+            with patch('speechcraft_dataset.run.run_diarization', return_value=fake_diarization_summary), patch('speechcraft_dataset.run.run_processing_buffers') as buffers:
                 exit_code = main(['--run-root', str(run_root), '--source-wav', str(source), '--stop-after', 'candidate_review_clips'])
             self.assertEqual(exit_code, 0)
             status = read_json(run_root / 'status.json')
@@ -318,7 +323,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                 (fake_run_root / 'artifacts' / 'vad_segments.jsonl').write_text('', encoding='utf-8')
                 (fake_run_root / 'artifacts' / 'vad_summary.json').write_text(json.dumps({'segment_count': 0}), encoding='utf-8')
                 return {'segment_count': 0}
-            with patch('speechcraft_dataset.run.run_silero_vad', side_effect=fake_vad):
+            with patch('speechcraft_dataset.diarization.run_silero_vad', side_effect=fake_vad):
                 exit_code = main(['--run-root', str(run_root), '--source-wav', str(source), '--single-speaker', '--stop-after', 'buffers'])
             self.assertEqual(exit_code, 0)
             buffers = read_json(run_root / 'artifacts' / 'processing_buffers.json')
@@ -481,7 +486,6 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             [
                 'source_audio',
                 'audio_variants',
-                'vad',
                 'diarization',
                 'buffers',
                 'candidate_review_clips',
@@ -490,7 +494,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                 'native_export',
             ],
         )
-        for obsolete in ('asr', 'asr_queue', 'normalization', 'mfa', 'alignment_qc', 'safe_cutpoints'):
+        for obsolete in ('asr', 'asr_queue', 'normalization', 'mfa', 'alignment_qc', 'safe_cutpoints', 'vad'):
             self.assertNotIn(obsolete, WORKER_STAGE_ORDER)
         for module_name in (
             'speechcraft_dataset.mfa',
@@ -741,7 +745,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                 (fake_run_root / 'artifacts' / 'vad_summary.json').write_text(json.dumps({'segment_count': 1}), encoding='utf-8')
                 return {'segment_count': 1}
 
-            with patch('speechcraft_dataset.run.run_silero_vad', side_effect=fake_vad):
+            with patch('speechcraft_dataset.diarization.run_silero_vad', side_effect=fake_vad):
                 exit_code = main(
                     [
                         '--run-root',

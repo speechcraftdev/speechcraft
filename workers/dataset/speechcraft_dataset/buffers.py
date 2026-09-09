@@ -139,7 +139,7 @@ def run_processing_buffers(run_root: Path, config: dict[str, Any]) -> dict[str, 
     speaker_regions_path = resolve_under_root(run_root, "artifacts/speaker_regions.jsonl")
     speaker_selection_path = resolve_under_root(run_root, "artifacts/speaker_selection.json")
     variants = list(read_json(audio_variants_manifest_path).get("variants") or [])
-    vad_segments = read_jsonl(vad_segments_path)
+    vad_segments = read_jsonl(vad_segments_path) if vad_segments_path.exists() else []
     speaker_regions = read_jsonl(speaker_regions_path)
     selection = read_json(speaker_selection_path)
     allow_no_vad_full_span_fallback = bool(config.get("allow_no_vad_full_span_fallback", False))
@@ -230,7 +230,7 @@ def run_processing_buffers(run_root: Path, config: dict[str, Any]) -> dict[str, 
         "config_hash": str(config.get("config_hash") or ""),
         "input_artifact_hashes": {
             "audio_variants_manifest": sha256_file(audio_variants_manifest_path),
-            "vad_segments_jsonl": sha256_file(vad_segments_path),
+            **({"vad_segments_jsonl": sha256_file(vad_segments_path)} if vad_segments_path.exists() else {}),
             "speaker_regions_jsonl": sha256_file(speaker_regions_path),
             "speaker_selection_json": sha256_file(speaker_selection_path),
         },

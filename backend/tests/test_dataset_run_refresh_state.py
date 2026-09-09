@@ -296,7 +296,6 @@ class WorkerStageContractTests(unittest.TestCase):
         worker_stages = {
             "source_audio",
             "audio_variants",
-            "vad",
             "diarization",
             "buffers",
             "candidate_review_clips",
@@ -305,5 +304,7 @@ class WorkerStageContractTests(unittest.TestCase):
             "native_export",
         }
         self.assertTrue(worker_stages <= set(WORKER_STAGE_MAP))
+        self.assertIn("vad", WORKER_STAGE_MAP)
         self.assertNotIn("asr_queue", worker_stages)
         self.assertNotIn("mfa", worker_stages)
+        self.assertNotIn("vad", worker_stages)

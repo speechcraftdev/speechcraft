@@ -7,7 +7,7 @@ files from the run root. The backend must not import this package.
 Runtime boundary:
 
 - `backend/`: light API, database, run orchestration, artifact indexing.
-- `workers/dataset/`: CUDA/audio stack for VAD, NeMo diarization, locked VR
+- `workers/dataset/`: CUDA/audio stack for pyannote Community-1 diarization, locked VR
   slicing, candidate assembly, transcript QC, speaker purity, and native-rate
   export.
 - Production slicing does not invoke MFA, Whisper, or word-alignment QC.
@@ -55,13 +55,19 @@ uv run python -m speechcraft_dataset.run \
 
 Repeat `--source-wav` for multi-WAV datasets.
 
+Diarization mode loads locked pyannote Community-1 from a local snapshot only.
+Set `diarization_model_path` in the run config or
+`SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH` in the environment. The worker does not
+download weights. Single-speaker mode still uses internal Silero speech regions
+and does not require the Community-1 snapshot.
+
 Current production slicing is the locked VR `O0_4` path: source preparation,
-mono 16 kHz analysis audio, Silero timestamp VAD for diarization regions,
-trusted-region packing buffers, then Silero ONNX frames + percentile RMS +
-duration-only packing.
+mono 16 kHz analysis audio, pyannote Community-1 speaker regions (or internal
+Silero speech regions in single-speaker mode), trusted-region packing buffers,
+then Silero ONNX frames + percentile RMS + duration-only packing.
 
 ```text
-source_audio -> audio_variants -> vad -> diarization -> buffers -> candidate_review_clips -> transcript_qc -> speaker_purity -> native_export
+source_audio -> audio_variants -> diarization -> buffers -> candidate_review_clips -> transcript_qc -> speaker_purity -> native_export
 ```
 
 Default `--stop-after` is `candidate_review_clips`. Whisper Large-v3 is used
@@ -70,8 +76,8 @@ later for Transcript Correctness, not to create slices.
 Use `--stop-after audio_variants` when checking the run-root/audio contract
 without the heavy Silero/PyTorch worker environment.
 
-Use `--stop-after buffers` to write trusted-region packing scopes after VAD
-and speaker selection. These are not ASR/MFA chunks and do not emit buffer WAVs.
+Use `--stop-after buffers` to write trusted-region packing scopes after
+diarization and speaker selection. These are not ASR/MFA chunks and do not emit buffer WAVs.
 
 Use `--stop-after candidate_review_clips` to run the locked VR slicer and write
 3-15 second review WAVs targeting 8 seconds, plus `vr_cutpoints.jsonl`. These
@@ -83,7 +89,7 @@ source WAV sample rate using the analysis-to-native sample mapping. Native
 exports write `export_manifest.json`, `export_audit.json`, `export_summary.json`,
 and `native_export_clips/*.wav`.
 
-NeMo diarization, speaker-purity QC, dataset QC, review-decision persistence,
+Community-1 diarization, speaker-purity QC, dataset QC, review-decision persistence,
 and VoxCPM manifest export remain after this stage contract is stable.
 
 ## Transcript confidence QC (Whisper B1-LJ)

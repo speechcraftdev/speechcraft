@@ -56,7 +56,6 @@ class StopAfterBoundaryTests(unittest.TestCase):
         with (
             patch("speechcraft_dataset.run.run_prepare_sources", return_value=_stage_summary("source_audio")),
             patch("speechcraft_dataset.run.run_audio_variants", return_value=_stage_summary("audio_variants")),
-            patch("speechcraft_dataset.run.run_silero_vad", return_value=_stage_summary("vad")),
             patch("speechcraft_dataset.run.run_diarization", return_value=_stage_summary("diarization")),
             patch("speechcraft_dataset.run.run_processing_buffers", return_value=_stage_summary("buffers")),
             patch(
@@ -172,7 +171,7 @@ class StopAfterBoundaryTests(unittest.TestCase):
         source = self._temp_path / "source.wav"
         run_root = self._temp_path / "run"
         write_silent_wav(source)
-        for obsolete in ("asr", "asr_queue", "normalization", "mfa", "alignment_qc", "safe_cutpoints"):
+        for obsolete in ("asr", "asr_queue", "normalization", "mfa", "alignment_qc", "safe_cutpoints", "vad"):
             with self.assertRaises(SystemExit):
                 main(
                     [

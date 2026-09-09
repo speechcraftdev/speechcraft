@@ -17,7 +17,6 @@ from .diarization import run_diarization
 from .export import export_native_candidate_clips
 from .io import read_json, resolve_under_root, write_json
 from .qc_score_stages import run_speaker_purity_stage, run_transcript_qc_stage
-from .vad import run_silero_vad
 from .vr_slicer import TRUSTED_GEOMETRY_FINGERPRINT, VR_O0_4
 
 
@@ -26,7 +25,6 @@ PIPELINE_VERSION = "pretraining_rfc_v1"
 WORKER_STAGE_ORDER = [
     "source_audio",
     "audio_variants",
-    "vad",
     "diarization",
     "buffers",
     "candidate_review_clips",
@@ -52,12 +50,8 @@ def default_config(source_wavs: list[Path], *, single_speaker: bool, target_spea
         "vad_min_speech_ms": 250,
         "vad_min_silence_ms": 250,
         "vad_speech_pad_ms": 80,
-        "diarization_window_sec": 900.0,
-        "diarization_window_overlap_sec": 30.0,
-        "diarization_max_speakers": 6,
-        "diarization_batch_size": 16,
-        "diarization_speaker_model": "titanet_large",
-        "diarization_save_embeddings": False,
+        "diarization_model_path": "",
+        "diarization_concat_gap_sec": 1.0,
         "speaker_sample_count": 3,
         "speaker_sample_duration_sec": 6.0,
         "slicer": "VR",
@@ -162,12 +156,19 @@ def should_stop(current_stage: str, stop_after: str) -> bool:
 
 def failure_reason_codes(stage: str, exc: Exception) -> list[str]:
     message = str(exc)
-    if stage == "vad" and "Silero VAD dependencies are unavailable" in message:
-        return ["missing_silero_vad_dependency"]
     if stage == "audio_variants" and "ffmpeg" in message.lower():
         return ["audio_variant_materialization_failed"]
-    if stage == "diarization" and "NeMo diarization dependencies are unavailable" in message:
-        return ["missing_nemo_dependency"]
+    if stage == "diarization" and "Silero VAD dependencies are unavailable" in message:
+        return ["missing_silero_vad_dependency"]
+    if stage == "diarization" and "pyannote.audio is unavailable" in message:
+        return ["missing_pyannote_dependency"]
+    if stage == "diarization" and (
+        "Community-1 local model path is missing" in message
+        or "Community-1 snapshot is missing" in message
+        or "Community-1 snapshot is incomplete" in message
+        or "Failed to load pyannote Community-1" in message
+    ):
+        return ["missing_diarization_model"]
     if stage == "diarization":
         return ["diarization_failed"]
     if stage == "buffers":
@@ -242,18 +243,7 @@ def run_dataset_worker(args: argparse.Namespace) -> int:
         if should_stop("audio_variants", args.stop_after):
             return _complete_ok(run_root, status, "audio_variants", audio_variant_summary)
 
-        status.update({"stage": "vad", "summary": audio_variant_summary})
-        write_status(run_root, status)
-        vad_backend = str(config.get("vad_backend") or "silero").strip().lower()
-        if vad_backend != "silero":
-            raise ValueError(f"Unsupported VAD backend: {vad_backend}")
-        vad_summary = run_silero_vad(run_root, config)
-        log_line(run_root, f"vad completed summary={vad_summary}")
-        if should_stop("vad", args.stop_after):
-            log_line(run_root, "dataset worker completed VAD")
-            return _complete_ok(run_root, status, "vad", vad_summary)
-
-        status.update({"stage": "diarization", "summary": vad_summary})
+        status.update({"stage": "diarization", "summary": audio_variant_summary})
         write_status(run_root, status)
         diarization_summary = run_diarization(run_root, config)
         log_line(run_root, f"diarization completed summary={diarization_summary}")

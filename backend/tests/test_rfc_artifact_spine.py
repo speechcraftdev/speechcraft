@@ -291,7 +291,6 @@ class RfcArtifactSpineTests(TestCase):
                 "ingest",
                 "audio_variants",
                 "source_health",
-                "vad",
                 "diarization",
                 "speaker_identity",
                 "trusted_regions",
@@ -329,6 +328,7 @@ class RfcArtifactSpineTests(TestCase):
         self.assertNotIn(RfcStage.NORMALIZATION, dag)
         self.assertNotIn(RfcStage.MFA, dag)
         self.assertNotIn(RfcStage.SAFE_CUTPOINTS, dag)
+        self.assertNotIn(RfcStage.VAD, dag)
 
         for stage, dependencies in dag.items():
             for dependency in dependencies:

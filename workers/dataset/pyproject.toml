@@ -14,12 +14,25 @@ dependencies = [
   "numpy==2.4.6",
   "omegaconf==2.3.0",
   "onnxruntime==1.26.0",
+  "pyannote.audio==4.0.3",
   "scipy==1.17.1",
   "silero-vad==6.2.1",
   "soundfile==0.13.1",
   "torch==2.11.0+cu128",
   "torchaudio==2.11.0+cu128",
   "transformers==4.57.6",
+]
+
+[tool.uv]
+# pyannote.audio 4.0.3 declares torchaudio==2.8.0 and uv cannot resolve that
+# against the existing CUDA Torch pin on Windows. Lock this worker to the
+# current Linux x86_64 CUDA runtime; cross-platform packaging is Phase 2.
+environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+override-dependencies = [
+  "torch==2.11.0+cu128",
+  "torchaudio==2.11.0+cu128",
 ]
 
 [tool.uv.sources]

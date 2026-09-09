@@ -264,8 +264,7 @@ RFC_PRETRAINING_JOB_DAG: tuple[tuple[RfcStage, tuple[RfcStage, ...]], ...] = (
     (RfcStage.INGEST, ()),
     (RfcStage.AUDIO_VARIANTS, (RfcStage.INGEST,)),
     (RfcStage.SOURCE_HEALTH, (RfcStage.AUDIO_VARIANTS,)),
-    (RfcStage.VAD, (RfcStage.SOURCE_HEALTH,)),
-    (RfcStage.DIARIZATION, (RfcStage.VAD,)),
+    (RfcStage.DIARIZATION, (RfcStage.SOURCE_HEALTH,)),
     (RfcStage.SPEAKER_IDENTITY, (RfcStage.DIARIZATION,)),
     (RfcStage.TRUSTED_REGIONS, (RfcStage.SPEAKER_IDENTITY,)),
     (RfcStage.PROCESSING_BUFFERS, (RfcStage.TRUSTED_REGIONS,)),
@@ -652,7 +651,6 @@ class DatasetRunCreateRequest(SQLModel):
     stop_after: Literal[
         "source_audio",
         "audio_variants",
-        "vad",
         "diarization",
         "buffers",
         "candidate_review_clips",
