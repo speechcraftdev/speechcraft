@@ -173,10 +173,10 @@ def _transcript_score_from_row(row: dict[str, Any]) -> float:
 
 
 def _speaker_score_from_row(row: dict[str, Any]) -> float:
-    if row.get("min_window_similarity") is not None:
-        return _score_from_fraction(row.get("min_window_similarity"), "min_window_similarity")
     if row.get("speaker_check_score") is not None:
         return _validate_qc_score(row.get("speaker_check_score"), "speaker_check_score")
+    if row.get("min_window_similarity") is not None:
+        return _score_from_fraction(row.get("min_window_similarity"), "min_window_similarity")
     raise DatasetQcValidationError("speaker_check_score missing")
 
 

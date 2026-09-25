@@ -202,7 +202,7 @@ class DatasetQcTests(TestCase):
         clip = next(row for row in payload.clips if row.clip_id == "candidate_review_clip_000001")
 
         self.assertEqual(clip.transcript_match, 87.65)
-        self.assertEqual(clip.speaker_check, 74.23)
+        self.assertEqual(clip.speaker_check, 74)
 
     def test_get_qc_accepts_worker_written_transcript_qc_artifact(self) -> None:
         from speechcraft_dataset.analyze_whisper_b1_transcript_qc import run_transcript_qc

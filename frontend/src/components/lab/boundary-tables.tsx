@@ -26,13 +26,13 @@ import {
 } from "./qc-logic";
 
 function formatScore(score: number | null): string {
-  return score === null ? "—" : score.toFixed(1);
+  return score === null ? "—" : score.toFixed(2);
 }
 
 function formatMargin(margin: number): string {
   if (!Number.isFinite(margin)) return "—";
   const sign = margin > 0 ? "+" : "";
-  return `${sign}${margin.toFixed(1)}`;
+  return `${sign}${margin.toFixed(2)}`;
 }
 
 function truncate(text: string, max = 64): string {
@@ -186,16 +186,16 @@ export function BestRejectedTable({
                 <TableCell className="text-right tabular-nums">
                   {formatScore(clip.transcriptMatch)}
                   {transcriptGap > 0 && (
-                    <span className="ml-1 text-[#878787]">(-{transcriptGap.toFixed(1)})</span>
+                    <span className="ml-1 text-[#878787]">(-{transcriptGap.toFixed(2)})</span>
                   )}
                 </TableCell>
                 <TableCell className="text-right tabular-nums">
                   {formatScore(clip.speakerCheck)}
                   {speakerGap > 0 && (
-                    <span className="ml-1 text-[#878787]">(-{speakerGap.toFixed(1)})</span>
+                    <span className="ml-1 text-[#878787]">(-{speakerGap.toFixed(2)})</span>
                   )}
                 </TableCell>
-                <TableCell className="text-right tabular-nums">{recoveryGap.toFixed(1)}</TableCell>
+                <TableCell className="text-right tabular-nums">{recoveryGap.toFixed(2)}</TableCell>
               </TableRow>
             ))}
           </TableBody>

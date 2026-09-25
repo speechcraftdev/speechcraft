@@ -15,10 +15,10 @@ import { useToast } from "@midday/ui/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { BestRejectedTable, RiskiestKeptTable } from "./boundary-tables";
-import { combinedSummary, histogram, unscoredCount, type QcClip } from "./qc-logic";
+import { combinedSummary, thresholdImpactCurve, type QcClip } from "./qc-logic";
 import { fetchDatasetQc, type DatasetQcClipApi } from "./speechcraft-api";
 import { finalizeDatasetQc, SpeechcraftApiError } from "./speechcraft-write-api";
-import { ThresholdHistogramChart } from "./threshold-histogram-chart";
+import { ThresholdImpactChart } from "./threshold-impact-chart";
 
 function toQcClip(api: DatasetQcClipApi): QcClip {
   return {
@@ -98,16 +98,13 @@ export function DatasetHealthPage({
     setLastSyncKey(syncKey);
   }
 
-  const transcriptBins = useMemo(() => histogram(clips, (c) => c.transcriptMatch), [clips]);
-  const speakerBins = useMemo(() => histogram(clips, (c) => c.speakerCheck), [clips]);
-
-  const transcriptAccepted = useMemo(
-    () => clips.filter((c) => (c.transcriptMatch ?? -1) >= transcriptThreshold),
-    [clips, transcriptThreshold],
+  const transcriptCurve = useMemo(
+    () => thresholdImpactCurve(clips, (c) => c.transcriptMatch),
+    [clips],
   );
-  const speakerAccepted = useMemo(
-    () => clips.filter((c) => (c.speakerCheck ?? -1) >= speakerThreshold),
-    [clips, speakerThreshold],
+  const speakerCurve = useMemo(
+    () => thresholdImpactCurve(clips, (c) => c.speakerCheck),
+    [clips],
   );
 
   const summary = useMemo(
@@ -195,7 +192,7 @@ export function DatasetHealthPage({
     <div className="flex-1 overflow-y-auto">
       <div className="mx-auto max-w-[1400px] p-6">
         <div className="mb-6 flex items-center justify-between">
-          <div className="text-sm text-muted-foreground">
+          <div className="font-serif text-lg leading-none">
             {summary.acceptedCount} of {clips.length} clips pass both gates at these thresholds ·{" "}
             {formatDuration(summary.acceptedDurationSec)}
             {data?.finalized && (
@@ -217,25 +214,17 @@ export function DatasetHealthPage({
         </div>
 
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          <ThresholdHistogramChart
+          <ThresholdImpactChart
             title="Transcript match"
-            subtitle="CTC-aligned minimum span score. Clips below the line fail this gate."
-            bins={transcriptBins}
+            points={transcriptCurve}
             threshold={transcriptThreshold}
             onThresholdChange={setTranscriptThreshold}
-            unscoredCount={unscoredCount(clips, (c) => c.transcriptMatch)}
-            acceptedCount={transcriptAccepted.length}
-            acceptedDurationSec={transcriptAccepted.reduce((sum, c) => sum + c.durationSec, 0)}
           />
-          <ThresholdHistogramChart
+          <ThresholdImpactChart
             title="Speaker check"
-            subtitle="Minimum speaker-embedding window similarity. Clips below the line fail this gate."
-            bins={speakerBins}
+            points={speakerCurve}
             threshold={speakerThreshold}
             onThresholdChange={setSpeakerThreshold}
-            unscoredCount={unscoredCount(clips, (c) => c.speakerCheck)}
-            acceptedCount={speakerAccepted.length}
-            acceptedDurationSec={speakerAccepted.reduce((sum, c) => sum + c.durationSec, 0)}
           />
         </div>
 

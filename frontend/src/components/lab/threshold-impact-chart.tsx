@@ -2,42 +2,66 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
-  Bar,
-  BarChart,
   CartesianGrid,
-  Cell,
+  Line,
+  LineChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import type { HistogramBin } from "./qc-logic";
+import type { CurvePoint } from "./qc-logic";
 
-type ThresholdHistogramChartProps = {
+type ThresholdImpactChartProps = {
   title: string;
-  subtitle: string;
-  bins: HistogramBin[];
+  points: CurvePoint[];
   threshold: number;
   onThresholdChange: (value: number) => void;
-  unscoredCount: number;
-  acceptedCount: number;
-  acceptedDurationSec: number;
   height?: number;
 };
 
-function formatDuration(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.round(seconds % 60);
-  if (mins <= 0) return `${secs}s`;
-  return `${mins}m ${secs}s`;
+const Y_AXIS_WIDTH = 44;
+const PLOT_MARGIN = { top: 6, right: 8, bottom: 0, left: 0 };
+
+/** Same padding the pre-revamp card used so a shallow curve still fills the plot. */
+export function durationDomain(points: Array<{ acceptedDurationSec: number | null }>): { min: number; max: number } {
+  const values = points
+    .map((point) => point.acceptedDurationSec)
+    .filter((value): value is number => Number.isFinite(value));
+  if (values.length === 0) return { min: 0, max: 60 };
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (max <= min) {
+    const pad = Math.max(1, max * 0.05);
+    return { min: Math.max(0, min - pad), max: max + pad };
+  }
+  const pad = Math.max(1, (max - min) * 0.08);
+  return { min: Math.max(0, min - pad), max: max + pad };
+}
+
+export function formatDurationCompact(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return "0s";
+  if (totalSeconds >= 3600) return `${(totalSeconds / 3600).toFixed(1)}h`;
+  if (totalSeconds >= 60) return `${(totalSeconds / 60).toFixed(1)}m`;
+  return `${Math.round(totalSeconds)}s`;
+}
+
+function formatDurationHms(totalSeconds: number): string {
+  const roundedSeconds = Math.max(0, Math.round(totalSeconds));
+  const hours = Math.floor(roundedSeconds / 3600);
+  const minutes = Math.floor((roundedSeconds % 3600) / 60);
+  const seconds = roundedSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 type TooltipPayloadItem = {
-  payload?: HistogramBin;
+  payload?: CurvePoint & { acceptedDurationSec: number | null };
 };
 
-function HistogramTooltip({
+function CurveTooltip({
   active,
   payload,
 }: {
@@ -45,57 +69,50 @@ function HistogramTooltip({
   payload?: TooltipPayloadItem[];
 }) {
   if (!active || !payload?.length) return null;
-  const bin = payload[0]?.payload;
-  if (!bin) return null;
+  const point = payload[0]?.payload;
+  if (!point) return null;
   return (
     <div className="border border-border bg-background px-2.5 py-1.5 text-xs shadow-sm">
-      <p className="text-[#878787]">
-        {Math.round(bin.start)}–{Math.round(bin.end)}
-      </p>
-      <p className="font-medium tabular-nums">
-        {bin.count} clip{bin.count === 1 ? "" : "s"}
-      </p>
+      <p className="font-medium tabular-nums">Threshold = {point.threshold}</p>
+      <p className="text-[#878787]">Duration = {formatDurationHms(point.acceptedDurationSec ?? 0)}</p>
     </div>
   );
 }
 
-export function ThresholdHistogramChart({
+export function ThresholdImpactChart({
   title,
-  subtitle,
-  bins,
+  points,
   threshold,
   onThresholdChange,
-  unscoredCount,
-  acceptedCount,
-  acceptedDurationSec,
   height = 240,
-}: ThresholdHistogramChartProps) {
+}: ThresholdImpactChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
-
-  // Shared with the <BarChart margin> below: the plot area is the container
-  // minus these margins on every side. Keeping this as one constant means the
-  // drag math and recharts' own layout can never drift apart.
-  const PLOT_MARGIN = { top: 6, right: 8, bottom: 0, left: 8 };
-
-  const data = useMemo(
-    () => bins.map((bin) => ({ ...bin, kept: bin.center >= threshold })),
-    [bins, threshold],
+  const linePoints = useMemo(
+    () =>
+      points.map((point) => ({
+        ...point,
+        acceptedDurationSec: point.acceptedClipCount > 0 ? point.acceptedDurationSec : null,
+      })),
+    [points],
   );
-
-  const maxCount = useMemo(() => Math.max(1, ...bins.map((b) => b.count)), [bins]);
+  const yDomain = useMemo(() => durationDomain(linePoints), [linePoints]);
+  const current = points[threshold];
+  const nothingLeft = !current || current.acceptedClipCount === 0;
+  const plotLeft = PLOT_MARGIN.left + Y_AXIS_WIDTH;
+  const plotRight = PLOT_MARGIN.right;
 
   const scoreFromClientX = useCallback((clientX: number): number => {
     const el = containerRef.current;
     if (!el) return threshold;
     const rect = el.getBoundingClientRect();
-    const plotLeft = rect.left + PLOT_MARGIN.left;
-    const plotWidth = rect.width - PLOT_MARGIN.left - PLOT_MARGIN.right;
+    const left = rect.left + plotLeft;
+    const plotWidth = rect.width - plotLeft - plotRight;
     if (plotWidth <= 0) return threshold;
-    const ratio = (clientX - plotLeft) / plotWidth;
+    const ratio = (clientX - left) / plotWidth;
     const clamped = Math.max(0, Math.min(1, ratio));
     return Math.round(clamped * 100);
-  }, [threshold, PLOT_MARGIN.left, PLOT_MARGIN.right]);
+  }, [threshold, plotLeft, plotRight]);
 
   const handlePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -133,9 +150,11 @@ export function ThresholdHistogramChart({
     <div className="border border-border p-4">
       <div className="mb-1 flex items-baseline justify-between">
         <h3 className="font-serif text-lg leading-none">{title}</h3>
-        <span className="text-xs tabular-nums text-[#878787]">min {threshold}</span>
       </div>
-      <p className="mb-4 text-xs text-[#878787]">{subtitle}</p>
+      {nothingLeft ? (
+        <p className="mt-1 text-xs text-[#878787]">Nothing remains above this</p>
+      ) : null}
+      <p className="mb-2 mt-3 text-xs text-[#878787]">Accepted duration</p>
 
       <div
         ref={containerRef}
@@ -144,10 +163,10 @@ export function ThresholdHistogramChart({
         onPointerDown={handlePointerDown}
       >
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} margin={PLOT_MARGIN} barCategoryGap={1}>
+          <LineChart data={linePoints} margin={PLOT_MARGIN}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid-stroke, #e6e6e6)" vertical={false} />
             <XAxis
-              dataKey="center"
+              dataKey="threshold"
               type="number"
               domain={[0, 100]}
               axisLine={false}
@@ -155,16 +174,24 @@ export function ThresholdHistogramChart({
               ticks={[0, 25, 50, 75, 100]}
               tick={{ fill: "#878787", fontSize: 10 }}
             />
-            <YAxis hide domain={[0, maxCount]} />
-            <Tooltip content={<HistogramTooltip />} cursor={false} />
-            <Bar dataKey="count" isAnimationActive={false}>
-              {data.map((entry) => (
-                <Cell
-                  key={entry.start}
-                  fill={entry.kept ? "var(--chart-bar-fill)" : "var(--chart-bar-fill-secondary)"}
-                />
-              ))}
-            </Bar>
+            <YAxis
+              width={Y_AXIS_WIDTH}
+              domain={[yDomain.min, yDomain.max]}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={formatDurationCompact}
+              tick={{ fill: "#878787", fontSize: 10 }}
+            />
+            <Tooltip content={<CurveTooltip />} cursor={false} />
+            <Line
+              type="linear"
+              dataKey="acceptedDurationSec"
+              stroke="var(--chart-bar-fill)"
+              strokeWidth={1.5}
+              dot={false}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
             <ReferenceLine
               x={threshold}
               stroke="currentColor"
@@ -172,12 +199,9 @@ export function ThresholdHistogramChart({
               zIndex={500}
               className="text-foreground"
             />
-          </BarChart>
+          </LineChart>
         </ResponsiveContainer>
 
-        {/* Draggable handle grip, positioned over the reference line. Uses the
-            same PLOT_MARGIN as the chart above so it tracks the real bar
-            positions instead of the raw container width. */}
         <div
           role="slider"
           aria-label={`${title} minimum threshold`}
@@ -188,7 +212,7 @@ export function ThresholdHistogramChart({
           onKeyDown={handleKeyDown}
           className="absolute top-0 flex h-full w-4 -translate-x-1/2 cursor-ew-resize items-start justify-center outline-none"
           style={{
-            left: `calc(${PLOT_MARGIN.left}px + (100% - ${PLOT_MARGIN.left + PLOT_MARGIN.right}px) * ${threshold / 100})`,
+            left: `calc(${plotLeft}px + (100% - ${plotLeft + plotRight}px) * ${threshold / 100})`,
           }}
         >
           <div
@@ -197,16 +221,6 @@ export function ThresholdHistogramChart({
             }`}
           />
         </div>
-      </div>
-
-      <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-xs">
-        <span className="text-[#878787]">
-          {acceptedCount} clip{acceptedCount === 1 ? "" : "s"} kept ·{" "}
-          {formatDuration(acceptedDurationSec)}
-        </span>
-        {unscoredCount > 0 && (
-          <span className="text-[#878787]">{unscoredCount} unscored</span>
-        )}
       </div>
     </div>
   );
