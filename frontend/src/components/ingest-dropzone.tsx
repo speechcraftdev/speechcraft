@@ -7,8 +7,14 @@ import { useToast } from "@midday/ui/use-toast";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useRef, useState } from "react";
 import { type FileRejection, useDropzone } from "react-dropzone";
+import { fetchDatasetRuns, fetchProjects } from "@/components/lab/speechcraft-api";
 import { SpeechcraftApiError } from "@/components/lab/speechcraft-write-api";
-import { demoEnabled, withDemo } from "@/lib/demo";
+import {
+  demoEnabled,
+  FALLBACK_DEMO_PROJECT_ID,
+  FALLBACK_DEMO_RUN_ID,
+  withDemo,
+} from "@/lib/demo";
 import { createProject, makeProjectId, uploadRecording } from "./wizard/wizard-api";
 
 type Phase = "idle" | "uploading" | "error";
@@ -22,16 +28,48 @@ export function IngestDropzone() {
   const [progress, setProgress] = useState(0);
   const [current, setCurrent] = useState(0);
   const [total, setTotal] = useState(0);
+  const [skipping, setSkipping] = useState(false);
   const startedRef = useRef(false);
+
+  const continueWithExisting = useCallback(async () => {
+    if (skipping) return;
+    setSkipping(true);
+    let projectId = FALLBACK_DEMO_PROJECT_ID;
+    let runId: string | null = FALLBACK_DEMO_RUN_ID;
+    try {
+      const projects = await fetchProjects();
+      const preferred =
+        projects.find((project) => project.id === FALLBACK_DEMO_PROJECT_ID) ??
+        projects.find((project) => project.id !== "phase1-demo") ??
+        projects[0];
+      if (preferred) {
+        projectId = preferred.id;
+        runId = projectId === FALLBACK_DEMO_PROJECT_ID ? FALLBACK_DEMO_RUN_ID : null;
+        const runs = await fetchDatasetRuns(projectId);
+        const reviewable =
+          runs.find((run) => run.id === FALLBACK_DEMO_RUN_ID) ??
+          runs.find((run) => (run.output_summary?.clip_count ?? 0) > 0) ??
+          runs[0];
+        if (reviewable) runId = reviewable.id;
+      }
+    } catch {
+      // Backend offline — still advance with the handoff IDs.
+    }
+
+    const target = new URLSearchParams({ project: projectId });
+    if (runId) target.set("run", runId);
+    router.push(withDemo(`/login3?${target.toString()}`, true));
+    setSkipping(false);
+  }, [router, skipping]);
 
   const ingest = useCallback(
     async (files: File[]) => {
       if (startedRef.current || files.length === 0) return;
       startedRef.current = true;
 
-      // Demo mode: skip the real upload entirely, just advance the flow.
+      // Demo mode: skip the real upload and continue with an existing project.
       if (demo) {
-        router.push(withDemo("/login3?project=demo-review", true));
+        await continueWithExisting();
         return;
       }
 
@@ -69,7 +107,7 @@ export function IngestDropzone() {
         });
       }
     },
-    [router, toast, demo],
+    [router, toast, demo, continueWithExisting],
   );
 
   const onDropRejected = ([reject]: FileRejection[]) => {
@@ -82,7 +120,7 @@ export function IngestDropzone() {
     onDrop: (files) => void ingest(files),
     onDropRejected,
     accept: { "audio/wav": [".wav"], "audio/x-wav": [".wav"] },
-    disabled: phase === "uploading",
+    disabled: phase === "uploading" || skipping,
   });
 
   if (phase === "uploading") {
@@ -123,15 +161,31 @@ export function IngestDropzone() {
         <p className="font-sans text-sm text-[#878787]">
           {phase === "error"
             ? "Something went wrong. Drag & drop your .wav files to try again."
-            : "Drag & drop or upload your .wav recordings."}
+            : demo
+              ? "Demo mode — continue with the current project, or upload new .wav recordings."
+              : "Drag & drop or upload your .wav recordings."}
         </p>
       </div>
 
-      <div className="mt-10 lg:mt-12">
+      <div className="mt-10 lg:mt-12 space-y-3">
+        {demo ? (
+          <SubmitButton
+            type="button"
+            onClick={() => void continueWithExisting()}
+            className="bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full"
+            isSubmitting={skipping}
+          >
+            Continue with current project
+          </SubmitButton>
+        ) : null}
         <SubmitButton
           type="button"
           onClick={() => document.getElementById("upload-files")?.click()}
-          className="bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full"
+          className={
+            demo
+              ? "bg-transparent border border-border px-6 py-4 text-foreground font-medium flex space-x-2 h-[40px] w-full"
+              : "bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full"
+          }
           isSubmitting={false}
         >
           Upload

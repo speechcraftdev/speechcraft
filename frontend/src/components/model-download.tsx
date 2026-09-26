@@ -29,8 +29,14 @@ export function ModelDownload() {
   const startedRef = useRef(false);
 
   const skipAhead = useCallback(() => {
-    router.push(withDemo(`/login4?project=${encodeURIComponent(projectId ?? "demo-review")}&run=demo`, true));
-  }, [router, projectId]);
+    const runId = params.get("run") ?? "demo";
+    router.push(
+      withDemo(
+        `/login4?project=${encodeURIComponent(projectId ?? "demo-review")}&run=${encodeURIComponent(runId)}`,
+        true,
+      ),
+    );
+  }, [router, projectId, params]);
 
   const run = useCallback(async () => {
     if (demo) {

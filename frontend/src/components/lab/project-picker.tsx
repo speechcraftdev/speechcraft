@@ -32,6 +32,7 @@ export function ProjectPicker() {
   const selectProject = (id: string) => {
     const params = new URLSearchParams(searchParams.toString());
     params.set("project", id);
+    params.delete("run");
     router.replace(`${pathname}?${params.toString()}`);
   };
 

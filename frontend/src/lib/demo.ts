@@ -3,6 +3,10 @@
 // functional wiring is verified by code (types/build/tests); this is purely a
 // review affordance. Enabled by NEXT_PUBLIC_SC_DEMO=1 (global) or ?demo=1.
 
+// Local imported dataset used when demo mode is entered from the setup wizard.
+export const FALLBACK_DEMO_PROJECT_ID = "mb-mq3wkz25";
+export const FALLBACK_DEMO_RUN_ID = "dataset-17d22e1684db";
+
 export function demoEnabled(params?: URLSearchParams | null): boolean {
   if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_SC_DEMO === "1") {
     return true;

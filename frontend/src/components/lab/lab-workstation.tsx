@@ -79,6 +79,14 @@ export function LabWorkstation() {
   const { toast, update } = useToast();
   const queryClient = useQueryClient();
   const demo = demoEnabled(searchParams);
+  const paramProjectId = searchParams.get("project");
+  const paramRunId = searchParams.get("run");
+  // Demo URLs with real handoff IDs use live data; only the default demo route
+  // (or its legacy demo-review/demo IDs) should seed the mock clips.
+  const useMockClips =
+    demo &&
+    (!paramProjectId || paramProjectId === "demo-review") &&
+    (!paramRunId || paramRunId === "demo");
   const audioEditMutexRef = useRef(new AudioEditMutex());
   const [audioEditInFlight, setAudioEditInFlight] = useState(false);
 
@@ -110,22 +118,38 @@ export function LabWorkstation() {
     queryKey: ["sc-projects"],
     queryFn: fetchProjects,
     staleTime: 60_000,
-    enabled: !demo,
+    enabled: !useMockClips,
   });
 
-  const paramProjectId = searchParams.get("project");
   const activeProject =
-    projects.find((p) => p.id === paramProjectId) ?? projects[0] ?? null;
+    projects.find((p) => p.id === paramProjectId) ??
+    (paramProjectId && !useMockClips
+      ? { id: paramProjectId, name: paramProjectId }
+      : null) ??
+    projects[0] ??
+    null;
   const projectId = activeProject?.id ?? null;
 
   const { data: runs = [], isLoading: runsLoading } = useQuery({
     queryKey: ["sc-runs", projectId],
     queryFn: () => fetchDatasetRuns(projectId!),
-    enabled: !demo && !!projectId,
+    enabled: !useMockClips && !!projectId,
     staleTime: 60_000,
   });
 
-  const run = useMemo(() => pickReviewableRun(runs), [runs]);
+  const run = useMemo(() => {
+    if (paramRunId && paramRunId !== "demo") {
+      return (
+        runs.find((candidate) => candidate.id === paramRunId) ?? {
+          id: paramRunId,
+          project_id: projectId ?? "",
+          stage: "",
+          status: "",
+        }
+      );
+    }
+    return pickReviewableRun(runs);
+  }, [runs, paramRunId, projectId]);
   const runId = run?.id ?? null;
 
   const {
@@ -135,7 +159,7 @@ export function LabWorkstation() {
   } = useQuery({
     queryKey: ["sc-cliplab", runId],
     queryFn: () => fetchClipLabView(runId!),
-    enabled: !demo && !!runId,
+    enabled: !useMockClips && !!runId,
     staleTime: Number.POSITIVE_INFINITY,
   });
 
@@ -145,7 +169,7 @@ export function LabWorkstation() {
   const { data: qcPayload } = useQuery({
     queryKey: ["sc-dataset-qc", runId],
     queryFn: () => fetchDatasetQc(runId!),
-    enabled: !demo && !!runId,
+    enabled: !useMockClips && !!runId,
     staleTime: 30_000,
   });
   const qcThresholds = useMemo(() => effectiveQcThresholds(qcPayload), [qcPayload]);
@@ -164,7 +188,7 @@ export function LabWorkstation() {
   const seededRunRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!demo && view && runId && seededRunRef.current !== runId) {
+    if (!useMockClips && view && runId && seededRunRef.current !== runId) {
       const mapped = view.clips.map((clip, index) =>
         mapApiClip(clip, index, runId, view.candidate_manifest_sha256, qcThresholds),
       );
@@ -180,13 +204,13 @@ export function LabWorkstation() {
     // run. Threshold changes after seeding are handled by the re-derive
     // effect below so in-progress edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, runId, demo]);
+  }, [view, runId, useMockClips]);
 
   // Committed thresholds can change after clips are already seeded (Dataset
   // Health commits mid-session). Re-derive machineBucket/qcScore in place —
   // never touch review status, transcript, or audio edit state.
   useEffect(() => {
-    if (demo) return;
+    if (useMockClips) return;
     setClips((prev) =>
       prev.map((clip) => {
         const scoresKnown = clip.transcriptMatchRaw != null && clip.speakerCheckRaw != null;
@@ -216,19 +240,19 @@ export function LabWorkstation() {
         return { ...clip, machineBucket, qcScore: Number(qcScore.toFixed(3)) };
       }),
     );
-  }, [qcThresholds, demo]);
+  }, [qcThresholds, useMockClips]);
 
   // Demo / UI-review mode: seed from mock clips, no backend. Writes stay local
   // (mock clips have no manifestSha/clipVersion, so applyClipWrite is a no-op
   // beyond the optimistic update).
   useEffect(() => {
-    if (demo && seededRunRef.current !== "demo") {
+    if (useMockClips && seededRunRef.current !== "demo") {
       const mock = createMockClips();
       setClips(mock);
       setActiveClipId(mock[0]?.id ?? null);
       seededRunRef.current = "demo";
     }
-  }, [demo]);
+  }, [useMockClips]);
 
   const visibleClips = useMemo(
     () => sortClips(filterClips(clips, search, filterStatuses, filterTags, filterBuckets), sortMode),
@@ -540,7 +564,7 @@ export function LabWorkstation() {
   useHotkeys("mod+shift+z", (e) => { e.preventDefault(); redoEdit(); }, { enabled: audioHotkeyEnabled }, [redoEdit]);
 
   const isLoading =
-    !demo &&
+    !useMockClips &&
     ((!projectId && projects.length === 0) || runsLoading || (viewLoading && clips.length === 0));
 
   const undoAvailable = activeClip
@@ -618,7 +642,7 @@ export function LabWorkstation() {
       <ExportDialog runId={runId} open={exportOpen} onOpenChange={setExportOpen} />
 
       {mode === "qc" ? (
-        <DatasetHealthPage runId={runId} demo={demo} />
+        <DatasetHealthPage runId={runId} demo={useMockClips} />
       ) : viewError ? (
         <div className="flex flex-1 items-center justify-center">
           <div className="max-w-sm text-center">
