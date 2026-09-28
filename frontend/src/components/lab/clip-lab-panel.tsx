@@ -37,7 +37,6 @@ type ClipLabPanelProps = {
   endAudioEdit: () => void;
   onUndo: () => void;
   onRedo: () => void;
-  onMarkReference: () => void;
   onRunModel: () => void;
   autoplay: boolean;
   onAutoplayConsumed: () => void;
@@ -56,7 +55,6 @@ export function ClipLabPanel({
   endAudioEdit,
   onUndo,
   onRedo,
-  onMarkReference,
   onRunModel,
   autoplay,
   onAutoplayConsumed,
@@ -105,7 +103,6 @@ export function ClipLabPanel({
         <div className="flex items-center gap-3 text-xs tabular-nums text-muted-foreground">
           <span>{formatSeconds(duration)}</span>
           <span>{(clip.sampleRateHz / 1000).toFixed(0)} kHz</span>
-          <span>{clip.variant}</span>
         </div>
       </div>
 
@@ -127,9 +124,6 @@ export function ClipLabPanel({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={onMarkReference}>
-              Mark as reference candidate
-            </DropdownMenuItem>
             <DropdownMenuItem onClick={onRunModel}>Run DeepFilterNet</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

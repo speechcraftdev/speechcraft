@@ -12,8 +12,6 @@ const STATUS_CLASSES: Record<ReviewStatus, string> = {
     "border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 hover:bg-emerald-100",
   rejected:
     "border-transparent bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300 hover:bg-red-100",
-  quarantined:
-    "border-transparent bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 hover:bg-amber-100",
 };
 
 export function StatusBadge({

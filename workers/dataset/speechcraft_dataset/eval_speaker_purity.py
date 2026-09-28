@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from .audio import map_analysis_sample_to_source, read_mono_source_span
 from .buffers import read_analysis_audio, sec_to_sample, write_pcm16_mono
 from .io import read_json, read_json_value, read_jsonl, resolve_under_root, sha256_file, write_json
 
@@ -38,6 +39,21 @@ class SpeakerPurityConfig:
 
 def log(message: str) -> None:
     print(f"[eval_speaker_purity] {message}", flush=True)
+
+
+def resample_mono(samples: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
+    """Resample a mono window in memory. Nothing is written back to disk."""
+    audio = np.asarray(samples, dtype=np.float32)
+    if from_rate == to_rate or audio.size == 0:
+        return audio
+    if from_rate <= 0 or to_rate <= 0:
+        raise ValueError(f"sample rates must be positive, got {from_rate} -> {to_rate}")
+    target_len = max(1, int(round(audio.size * (to_rate / from_rate))))
+    if audio.size == 1:
+        return np.full(target_len, float(audio[0]), dtype=np.float32)
+    source_x = np.linspace(0.0, 1.0, num=audio.size, endpoint=False)
+    target_x = np.linspace(0.0, 1.0, num=target_len, endpoint=False)
+    return np.interp(target_x, source_x, audio.astype(np.float64)).astype(np.float32)
 
 
 def _percentile(values: list[float], quantile: float) -> float | None:
@@ -240,6 +256,7 @@ def build_sanitized_target_voiceprint(
     sample_rate_by_source: dict[str, int],
     config: SpeakerPurityConfig,
     enrollment_dir: Path,
+    source_audio_by_source: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     regions = [
         row
@@ -253,6 +270,7 @@ def build_sanitized_target_voiceprint(
     )
 
     analysis_cache: dict[str, tuple[np.ndarray, int]] = {}
+    source_audio_by_source = source_audio_by_source or {}
 
     def load_source(source_audio_id: str) -> tuple[np.ndarray, int]:
         if source_audio_id not in analysis_cache:
@@ -263,6 +281,32 @@ def build_sanitized_target_voiceprint(
                 raise ValueError(f"Expected sample rate {expected} for {source_audio_id}, got {rate}")
             analysis_cache[source_audio_id] = (samples, rate)
         return analysis_cache[source_audio_id]
+
+    def load_region(source_audio_id: str, start: int, end: int) -> tuple[np.ndarray, int]:
+        analysis_rate = int(sample_rate_by_source[source_audio_id])
+        analysis_path = analysis_path_by_source.get(source_audio_id)
+        if analysis_path is not None and analysis_path.is_file():
+            analysis_samples, rate = load_source(source_audio_id)
+            region = analysis_samples[start:end]
+            return resample_mono(region, rate, TARGET_SAMPLE_RATE), TARGET_SAMPLE_RATE
+        source = source_audio_by_source.get(source_audio_id)
+        if source is None:
+            raise ValueError(f"Analysis audio is gone and source audio is missing for {source_audio_id}")
+        source_rate = int(source["sample_rate"])
+        source_start = map_analysis_sample_to_source(start, analysis_rate, source_rate)
+        source_end = map_analysis_sample_to_source(end, analysis_rate, source_rate)
+        source_frames = int(source.get("num_samples") or source_end)
+        source_start = max(0, min(source_start, source_frames))
+        source_end = max(source_start, min(source_end, source_frames))
+        if source_end <= source_start:
+            return np.zeros(0, dtype=np.float32), TARGET_SAMPLE_RATE
+        region, rate = read_mono_source_span(
+            Path(str(source["path"])),
+            source_start,
+            source_end,
+            str(source.get("channel_mode") or "downmix"),
+        )
+        return resample_mono(region, rate, TARGET_SAMPLE_RATE), TARGET_SAMPLE_RATE
 
     chunk_rows: list[dict[str, Any]] = []
     chunk_embeddings: list[np.ndarray] = []
@@ -275,12 +319,13 @@ def build_sanitized_target_voiceprint(
         if len(chunk_rows) >= config.max_enroll_chunks:
             break
         source_audio_id = str(region["source_audio_id"])
-        if source_audio_id not in analysis_path_by_source:
+        if source_audio_id not in analysis_path_by_source and source_audio_id not in source_audio_by_source:
             continue
-        analysis_samples, sample_rate = load_source(source_audio_id)
         start = int(region["start_sample"])
         end = int(region["end_sample"])
-        region_samples = analysis_samples[start:end]
+        analysis_rate = int(sample_rate_by_source.get(source_audio_id) or TARGET_SAMPLE_RATE)
+        region_samples, sample_rate = load_region(source_audio_id, start, end)
+        start = map_analysis_sample_to_source(start, analysis_rate, TARGET_SAMPLE_RATE)
         for chunk_start, chunk_end in iter_fixed_chunks(
             region_samples,
             sample_rate,
@@ -495,6 +540,23 @@ def evaluate_speaker_purity(
         str(variant["source_audio_id"]): int(variant.get("analysis_sample_rate") or TARGET_SAMPLE_RATE)
         for variant in variants
     }
+    variant_by_source = {str(variant["source_audio_id"]): variant for variant in variants}
+    source_manifest_path = run_root / "artifacts" / "source_audio_manifest.json"
+    source_manifest = read_json_value(source_manifest_path) if source_manifest_path.is_file() else {}
+    source_rows = source_manifest.get("sources") if isinstance(source_manifest, dict) else []
+    source_audio_by_source: dict[str, dict[str, Any]] = {}
+    for row in source_rows or []:
+        if not isinstance(row, dict):
+            continue
+        source_audio_id = str(row.get("source_audio_id") or "")
+        variant = variant_by_source.get(source_audio_id) or {}
+        recipe = variant.get("recipe") if isinstance(variant.get("recipe"), dict) else {}
+        source_audio_by_source[source_audio_id] = {
+            "path": row.get("path"),
+            "sample_rate": int(row.get("sample_rate") or TARGET_SAMPLE_RATE),
+            "num_samples": int(row.get("num_samples") or 0),
+            "channel_mode": str(recipe.get("channel_mode") or "downmix"),
+        }
 
     model = load_titanet_model(model_name, device)
     voiceprint, chunk_rows = build_sanitized_target_voiceprint(
@@ -505,6 +567,7 @@ def evaluate_speaker_purity(
         sample_rate_by_source=sample_rate_by_source,
         config=config,
         enrollment_dir=enrollment_dir,
+        source_audio_by_source=source_audio_by_source,
     )
     centroid = np.asarray(voiceprint["centroid"], dtype=np.float64)
     write_json(enrollment_dir / "target_voiceprint.json", voiceprint)
@@ -540,7 +603,8 @@ def evaluate_speaker_purity(
         try:
             audio_path = resolve_under_root(run_root, str(audio_rel))
             samples, actual_rate = read_analysis_audio(audio_path)
-            metrics = score_candidate_clip(model, samples, actual_rate, centroid, config)
+            samples = resample_mono(samples, actual_rate, TARGET_SAMPLE_RATE)
+            metrics = score_candidate_clip(model, samples, TARGET_SAMPLE_RATE, centroid, config)
             base_row.update(metrics)
             clip_rows.append(base_row)
         except Exception as exc:  # noqa: BLE001

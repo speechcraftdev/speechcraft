@@ -7,6 +7,7 @@ import {
   LineChart,
   ReferenceLine,
   ResponsiveContainer,
+  Scatter,
   Tooltip,
   XAxis,
   YAxis,
@@ -18,7 +19,15 @@ type ThresholdImpactChartProps = {
   points: CurvePoint[];
   threshold: number;
   onThresholdChange: (value: number) => void;
+  humanLabels?: HumanLabelMarker[];
   height?: number;
+};
+
+export type HumanLabelMarker = {
+  clipId: string;
+  score: number;
+  status: "accepted" | "rejected";
+  cleanAccepted: boolean;
 };
 
 const Y_AXIS_WIDTH = 44;
@@ -58,7 +67,9 @@ function formatDurationHms(totalSeconds: number): string {
 }
 
 type TooltipPayloadItem = {
-  payload?: CurvePoint & { acceptedDurationSec: number | null };
+  payload?:
+    | (CurvePoint & { acceptedDurationSec: number | null })
+    | (HumanLabelMarker & { kind: "human-marker"; x: number; y: number });
 };
 
 function CurveTooltip({
@@ -71,10 +82,22 @@ function CurveTooltip({
   if (!active || !payload?.length) return null;
   const point = payload[0]?.payload;
   if (!point) return null;
+  if ("kind" in point && point.kind === "human-marker") {
+    return (
+      <div className="border border-border bg-background px-2.5 py-1.5 text-xs shadow-sm">
+        <p className="font-medium">{point.clipId}</p>
+        <p className="text-[#878787]">
+          {point.cleanAccepted ? "Accepted · clean" : point.status === "rejected" ? "Rejected" : "Accepted · edited"}
+        </p>
+        <p className="text-[#878787]">Score = {point.score}</p>
+      </div>
+    );
+  }
+  const curvePoint = point as CurvePoint & { acceptedDurationSec: number | null };
   return (
     <div className="border border-border bg-background px-2.5 py-1.5 text-xs shadow-sm">
-      <p className="font-medium tabular-nums">Threshold = {point.threshold}</p>
-      <p className="text-[#878787]">Duration = {formatDurationHms(point.acceptedDurationSec ?? 0)}</p>
+      <p className="font-medium tabular-nums">Threshold = {curvePoint.threshold}</p>
+      <p className="text-[#878787]">Duration = {formatDurationHms(curvePoint.acceptedDurationSec ?? 0)}</p>
     </div>
   );
 }
@@ -84,6 +107,7 @@ export function ThresholdImpactChart({
   points,
   threshold,
   onThresholdChange,
+  humanLabels = [],
   height = 240,
 }: ThresholdImpactChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -97,6 +121,22 @@ export function ThresholdImpactChart({
     [points],
   );
   const yDomain = useMemo(() => durationDomain(linePoints), [linePoints]);
+  const markerPoints = useMemo(() => {
+    const range = Math.max(1, yDomain.max - yDomain.min);
+    const slots = new Map<string, number>();
+    return humanLabels.map((marker) => {
+      const key = `${marker.score}:${marker.cleanAccepted ? "clean" : "other"}`;
+      const slot = slots.get(key) ?? 0;
+      slots.set(key, slot + 1);
+      return {
+        ...marker,
+        kind: "human-marker" as const,
+        x: marker.score,
+        threshold: marker.score,
+        y: yDomain.min + range * (0.04 + (slot % 4) * 0.025),
+      };
+    });
+  }, [humanLabels, yDomain]);
   const current = points[threshold];
   const nothingLeft = !current || current.acceptedClipCount === 0;
   const plotLeft = PLOT_MARGIN.left + Y_AXIS_WIDTH;
@@ -151,6 +191,16 @@ export function ThresholdImpactChart({
       <div className="mb-1 flex items-baseline justify-between">
         <h3 className="font-serif text-lg leading-none">{title}</h3>
       </div>
+      {humanLabels.length > 0 ? (
+        <div className="mb-2 flex items-center gap-3 text-[11px] text-muted-foreground">
+          <span className="inline-flex items-center gap-1">
+            <span className="size-2 rounded-full bg-emerald-500" /> Accepted · clean
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="size-2 rounded-full bg-red-500" /> Rejected or edited
+          </span>
+        </div>
+      ) : null}
       {nothingLeft ? (
         <p className="mt-1 text-xs text-[#878787]">Nothing remains above this</p>
       ) : null}
@@ -192,6 +242,27 @@ export function ThresholdImpactChart({
               connectNulls={false}
               isAnimationActive={false}
             />
+            {markerPoints.length > 0 ? (
+              <Scatter
+                data={markerPoints}
+                dataKey="y"
+                fill="currentColor"
+                shape={(props) => {
+                  const marker = props.payload as (typeof markerPoints)[number];
+                  return (
+                    <circle
+                      cx={props.cx}
+                      cy={props.cy}
+                      r={4}
+                      fill={marker.cleanAccepted ? "#22c55e" : "#ef4444"}
+                      stroke="var(--background)"
+                      strokeWidth={1}
+                    />
+                  );
+                }}
+                isAnimationActive={false}
+              />
+            ) : null}
             <ReferenceLine
               x={threshold}
               stroke="currentColor"

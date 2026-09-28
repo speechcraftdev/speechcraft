@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import shutil
+import wave
 from collections import Counter, defaultdict
 from itertools import groupby
 from pathlib import Path
 from typing import Any
 
-from .buffers import read_analysis_audio, sec_to_sample, write_pcm16_mono
+from .audio import delete_analysis_wavs, map_analysis_sample_to_source, read_mono_source_span
+from .buffers import sec_to_sample, write_pcm16_mono
 from .io import read_json_value, resolve_under_root, sha256_file, write_json, write_jsonl
 from .vr_slicer import (
     TRUSTED_GEOMETRY_FINGERPRINT,
@@ -16,6 +18,39 @@ from .vr_slicer import (
     assert_locked_geometry,
     slice_wav,
 )
+
+
+def _source_audio_index(run_root: Path) -> dict[str, dict[str, Any]]:
+    path = resolve_under_root(run_root, "artifacts/source_audio_manifest.json")
+    payload = read_json_value(path)
+    if not isinstance(payload, dict):
+        raise ValueError("source_audio_manifest.json must contain an object")
+    sources = payload.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise ValueError("source_audio_manifest.json must contain sources[]")
+    return {str(row["source_audio_id"]): row for row in sources if isinstance(row, dict)}
+
+
+def _channel_mode_index(run_root: Path) -> dict[str, str]:
+    path = run_root / "artifacts" / "audio_variants_manifest.json"
+    if not path.is_file():
+        return {}
+    payload = read_json_value(path)
+    if not isinstance(payload, dict):
+        return {}
+    modes: dict[str, str] = {}
+    for row in payload.get("variants") or []:
+        if not isinstance(row, dict) or str(row.get("kind") or "") != "analysis_audio":
+            continue
+        recipe = row.get("recipe") if isinstance(row.get("recipe"), dict) else {}
+        mode = str(recipe.get("channel_mode") or "downmix")
+        modes[str(row.get("source_audio_id") or "")] = mode
+    return modes
+
+
+def _wav_frame_count(path: Path) -> int:
+    with wave.open(str(path), "rb") as handle:
+        return int(handle.getnframes())
 
 
 def assemble_candidate_review_clips(
@@ -107,35 +142,59 @@ def assemble_candidate_review_clips(
                 }
             )
 
+    sources = _source_audio_index(run_root)
+    channel_modes = _channel_mode_index(run_root)
+    analysis_rels: set[str] = set()
+    source_paths: set[Path] = {Path(str(row["path"])) for row in sources.values()}
     manifest: list[dict[str, Any]] = []
     for source_audio_id, group in groupby(packed, key=lambda item: item[0]):
         source_clips = list(group)
+        source = sources.get(source_audio_id)
+        if source is None:
+            raise ValueError(f"Candidate review is missing source audio {source_audio_id}")
+        source_path = Path(str(source["path"]))
+        source_rate = int(source["sample_rate"])
+        source_frames = int(source["num_samples"])
+        source_paths.add(source_path)
+        channel_mode = channel_modes.get(source_audio_id) or (
+            "left" if int(source.get("num_channels") or 1) == 1 else "downmix"
+        )
         first_buffer = source_clips[0][1]
         audio_rel = str(first_buffer.get("analysis_audio_path") or first_buffer["audio_path"])
-        audio, actual_sample_rate = read_analysis_audio(resolve_under_root(run_root, audio_rel))
-        if actual_sample_rate != sample_rate:
-            raise ValueError(
-                f"Candidate review audio sample-rate mismatch for {source_audio_id}: "
-                f"{actual_sample_rate} != {sample_rate}"
-            )
+        analysis_rels.add(audio_rel)
+        analysis_frames = _wav_frame_count(resolve_under_root(run_root, audio_rel))
         for _, buffer, clip in source_clips:
-            start_sample = sec_to_sample(clip.start_sec, sample_rate)
-            end_sample = sec_to_sample(clip.end_sec, sample_rate)
-            if start_sample < 0 or end_sample > len(audio) or end_sample <= start_sample:
+            analysis_start = sec_to_sample(clip.start_sec, sample_rate)
+            analysis_end = sec_to_sample(clip.end_sec, sample_rate)
+            if analysis_start < 0 or analysis_end > analysis_frames or analysis_end <= analysis_start:
                 raise RuntimeError(
-                    f"Invalid VR clip bounds for {clip.buffer_id}: {start_sample}:{end_sample}"
+                    f"Invalid VR clip bounds for {clip.buffer_id}: {analysis_start}:{analysis_end}"
                 )
             duration_sec = clip.duration_sec
             if duration_sec < VR_O0_4.min_clip_sec - 1e-6 or duration_sec > VR_O0_4.max_clip_sec + 1e-6:
                 raise RuntimeError(
                     f"VR clip duration outside locked bounds for {clip.clip_id}: {duration_sec}"
                 )
+            source_start = map_analysis_sample_to_source(analysis_start, sample_rate, source_rate)
+            source_end = map_analysis_sample_to_source(analysis_end, sample_rate, source_rate)
+            source_start = max(0, min(source_start, source_frames))
+            source_end = max(source_start, min(source_end, source_frames))
+            if source_end <= source_start:
+                raise RuntimeError(
+                    f"Source span collapsed for {clip.buffer_id}: {source_start}:{source_end}"
+                )
             clip_id = f"candidate_review_clip_{len(manifest):06d}"
             rel_audio_path = f"artifacts/candidate_review_clips/{clip_id}.wav"
             clip_path = resolve_under_root(destination_root, rel_audio_path)
-            write_pcm16_mono(clip_path, audio[start_sample:end_sample], sample_rate)
+            samples, clip_rate = read_mono_source_span(source_path, source_start, source_end, channel_mode)
+            if clip_rate != source_rate:
+                raise ValueError(
+                    f"Source sample-rate mismatch for {source_audio_id}: {clip_rate} != {source_rate}"
+                )
+            write_pcm16_mono(clip_path, samples, source_rate)
             audio_sha256 = sha256_file(clip_path)
-            trusted_start = int(buffer.get("trusted_start_sample") or buffer.get("source_start_sample") or 0)
+            trusted_analysis = int(buffer.get("trusted_start_sample") or buffer.get("source_start_sample") or 0)
+            trusted_start = map_analysis_sample_to_source(trusted_analysis, sample_rate, source_rate)
             manifest.append(
                 {
                     "id": clip_id,
@@ -144,15 +203,15 @@ def assemble_candidate_review_clips(
                     "audio_path": rel_audio_path,
                     "audio_sha256": audio_sha256,
                     "audio_hash": audio_sha256,
-                    "sample_rate": sample_rate,
+                    "sample_rate": source_rate,
                     "start_cutpoint_ref": clip.start_cutpoint_id,
                     "end_cutpoint_ref": clip.end_cutpoint_id,
-                    "buffer_local_start_sample": start_sample - trusted_start,
-                    "buffer_local_end_sample": end_sample - trusted_start,
-                    "source_start_sample": start_sample,
-                    "source_end_sample": end_sample,
-                    "duration_samples": end_sample - start_sample,
-                    "duration_sec": round((end_sample - start_sample) / sample_rate, 6),
+                    "buffer_local_start_sample": source_start - trusted_start,
+                    "buffer_local_end_sample": source_end - trusted_start,
+                    "source_start_sample": source_start,
+                    "source_end_sample": source_end,
+                    "duration_samples": source_end - source_start,
+                    "duration_sec": round((source_end - source_start) / source_rate, 6),
                     "slicer": "VR",
                     "slicer_geometry": "O0_4",
                     "geometry_fingerprint": fingerprint,
@@ -162,7 +221,6 @@ def assemble_candidate_review_clips(
                     "status": "candidate_review",
                 }
             )
-        del audio
 
     cutpoints_payload = []
     for source_audio_id in sorted(slicer_results):
@@ -224,5 +282,10 @@ def assemble_candidate_review_clips(
         },
         "output_dir": "artifacts/candidate_review_clips",
     }
+    for source_rows in source_buffers.values():
+        for row in source_rows:
+            analysis_rels.add(str(row.get("analysis_audio_path") or row.get("audio_path") or ""))
+    removed = delete_analysis_wavs(run_root, analysis_rels, source_paths=source_paths)
+    summary["deleted_analysis_wavs"] = removed
     write_json(resolve_under_root(destination_root, "artifacts/candidate_review_summary.json"), summary)
     return summary

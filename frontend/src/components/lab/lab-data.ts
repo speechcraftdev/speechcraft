@@ -7,7 +7,7 @@
 // EDL edits, provenance) so wiring the real API later is a swap, not a
 // redesign.
 
-export type ReviewStatus = "unresolved" | "accepted" | "rejected" | "quarantined";
+export type ReviewStatus = "unresolved" | "accepted" | "rejected";
 export type MachineBucket = "auto_kept" | "needs_review" | "auto_rejected";
 
 export type ClipRevision = {
@@ -53,6 +53,7 @@ export type LabClip = {
   speaker: string;
   language: string;
   sourceRecording: string;
+  path?: string | null;
   originalStartSeconds: number;
   originalEndSeconds: number;
   revisions: ClipRevision[];
@@ -79,14 +80,12 @@ export const REVIEW_STATUS_ORDER: ReviewStatus[] = [
   "unresolved",
   "accepted",
   "rejected",
-  "quarantined",
 ];
 
 export const STATUS_LABELS: Record<ReviewStatus, string> = {
   unresolved: "Unresolved",
   accepted: "Accepted",
   rejected: "Rejected",
-  quarantined: "Quarantined",
 };
 
 export const MACHINE_BUCKET_LABELS: Record<MachineBucket, string> = {
@@ -291,9 +290,8 @@ export const SORT_OPTIONS: { value: SortMode; label: string }[] = [
 
 const STATUS_PRIORITY: Record<ReviewStatus, number> = {
   unresolved: 0,
-  quarantined: 1,
-  rejected: 2,
-  accepted: 3,
+  rejected: 1,
+  accepted: 2,
 };
 
 export function sortClips(clips: LabClip[], mode: SortMode): LabClip[] {

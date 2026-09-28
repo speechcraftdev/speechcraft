@@ -6,8 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .dataset_runs import get_candidate_review_media_bytes
-
 REFERENCE_CLIP_CANDIDATES_DIR = "reference-clip-candidates"
 FORBIDDEN_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 MAX_FILENAME_STEM_LENGTH = 180
@@ -74,7 +72,21 @@ def mark_dataset_clip_as_reference_candidate(
     repository.get_project(project_id)
     _get_dataset_run_for_project(repository, project_id, dataset_run_id)
 
-    audio_bytes = get_candidate_review_media_bytes(repository, dataset_run_id, clip_id)
+    from .clip_lab_state import get_dataset_clip_lab, get_dataset_clip_lab_audio_bytes
+
+    clip_lab = get_dataset_clip_lab(repository, dataset_run_id)
+    clip_view = next((clip for clip in clip_lab.clips if clip.clip_id == clip_id), None)
+    if clip_view is None:
+        raise KeyError("Clip not found in clip lab")
+    revision_key = clip_view.effective_audio_revision_key
+    if not revision_key:
+        raise ValueError("Clip audio is not ready to save as a reference candidate")
+    audio_bytes = get_dataset_clip_lab_audio_bytes(
+        repository,
+        dataset_run_id,
+        clip_id,
+        revision_key,
+    )
     destination_root = reference_clip_candidates_root(repository.media_root, project_id)
     stem = transcript_filename_stem(transcript_text, clip_id)
     destination_path = resolve_unique_wav_path(destination_root, stem)
@@ -89,6 +101,7 @@ def mark_dataset_clip_as_reference_candidate(
         "clip_id": clip_id,
         "transcript_text": transcript_text.strip(),
         "filename": destination_path.name,
+        "folder_path": str(destination_root),
         "relative_path": relative_path,
         "source_audio_path": source_relative,
         "created_at": datetime.now(timezone.utc).isoformat(),

@@ -566,6 +566,12 @@ def mark_reference_clip_candidate(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ClipLabUnrenderedAudioError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ClipLabRevisionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ClipLabStateError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/media/dataset-runs/{run_id}/native-export/{clip_id}.wav")

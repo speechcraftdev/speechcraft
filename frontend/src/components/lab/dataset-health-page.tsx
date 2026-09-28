@@ -15,10 +15,15 @@ import { useToast } from "@midday/ui/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { BestRejectedTable, RiskiestKeptTable } from "./boundary-tables";
-import { combinedSummary, thresholdImpactCurve, type QcClip } from "./qc-logic";
+import {
+  combinedSummary,
+  thresholdImpactCurve,
+  type HumanLabeledClip,
+  type QcClip,
+} from "./qc-logic";
 import { fetchDatasetQc, type DatasetQcClipApi } from "./speechcraft-api";
 import { finalizeDatasetQc, SpeechcraftApiError } from "./speechcraft-write-api";
-import { ThresholdImpactChart } from "./threshold-impact-chart";
+import { ThresholdImpactChart, type HumanLabelMarker } from "./threshold-impact-chart";
 
 function toQcClip(api: DatasetQcClipApi): QcClip {
   return {
@@ -60,9 +65,11 @@ const DEMO_CLIPS: QcClip[] = Array.from({ length: 140 }, (_, i) => {
 export function DatasetHealthPage({
   runId,
   demo = false,
+  humanLabeledClips = [],
 }: {
   runId: string | null;
   demo?: boolean;
+  humanLabeledClips?: HumanLabeledClip[];
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -105,6 +112,31 @@ export function DatasetHealthPage({
   const speakerCurve = useMemo(
     () => thresholdImpactCurve(clips, (c) => c.speakerCheck),
     [clips],
+  );
+
+  const transcriptMarkers = useMemo<HumanLabelMarker[]>(
+    () =>
+      humanLabeledClips
+        .filter((clip) => clip.transcriptMatch != null)
+        .map((clip) => ({
+          clipId: clip.clipId,
+          score: clip.transcriptMatch as number,
+          status: clip.status,
+          cleanAccepted: clip.cleanAccepted,
+        })),
+    [humanLabeledClips],
+  );
+  const speakerMarkers = useMemo<HumanLabelMarker[]>(
+    () =>
+      humanLabeledClips
+        .filter((clip) => clip.speakerCheck != null)
+        .map((clip) => ({
+          clipId: clip.clipId,
+          score: clip.speakerCheck as number,
+          status: clip.status,
+          cleanAccepted: clip.cleanAccepted,
+        })),
+    [humanLabeledClips],
   );
 
   const summary = useMemo(
@@ -219,12 +251,14 @@ export function DatasetHealthPage({
             points={transcriptCurve}
             threshold={transcriptThreshold}
             onThresholdChange={setTranscriptThreshold}
+            humanLabels={transcriptMarkers}
           />
           <ThresholdImpactChart
             title="Speaker check"
             points={speakerCurve}
             threshold={speakerThreshold}
             onThresholdChange={setSpeakerThreshold}
+            humanLabels={speakerMarkers}
           />
         </div>
 

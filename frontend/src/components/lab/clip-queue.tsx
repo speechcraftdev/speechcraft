@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@midday/ui/select";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import {
   type LabClip,
   type MachineBucket,
@@ -74,6 +74,13 @@ export function ClipQueue({
     overscan: 8,
   });
 
+  useEffect(() => {
+    if (!activeClipId) return;
+    const activeIndex = clips.findIndex((clip) => clip.id === activeClipId);
+    if (activeIndex < 0) return;
+    virtualizer.scrollToIndex(activeIndex, { align: "auto" });
+  }, [activeClipId, clips, virtualizer]);
+
   const filterSummary =
     activeFilterCount > 0
       ? [
@@ -129,7 +136,7 @@ export function ClipQueue({
               </div>
 
               <p className="mb-2 mt-4 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Machine QC
+                Statistics
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {MACHINE_BUCKET_ORDER.map((bucket) => (
@@ -247,7 +254,6 @@ export function ClipQueue({
                     <p className="line-clamp-3 text-sm leading-snug">{clip.transcript}</p>
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <span className="tabular-nums">{formatSeconds(clip.durationSeconds)}</span>
-                      <span>{clip.variant}</span>
                     </div>
                   </button>
                 </div>

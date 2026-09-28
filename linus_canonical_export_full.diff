@@ -1,0 +1,1455 @@
+diff --git a/backend/app/main.py b/backend/app/main.py
+index 25c1bd4..cbc4ac3 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -8,6 +8,12 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
+ from fastapi.middleware.cors import CORSMiddleware
+ from fastapi.responses import FileResponse, Response
+ 
++from .canonical_export import (
++    CanonicalExportConflictError,
++    create_canonical_export,
++    list_canonical_exports,
++    preview_canonical_export,
++)
+ from .reference_clip_candidates import mark_dataset_clip_as_reference_candidate
+ from .dataset_worker_client import run_dataset_worker_preflight
+ from .defaults import resolve_asr_device_and_compute_type, resolve_whisper_model
+@@ -54,6 +60,8 @@ from .clip_lab_audio_ops import (
+ )
+ from .native_cliplab import NativeClipLabStore
+ from .models import (
++    CanonicalExportPreviewView,
++    CanonicalExportSummaryView,
+     DatasetClipLabClipView,
+     DatasetClipLabAudioOperationRequest,
+     DatasetClipLabAudioStackRequest,
+@@ -351,6 +359,42 @@ def read_dataset_clip_lab(run_id: str) -> DatasetClipLabView:
+         raise HTTPException(status_code=503, detail=str(exc)) from exc
+ 
+ 
++@app.get("/api/dataset-runs/{run_id}/canonical-export-preview", response_model=CanonicalExportPreviewView)
++def read_canonical_export_preview(run_id: str) -> CanonicalExportPreviewView:
++    try:
++        return preview_canonical_export(repository, run_id)
++    except KeyError as exc:
++        raise HTTPException(status_code=404, detail=str(exc)) from exc
++    except CanonicalExportConflictError as exc:
++        raise HTTPException(status_code=409, detail=str(exc)) from exc
++    except ClipLabValidationError as exc:
++        raise HTTPException(status_code=400, detail=str(exc)) from exc
++    except ClipLabStateError as exc:
++        raise HTTPException(status_code=503, detail=str(exc)) from exc
++
++
++@app.post("/api/dataset-runs/{run_id}/canonical-exports", response_model=CanonicalExportSummaryView)
++def post_canonical_export(run_id: str) -> CanonicalExportSummaryView:
++    try:
++        return create_canonical_export(repository, run_id)
++    except KeyError as exc:
++        raise HTTPException(status_code=404, detail=str(exc)) from exc
++    except CanonicalExportConflictError as exc:
++        raise HTTPException(status_code=409, detail=str(exc)) from exc
++    except ClipLabValidationError as exc:
++        raise HTTPException(status_code=400, detail=str(exc)) from exc
++    except ClipLabStateError as exc:
++        raise HTTPException(status_code=503, detail=str(exc)) from exc
++
++
++@app.get("/api/dataset-runs/{run_id}/canonical-exports", response_model=list[CanonicalExportSummaryView])
++def read_canonical_exports(run_id: str) -> list[CanonicalExportSummaryView]:
++    try:
++        return list_canonical_exports(repository, run_id)
++    except KeyError as exc:
++        raise HTTPException(status_code=404, detail=str(exc)) from exc
++
++
+ @app.post(
+     "/api/dataset-runs/{run_id}/clips/{clip_id}/audio/operations",
+     response_model=DatasetClipLabClipView,
+diff --git a/backend/app/models.py b/backend/app/models.py
+index a063680..4f26df3 100644
+--- a/backend/app/models.py
++++ b/backend/app/models.py
+@@ -913,6 +913,32 @@ class DatasetClipLabView(SQLModel):
+     clips: list[DatasetClipLabClipView] = Field(default_factory=list)
+ 
+ 
++class CanonicalExportBlockedReasonView(SQLModel):
++    clip_id: str
++    reasons: list[str] = Field(default_factory=list)
++
++
++class CanonicalExportPreviewView(SQLModel):
++    run_id: str
++    accepted_clip_count: int = 0
++    total_duration_sec: float = 0.0
++    original_audio_count: int = 0
++    edited_audio_count: int = 0
++    blocked_clip_count: int = 0
++    blocked_reasons: list[CanonicalExportBlockedReasonView] = Field(default_factory=list)
++
++
++class CanonicalExportSummaryView(SQLModel):
++    export_id: str
++    run_id: str
++    project_id: str
++    created_at: str
++    accepted_clip_count: int
++    total_duration_sec: float
++    snapshot_dir: str
++    manifest_path: str
++
++
+ class DatasetClipLabPatchRequest(SQLModel):
+     expected_manifest_sha256: str
+     expected_clip_version: int
+diff --git a/backend/tests/test_clip_lab_routes.py b/backend/tests/test_clip_lab_routes.py
+index 605daa4..2f5b001 100644
+--- a/backend/tests/test_clip_lab_routes.py
++++ b/backend/tests/test_clip_lab_routes.py
+@@ -12,14 +12,29 @@ from unittest.mock import Mock, patch
+ 
+ import numpy as np
+ 
++from fastapi import HTTPException
+ from fastapi.testclient import TestClient
+ from sqlmodel import Session
+ 
+ from app.clip_lab_audio import MAX_INSERT_SILENCE_SEC
+-from app.clip_lab_state import ClipLabStateError, compute_content_hash, compute_manifest_sha256
++from app.clip_lab_state import (
++    ClipLabStateError,
++    compute_content_hash,
++    compute_manifest_sha256,
++    save_clip_lab_state,
++)
+ from app.dataset_runs import create_dataset_run
+-from app.main import app, patch_dataset_clip_lab_route, read_dataset_clip_lab
++from app.main import (
++    app,
++    patch_dataset_clip_lab_route,
++    post_dataset_clip_audio_operation_route,
++    post_canonical_export,
++    read_canonical_exports,
++    read_canonical_export_preview,
++    read_dataset_clip_lab,
++)
+ from app.models import (
++    DatasetClipLabAudioOperationRequest,
+     DatasetClipLabClipView,
+     DatasetClipLabPatchRequest,
+     DatasetClipLabPipelineFindingView,
+@@ -178,6 +193,403 @@ class ClipLabRouteHttpTests(unittest.TestCase):
+         self.assertTrue(payload["qc_available"])
+         self.assertEqual(len(payload["clips"]), 4)
+ 
++    def test_canonical_export_preview_allows_zero_accepted(self) -> None:
++        with self.repo():
++            response = read_canonical_export_preview(self.run.id)
++
++        self.assertEqual(response.accepted_clip_count, 0)
++        self.assertEqual(response.blocked_clip_count, 0)
++
++    def test_create_canonical_export_rejects_zero_accepted(self) -> None:
++        with self.repo():
++            with self.assertRaises(HTTPException) as exc_info:
++                post_canonical_export(self.run.id)
++        self.assertEqual(exc_info.exception.status_code, 409)
++
++    def test_create_canonical_export_writes_manifest_snapshot(self) -> None:
++        with self.repo():
++            accept_response = patch_dataset_clip_lab_route(
++                self.run.id,
++                "candidate_review_clip_000001",
++                DatasetClipLabPatchRequest(
++                    expected_manifest_sha256=self.manifest_sha,
++                    expected_clip_version=0,
++                    review_status="accepted",
++                    transcript_override="Final transcript.",
++                    reviewer_tags=["good energy"],
++                ),
++            )
++            self.assertEqual(accept_response.review_status, "accepted")
++
++            export_response = post_canonical_export(self.run.id)
++
++        export_dir = Path(export_response.snapshot_dir)
++        self.assertTrue((export_dir / "speechcraft_dataset.jsonl").is_file())
++        self.assertTrue((export_dir / "speechcraft_export.json").is_file())
++        self.assertTrue((export_dir / "export_report.json").is_file())
++
++        rows = [
++            json.loads(line)
++            for line in (export_dir / "speechcraft_dataset.jsonl").read_text(encoding="utf-8").splitlines()
++            if line.strip()
++        ]
++        self.assertEqual(len(rows), 1)
++        row = rows[0]
++        self.assertEqual(row["schema_version"], 1)
++        self.assertEqual(row["clip_id"], "candidate_review_clip_000001")
++        self.assertEqual(row["transcript"], "Final transcript.")
++        self.assertEqual(row["lineage"]["source_clip_id"], "candidate_review_clip_000001")
++        self.assertEqual(row["lineage"]["parent_clip_ids"], [])
++        self.assertEqual(row["review"]["status"], "accepted")
++        self.assertEqual(row["review"]["reviewer_tags"], ["good energy"])
++        self.assertEqual(row["audio"]["kind"], "candidate_original")
++        self.assertEqual(row["audio"]["source_audio_sha256"], row["audio"]["sha256"])
++        self.assertIn("candidate_review_clips/candidate_review_clip_000001.wav", row["audio"]["path"])
++        metadata = json.loads((export_dir / "speechcraft_export.json").read_text(encoding="utf-8"))
++        self.assertEqual(metadata["path_mode"], "snapshot_relative")
++        self.assertEqual(export_dir.parent, self.run_root / "artifacts" / "canonical_exports")
++
++    def test_create_canonical_export_uses_rendered_revision_for_accepted_audio_edit(self) -> None:
++        with self.repo():
++            edited = post_dataset_clip_audio_operation_route(
++                self.run.id,
++                "candidate_review_clip_000001",
++                DatasetClipLabAudioOperationRequest(
++                    expected_manifest_sha256=self.manifest_sha,
++                    expected_clip_version=0,
++                    operation={
++                        "kind": "insert_silence",
++                        "at_sample": 10,
++                        "duration_samples": 16,
++                    },
++                ),
++            )
++            self.assertEqual(edited.effective_audio_kind, "rendered_revision")
++            accepted = patch_dataset_clip_lab_route(
++                self.run.id,
++                "candidate_review_clip_000001",
++                DatasetClipLabPatchRequest(
++                    expected_manifest_sha256=self.manifest_sha,
++                    expected_clip_version=edited.clip_version,
++                    review_status="accepted",
++                ),
++            )
++            self.assertEqual(accepted.review_status, "accepted")
++
++            export_response = post_canonical_export(self.run.id)
++
++        rows = [
++            json.loads(line)
++            for line in (Path(export_response.snapshot_dir) / "speechcraft_dataset.jsonl")
++            .read_text(encoding="utf-8")
++            .splitlines()
++            if line.strip()
++        ]
++        row = rows[0]
++        self.assertEqual(row["audio"]["kind"], "rendered_revision")
++        self.assertIn("clip_lab_renders", row["audio"]["path"])
++        self.assertIsInstance(row["audio"]["audio_revision_hash"], str)
++
++    def test_canonical_export_preview_blocks_pending_rendered_audio(self) -> None:
++        manifest = json.loads((self.run_root / "artifacts" / "candidate_review_manifest.json").read_text(encoding="utf-8"))
++        clip_row = next(row for row in manifest if row["id"] == "candidate_review_clip_000001")
++        source_sha = str(clip_row["audio_sha256"])
++        audio_revision_hash = "ab" * 32
++        accepted_hash = compute_content_hash(
++            manifest_transcript=str(clip_row["training_text"]),
++            transcript_override=None,
++            audio_revision_hash=audio_revision_hash,
++            base_audio_hash=source_sha,
++        )
++        save_clip_lab_state(
++            self.run_root,
++            {
++                "schema_version": 1,
++                "stage": "clip_lab_state",
++                "candidate_manifest_sha256": self.manifest_sha,
++                "updated_at": "2026-07-08T00:00:00Z",
++                "clips": {
++                    "candidate_review_clip_000001": {
++                        "clip_version": 1,
++                        "review_status": "accepted",
++                        "accepted_content_hash": accepted_hash,
++                        "accepted_at": "2026-07-08T00:00:00Z",
++                        "reviewer_tags": [],
++                        "updated_at": "2026-07-08T00:00:00Z",
++                        "audio_edit": {
++                            "schema_version": 1,
++                            "source_audio_sha256": source_sha,
++                            "source_sample_rate_hz": SAMPLE_RATE,
++                            "ops": [{"kind": "insert_silence", "at_sample": 10, "duration_samples": 16}],
++                            "redo_ops": [],
++                            "audio_revision_hash": audio_revision_hash,
++                            "rendered_audio_sha256": None,
++                            "render_status": "pending",
++                        },
++                    }
++                },
++            },
++        )
++
++        with self.repo():
++            preview = read_canonical_export_preview(self.run.id)
++
++        self.assertEqual(preview.accepted_clip_count, 1)
++        self.assertEqual(preview.blocked_clip_count, 1)
++        self.assertIn("rendered_audio_not_ready", preview.blocked_reasons[0].reasons)
++
++    def test_canonical_export_preview_blocks_failed_rendered_audio(self) -> None:
++        manifest = json.loads((self.run_root / "artifacts" / "candidate_review_manifest.json").read_text(encoding="utf-8"))
++        clip_row = next(row for row in manifest if row["id"] == "candidate_review_clip_000001")
++        source_sha = str(clip_row["audio_sha256"])
++        audio_revision_hash = "cd" * 32
++        accepted_hash = compute_content_hash(
++            manifest_transcript=str(clip_row["training_text"]),
++            transcript_override=None,
++            audio_revision_hash=audio_revision_hash,
++            base_audio_hash=source_sha,
++        )
++        save_clip_lab_state(
++            self.run_root,
++            {
++                "schema_version": 1,
++                "stage": "clip_lab_state",
++                "candidate_manifest_sha256": self.manifest_sha,
++                "updated_at": "2026-07-08T00:00:00Z",
++                "clips": {
++                    "candidate_review_clip_000001": {
++                        "clip_version": 1,
++                        "review_status": "accepted",
++                        "accepted_content_hash": accepted_hash,
++                        "accepted_at": "2026-07-08T00:00:00Z",
++                        "reviewer_tags": [],
++                        "updated_at": "2026-07-08T00:00:00Z",
++                        "audio_edit": {
++                            "schema_version": 1,
++                            "source_audio_sha256": source_sha,
++                            "source_sample_rate_hz": SAMPLE_RATE,
++                            "ops": [{"kind": "insert_silence", "at_sample": 10, "duration_samples": 16}],
++                            "redo_ops": [],
++                            "audio_revision_hash": audio_revision_hash,
++                            "rendered_audio_sha256": None,
++                            "render_status": "failed",
++                        },
++                    }
++                },
++            },
++        )
++
++        with self.repo():
++            preview = read_canonical_export_preview(self.run.id)
++
++        self.assertEqual(preview.accepted_clip_count, 1)
++        self.assertEqual(preview.blocked_clip_count, 1)
++        self.assertIn("rendered_audio_not_ready", preview.blocked_reasons[0].reasons)
++
++    def test_canonical_export_preview_blocks_missing_rendered_wav(self) -> None:
++        manifest = json.loads((self.run_root / "artifacts" / "candidate_review_manifest.json").read_text(encoding="utf-8"))
++        clip_row = next(row for row in manifest if row["id"] == "candidate_review_clip_000001")
++        source_sha = str(clip_row["audio_sha256"])
++        audio_revision_hash = "ef" * 32
++        rendered_sha = "11" * 32
++        accepted_hash = compute_content_hash(
++            manifest_transcript=str(clip_row["training_text"]),
++            transcript_override=None,
++            audio_revision_hash=audio_revision_hash,
++            base_audio_hash=source_sha,
++        )
++        save_clip_lab_state(
++            self.run_root,
++            {
++                "schema_version": 1,
++                "stage": "clip_lab_state",
++                "candidate_manifest_sha256": self.manifest_sha,
++                "updated_at": "2026-07-08T00:00:00Z",
++                "clips": {
++                    "candidate_review_clip_000001": {
++                        "clip_version": 1,
++                        "review_status": "accepted",
++                        "accepted_content_hash": accepted_hash,
++                        "accepted_at": "2026-07-08T00:00:00Z",
++                        "reviewer_tags": [],
++                        "updated_at": "2026-07-08T00:00:00Z",
++                        "audio_edit": {
++                            "schema_version": 1,
++                            "source_audio_sha256": source_sha,
++                            "source_sample_rate_hz": SAMPLE_RATE,
++                            "ops": [{"kind": "insert_silence", "at_sample": 10, "duration_samples": 16}],
++                            "redo_ops": [],
++                            "audio_revision_hash": audio_revision_hash,
++                            "rendered_audio_sha256": rendered_sha,
++                            "render_status": "ready",
++                        },
++                    }
++                },
++            },
++        )
++
++        with self.repo():
++            preview = read_canonical_export_preview(self.run.id)
++
++        self.assertEqual(preview.blocked_clip_count, 1)
++        self.assertIn("rendered_audio_missing", preview.blocked_reasons[0].reasons)
++
++    def test_canonical_export_preview_blocks_rendered_hash_mismatch(self) -> None:
++        manifest = json.loads((self.run_root / "artifacts" / "candidate_review_manifest.json").read_text(encoding="utf-8"))
++        clip_row = next(row for row in manifest if row["id"] == "candidate_review_clip_000001")
++        source_sha = str(clip_row["audio_sha256"])
++        audio_revision_hash = "12" * 32
++        accepted_hash = compute_content_hash(
++            manifest_transcript=str(clip_row["training_text"]),
++            transcript_override=None,
++            audio_revision_hash=audio_revision_hash,
++            base_audio_hash=source_sha,
++        )
++        render_path = self.run_root / "artifacts" / "clip_lab_renders" / "candidate_review_clip_000001" / f"{audio_revision_hash}.wav"
++        render_path.parent.mkdir(parents=True, exist_ok=True)
++        render_path.write_bytes(b"not-the-expected-hash")
++        save_clip_lab_state(
++            self.run_root,
++            {
++                "schema_version": 1,
++                "stage": "clip_lab_state",
++                "candidate_manifest_sha256": self.manifest_sha,
++                "updated_at": "2026-07-08T00:00:00Z",
++                "clips": {
++                    "candidate_review_clip_000001": {
++                        "clip_version": 1,
++                        "review_status": "accepted",
++                        "accepted_content_hash": accepted_hash,
++                        "accepted_at": "2026-07-08T00:00:00Z",
++                        "reviewer_tags": [],
++                        "updated_at": "2026-07-08T00:00:00Z",
++                        "audio_edit": {
++                            "schema_version": 1,
++                            "source_audio_sha256": source_sha,
++                            "source_sample_rate_hz": SAMPLE_RATE,
++                            "ops": [{"kind": "insert_silence", "at_sample": 10, "duration_samples": 16}],
++                            "redo_ops": [],
++                            "audio_revision_hash": audio_revision_hash,
++                            "rendered_audio_sha256": "22" * 32,
++                            "render_status": "ready",
++                        },
++                    }
++                },
++            },
++        )
++
++        with self.repo():
++            preview = read_canonical_export_preview(self.run.id)
++
++        self.assertEqual(preview.blocked_clip_count, 1)
++        self.assertIn("rendered_audio_hash_mismatch", preview.blocked_reasons[0].reasons)
++
++    def test_canonical_export_preview_blocks_candidate_hash_mismatch(self) -> None:
++        with self.repo():
++            accepted = patch_dataset_clip_lab_route(
++                self.run.id,
++                "candidate_review_clip_000001",
++                DatasetClipLabPatchRequest(
++                    expected_manifest_sha256=self.manifest_sha,
++                    expected_clip_version=0,
++                    review_status="accepted",
++                ),
++            )
++            self.assertEqual(accepted.review_status, "accepted")
++
++        candidate_wav = self.run_root / "artifacts" / "candidate_review_clips" / "candidate_review_clip_000001.wav"
++        candidate_wav.write_bytes(b"mutated-audio")
++
++        with self.repo():
++            preview = read_canonical_export_preview(self.run.id)
++
++        self.assertEqual(preview.accepted_clip_count, 1)
++        self.assertEqual(preview.blocked_clip_count, 1)
++        self.assertIn("candidate_audio_hash_mismatch", preview.blocked_reasons[0].reasons)
++
++    def test_canonical_export_preview_rejects_stale_state(self) -> None:
++        save_clip_lab_state(
++            self.run_root,
++            {
++                "schema_version": 1,
++                "stage": "clip_lab_state",
++                "candidate_manifest_sha256": "stale-manifest-sha",
++                "updated_at": "2026-07-08T00:00:00Z",
++                "clips": {},
++            },
++        )
++
++        with self.repo():
++            with self.assertRaises(HTTPException) as exc_info:
++                read_canonical_export_preview(self.run.id)
++        self.assertEqual(exc_info.exception.status_code, 409)
++
++    def test_canonical_export_create_rejects_invalid_state(self) -> None:
++        save_clip_lab_state(
++            self.run_root,
++            {
++                "schema_version": 1,
++                "stage": "clip_lab_state",
++                "candidate_manifest_sha256": self.manifest_sha,
++                "updated_at": "2026-07-08T00:00:00Z",
++                "clips": {
++                    "candidate_review_clip_000001": {
++                        "clip_version": 1,
++                        "review_status": "accepted",
++                        "reviewer_tags": ["Accepted"],
++                    }
++                },
++            },
++        )
++
++        with self.repo():
++            with self.assertRaises(HTTPException) as exc_info:
++                post_canonical_export(self.run.id)
++        self.assertEqual(exc_info.exception.status_code, 409)
++
++    def test_list_canonical_exports_returns_newest_first_and_skips_corrupt_dirs(self) -> None:
++        exports_root = self.run_root / "artifacts" / "canonical_exports"
++        older = exports_root / "canonical_export_2026-07-08_010101_aaaaaaaa"
++        newer = exports_root / "canonical_export_2026-07-08_020202_bbbbbbbb"
++        corrupt = exports_root / "canonical_export_corrupt"
++        older.mkdir(parents=True, exist_ok=True)
++        newer.mkdir(parents=True, exist_ok=True)
++        corrupt.mkdir(parents=True, exist_ok=True)
++        (older / "speechcraft_export.json").write_text(
++            json.dumps(
++                {
++                    "schema_version": 1,
++                    "export_id": older.name,
++                    "run_id": self.run.id,
++                    "project_id": "project-1",
++                    "created_at": "2026-07-08T01:01:01Z",
++                    "accepted_clip_count": 2,
++                    "total_duration_sec": 12.5,
++                }
++            ),
++            encoding="utf-8",
++        )
++        (newer / "speechcraft_export.json").write_text(
++            json.dumps(
++                {
++                    "schema_version": 1,
++                    "export_id": newer.name,
++                    "run_id": self.run.id,
++                    "project_id": "project-1",
++                    "created_at": "2026-07-08T02:02:02Z",
++                    "accepted_clip_count": 3,
++                    "total_duration_sec": 18.0,
++                }
++            ),
++            encoding="utf-8",
++        )
++        (corrupt / "speechcraft_export.json").write_text("{bad json", encoding="utf-8")
++
++        with self.repo():
++            exports = read_canonical_exports(self.run.id)
++
++        self.assertEqual([item.export_id for item in exports], [newer.name, older.name])
++
+     def test_patch_transcript_override_then_get(self) -> None:
+         with self.repo():
+             patch_response = self.client.patch(
+diff --git a/frontend/src/api.ts b/frontend/src/api.ts
+index 4f4e13a..d61acc3 100644
+--- a/frontend/src/api.ts
++++ b/frontend/src/api.ts
+@@ -1,4 +1,6 @@
+ import type {
++  CanonicalExportPreview,
++  CanonicalExportSummary,
+   ClipLabItem,
+   DatasetClipLabClipRow,
+   DatasetClipLabAudioOperationRequest,
+@@ -307,6 +309,27 @@ export async function fetchDatasetClipLab(runId: string): Promise<DatasetClipLab
+   return await requestJson<DatasetClipLabView>(`${API_BASE}/api/dataset-runs/${runId}/clip-lab`);
+ }
+ 
++export async function fetchCanonicalExportPreview(runId: string): Promise<CanonicalExportPreview> {
++  return await requestJson<CanonicalExportPreview>(
++    `${API_BASE}/api/dataset-runs/${runId}/canonical-export-preview`,
++  );
++}
++
++export async function createCanonicalExport(runId: string): Promise<CanonicalExportSummary> {
++  return await requestJson<CanonicalExportSummary>(
++    `${API_BASE}/api/dataset-runs/${runId}/canonical-exports`,
++    {
++      method: "POST",
++    },
++  );
++}
++
++export async function fetchCanonicalExports(runId: string): Promise<CanonicalExportSummary[]> {
++  return await requestJson<CanonicalExportSummary[]>(
++    `${API_BASE}/api/dataset-runs/${runId}/canonical-exports`,
++  );
++}
++
+ export async function patchDatasetClipLabClip(
+   runId: string,
+   clipId: string,
+diff --git a/frontend/src/pages/LabelPage.tsx b/frontend/src/pages/LabelPage.tsx
+index 99158b9..3173724 100644
+--- a/frontend/src/pages/LabelPage.tsx
++++ b/frontend/src/pages/LabelPage.tsx
+@@ -3,12 +3,13 @@ import {
+   ApiError,
+   appendClipEdlOperation,
+   appendDatasetAudioOperation,
++  createCanonicalExport,
+   fetchClipLabItem,
++  fetchCanonicalExportPreview,
+   fetchDatasetClipLab,
+   fetchDatasetQc,
+   fetchDatasetSlicerResults,
+   fetchProjectDatasetRuns,
+-  fetchProjectExports,
+   fetchProjectRecordings,
+   fetchProjectReferenceAssets,
+   markDatasetClipAsReferenceCandidate,
+@@ -54,6 +55,7 @@ import {
+   type DatasetQcScores,
+ } from "../workspace/workspace-helpers";
+ import type {
++  CanonicalExportPreview,
+   ClipLabItem,
+   ClipLabItemRef,
+   ClipLabCapabilities,
+@@ -67,7 +69,6 @@ import type {
+   DatasetQcPayload,
+   DatasetRun,
+   DatasetSlicerResults,
+-  ExportRun,
+   Project,
+   ReferenceAssetSummary,
+   ReviewStatus,
+@@ -418,7 +419,6 @@ export default function LabelPage({
+   const [recordings, setRecordings] = useState<SourceRecordingQueue[]>([]);
+   const [activeClip, setActiveClip] = useState<ClipLabItem | null>(null);
+   const [visibleQueueClipIds, setVisibleQueueClipIds] = useState<string[]>([]);
+-  const [exportRuns, setExportRuns] = useState<ExportRun[]>([]);
+   const [referenceAssets, setReferenceAssets] = useState<ReferenceAssetSummary[]>([]);
+   const [datasetSlicerResults, setDatasetSlicerResults] = useState<DatasetSlicerResults | null>(null);
+   const [datasetRuns, setDatasetRuns] = useState<DatasetRun[]>([]);
+@@ -435,6 +435,14 @@ export default function LabelPage({
+   const [datasetClipLab, setDatasetClipLabState] = useState<DatasetClipLabView | null>(null);
+   const [datasetClipLabLoadState, setDatasetClipLabLoadStateInternal] =
+     useState<DatasetClipLabLoadState>("idle");
++  const [canonicalExportPreview, setCanonicalExportPreview] = useState<CanonicalExportPreview | null>(null);
++  const [canonicalExportPreviewStatus, setCanonicalExportPreviewStatus] =
++    useState<"idle" | "loading" | "ready" | "error">("idle");
++  const [canonicalExportFeedback, setCanonicalExportFeedback] = useState<{
++    tone: "error" | "success";
++    message: string;
++  } | null>(null);
++  const [isCreatingCanonicalExport, setIsCreatingCanonicalExport] = useState(false);
+   const datasetClipLabRef = useRef<DatasetClipLabView | null>(null);
+   const datasetClipLabLoadStateRef = useRef<DatasetClipLabLoadState>("idle");
+   const activeClipItemRef = useRef(activeClipItem);
+@@ -457,6 +465,30 @@ export default function LabelPage({
+     setDatasetClipLabLoadStateInternal(next);
+   }
+ 
++  async function refreshCanonicalExportPreview(
++    runId: string,
++    options?: { suppress409Notice?: boolean },
++  ): Promise<void> {
++    setCanonicalExportPreviewStatus("loading");
++    try {
++      const preview = await fetchCanonicalExportPreview(runId);
++      if (datasetClipLabRef.current?.run_id !== runId) {
++        return;
++      }
++      setCanonicalExportPreview(preview);
++      setCanonicalExportPreviewStatus("ready");
++    } catch (error) {
++      if (datasetClipLabRef.current?.run_id !== runId) {
++        return;
++      }
++      setCanonicalExportPreview(null);
++      setCanonicalExportPreviewStatus("error");
++      if (!(error instanceof ApiError && error.status === 409 && options?.suppress409Notice)) {
++        setWorkspaceNotice(getErrorMessage(error, "Canonical export preview failed to load."));
++      }
++    }
++  }
++
+   const patchCoordinator = useMemo(
+     () =>
+       createClipLabPatchCoordinator({
+@@ -510,6 +542,7 @@ export default function LabelPage({
+     if (activeClipItemRef.current?.id === updated.clip_id) {
+       refreshActiveDatasetClip(updated.clip_id, updated);
+     }
++    void refreshCanonicalExportPreview(runId, { suppress409Notice: true });
+   };
+ 
+   conflictRef.current = async (runId, clipId) => {
+@@ -537,6 +570,7 @@ export default function LabelPage({
+         refreshActiveDatasetClip(clipId, refreshedRow);
+       }
+     }
++    await refreshCanonicalExportPreview(runId, { suppress409Notice: true });
+     setWorkspaceNotice("Clip Lab state was out of date and has been reloaded.");
+   };
+ 
+@@ -626,10 +660,11 @@ export default function LabelPage({
+     if (!projectId) {
+       setSlices([]);
+       setRecordings([]);
+-      setExportRuns([]);
+       setReferenceAssets([]);
+       setDatasetClipLab(null);
+       setDatasetClipLabLoadState("idle");
++      setCanonicalExportPreview(null);
++      setCanonicalExportPreviewStatus("idle");
+       onActiveClipItemChange(null);
+       setVisibleQueueClipIds([]);
+       setWorkspaceStatus("ready");
+@@ -645,9 +680,10 @@ export default function LabelPage({
+         setDatasetSlicerResults(null);
+         setDatasetClipLab(null);
+         setDatasetClipLabLoadState("idle");
++        setCanonicalExportPreview(null);
++        setCanonicalExportPreviewStatus("idle");
+         setSlices([]);
+         setRecordings([]);
+-        setExportRuns([]);
+         setReferenceAssets([]);
+         onActiveClipItemChange(null);
+         setVisibleQueueClipIds([]);
+@@ -656,10 +692,9 @@ export default function LabelPage({
+         return;
+       }
+ 
+-      const [results, nextRecordings, nextExports] = await Promise.all([
++      const [results, nextRecordings] = await Promise.all([
+         fetchDatasetSlicerResults(datasetRunId),
+         fetchProjectRecordings(projectId),
+-        fetchProjectExports(projectId),
+       ]);
+       let nextReferenceAssets: ReferenceAssetSummary[] = [];
+       let datasetQcPayload: DatasetQcPayload | null = null;
+@@ -699,6 +734,10 @@ export default function LabelPage({
+ 
+       setDatasetClipLab(nextClipLab);
+       setDatasetClipLabLoadState(nextClipLabLoadState);
++      await refreshCanonicalExportPreview(datasetRunId, { suppress409Notice: true });
++      if (latestWorkspaceRequestRef.current !== requestId) {
++        return;
++      }
+       if (nextClipLabLoadState === "unavailable") {
+         setWorkspaceNotice(
+           getErrorMessage(
+@@ -727,7 +766,6 @@ export default function LabelPage({
+       if (!options?.silent) {
+         setActiveClip(null);
+       }
+-      setExportRuns(nextExports);
+       setReferenceAssets(nextReferenceAssets);
+       const sortedSlices = sortClipsForQueue(nextSlices, queueSortMode);
+       const nextActiveClip =
+@@ -759,7 +797,6 @@ export default function LabelPage({
+       setSlices([]);
+       setRecordings([]);
+       setActiveClip(null);
+-      setExportRuns([]);
+       setReferenceAssets([]);
+       onActiveClipItemChange(null);
+       setVisibleQueueClipIds([]);
+@@ -806,6 +843,9 @@ export default function LabelPage({
+     selectLabDatasetRun(runId);
+     setDatasetClipLab(null);
+     setDatasetClipLabLoadState("idle");
++    setCanonicalExportPreview(null);
++    setCanonicalExportPreviewStatus("idle");
++    setCanonicalExportFeedback(null);
+     onActiveClipItemChange(null);
+     setActiveClip(null);
+   }
+@@ -1349,6 +1389,14 @@ export default function LabelPage({
+       : null;
+   const canUndo = Boolean(activeClip?.can_undo);
+   const canRedo = Boolean(activeClip?.can_redo);
++  const canTriggerCanonicalExport =
++    Boolean(datasetRunId)
++    && canonicalExportPreviewStatus === "ready"
++    && (canonicalExportPreview?.accepted_clip_count ?? 0) > 0
++    && (canonicalExportPreview?.blocked_clip_count ?? 0) === 0
++    && !datasetClipLab?.stale_state
++    && !datasetClipLab?.invalid_state
++    && !isCreatingCanonicalExport;
+   const activeCommitId = activeClip?.active_commit?.id ?? null;
+   const existingReferenceForCurrentState = useMemo(() => {
+     if (!activeCommitId || !activeClip) {
+@@ -1370,6 +1418,29 @@ export default function LabelPage({
+     };
+   }, [onHeaderActionsChange]);
+ 
++  async function handleCreateCanonicalExport() {
++    if (!datasetRunId || !canTriggerCanonicalExport) {
++      return;
++    }
++    setCanonicalExportFeedback(null);
++    setIsCreatingCanonicalExport(true);
++    try {
++      const result = await createCanonicalExport(datasetRunId);
++      await refreshCanonicalExportPreview(datasetRunId, { suppress409Notice: true });
++      setCanonicalExportFeedback({
++        tone: "success",
++        message: `Exported ${result.accepted_clip_count} clips.`,
++      });
++    } catch (error) {
++      setCanonicalExportFeedback({
++        tone: "error",
++        message: getErrorMessage(error, "Canonical export failed."),
++      });
++    } finally {
++      setIsCreatingCanonicalExport(false);
++    }
++  }
++
+   const datasetClipLabEditable = isDatasetClipLabEditable(datasetMode, datasetClipLabLoadState, datasetClipLab);
+   const activeClipLabRow =
+     datasetClipLabEditable && activeClipItem ? clipLabRowById.get(activeClipItem.id) : undefined;
+@@ -1379,18 +1450,21 @@ export default function LabelPage({
+         machineFindings: activeClipLabRow.pipeline_findings,
+         reviewerTags: activeClipLabRow.reviewer_tags,
+         acceptanceStale: activeClipLabRow.acceptance_stale,
+-        onReviewStatusChange: (status: ReviewStatus) =>
+-          patchDatasetClipLab(activeClipLabRow.clip_id, () => ({ review_status: status })),
+-        onAddReviewerTag: (tag: string) =>
+-          patchDatasetClipLab(activeClipLabRow.clip_id, (row) => ({
++        onReviewStatusChange: async (status: ReviewStatus) => {
++          await patchDatasetClipLab(activeClipLabRow.clip_id, () => ({ review_status: status }));
++        },
++        onAddReviewerTag: async (tag: string) => {
++          await patchDatasetClipLab(activeClipLabRow.clip_id, (row) => ({
+             reviewer_tags: [...row.reviewer_tags, tag],
+-          })),
+-        onRemoveReviewerTag: (tag: string) =>
+-          patchDatasetClipLab(activeClipLabRow.clip_id, (row) => ({
++          }));
++        },
++        onRemoveReviewerTag: async (tag: string) => {
++          await patchDatasetClipLab(activeClipLabRow.clip_id, (row) => ({
+             reviewer_tags: row.reviewer_tags.filter(
+               (entry) => entry.toLowerCase() !== tag.toLowerCase(),
+             ),
+-          })),
++          }));
++        },
+       }
+     : undefined;
+   const datasetTagReadOnly = buildDatasetTagReadOnlyConfig(
+@@ -1496,7 +1570,12 @@ export default function LabelPage({
+             acceptedRejectedRatio={acceptedRejectedRatio}
+             predictedOutputSeconds={predictedOutputSeconds}
+             progressPercent={progressPercent}
+-            exportRuns={exportRuns}
++            canonicalExportPreview={canonicalExportPreview}
++            canonicalExportPreviewStatus={canonicalExportPreviewStatus}
++            canonicalExportFeedback={canonicalExportFeedback}
++            canTriggerCanonicalExport={canTriggerCanonicalExport}
++            isCreatingCanonicalExport={isCreatingCanonicalExport}
++            onCreateCanonicalExport={() => void handleCreateCanonicalExport()}
+             onRetryLoad={() => void loadWorkspace(activeProject?.id)}
+             onStatusChange={(status) => {
+               if (!activeClip) {
+diff --git a/frontend/src/types.ts b/frontend/src/types.ts
+index 93059a6..632cc48 100644
+--- a/frontend/src/types.ts
++++ b/frontend/src/types.ts
+@@ -300,6 +300,32 @@ export type DatasetClipLabView = {
+   clips: DatasetClipLabClipRow[];
+ };
+ 
++export type CanonicalExportBlockedReason = {
++  clip_id: string;
++  reasons: string[];
++};
++
++export type CanonicalExportPreview = {
++  run_id: string;
++  accepted_clip_count: number;
++  total_duration_sec: number;
++  original_audio_count: number;
++  edited_audio_count: number;
++  blocked_clip_count: number;
++  blocked_reasons: CanonicalExportBlockedReason[];
++};
++
++export type CanonicalExportSummary = {
++  export_id: string;
++  run_id: string;
++  project_id: string;
++  created_at: string;
++  accepted_clip_count: number;
++  total_duration_sec: number;
++  snapshot_dir: string;
++  manifest_path: string;
++};
++
+ export type DatasetClipLabPatchRequest = {
+   expected_manifest_sha256: string;
+   expected_clip_version: number;
+diff --git a/frontend/src/workspace/InspectorPane.tsx b/frontend/src/workspace/InspectorPane.tsx
+index 3d2e0ae..6e4d830 100644
+--- a/frontend/src/workspace/InspectorPane.tsx
++++ b/frontend/src/workspace/InspectorPane.tsx
+@@ -1,5 +1,11 @@
+ import { useEffect, useState, type FormEvent } from "react";
+-import type { ClipLabItem, DatasetRun, ExportRun, ReferenceAssetSummary, ReviewStatus } from "../types";
++import type {
++  CanonicalExportPreview,
++  ClipLabItem,
++  DatasetRun,
++  ReferenceAssetSummary,
++  ReviewStatus,
++} from "../types";
+ import WorkspaceStatePanel from "./WorkspaceStatePanel";
+ import {
+   formatDurationCompact,
+@@ -35,7 +41,12 @@ type InspectorPaneProps = {
+   acceptedRejectedRatio: number | null;
+   predictedOutputSeconds: number | null;
+   progressPercent: number | null;
+-  exportRuns: ExportRun[];
++  canonicalExportPreview: CanonicalExportPreview | null;
++  canonicalExportPreviewStatus: "idle" | "loading" | "ready" | "error";
++  canonicalExportFeedback: { tone: "error" | "success"; message: string } | null;
++  canTriggerCanonicalExport: boolean;
++  isCreatingCanonicalExport: boolean;
++  onCreateCanonicalExport: () => void;
+   onRetryLoad: () => void;
+   onStatusChange: (status: ReviewStatus) => void;
+   onVariantSelect: (variantId: string) => void;
+@@ -62,7 +73,12 @@ export default function InspectorPane({
+   acceptedRejectedRatio,
+   predictedOutputSeconds,
+   progressPercent,
+-  exportRuns,
++  canonicalExportPreview,
++  canonicalExportPreviewStatus,
++  canonicalExportFeedback,
++  canTriggerCanonicalExport,
++  isCreatingCanonicalExport,
++  onCreateCanonicalExport,
+   onRetryLoad,
+   onStatusChange,
+   onVariantSelect,
+@@ -135,6 +151,8 @@ export default function InspectorPane({
+     );
+   }
+ 
++  const exportButtonLabel = `Export accepted clips (${canonicalExportPreview?.accepted_clip_count ?? 0})`;
++
+   return (
+     <aside className="inspector-column panel">
+       <div className="panel-header">
+@@ -142,6 +160,21 @@ export default function InspectorPane({
+           <p className="eyebrow">Inspector</p>
+           <h2>Clip Review</h2>
+         </div>
++        <div className="inspector-header-actions">
++          <button
++            type="button"
++            className="primary-button"
++            disabled={!canTriggerCanonicalExport || isCreatingCanonicalExport}
++            onClick={onCreateCanonicalExport}
++          >
++            {isCreatingCanonicalExport ? "Exporting..." : exportButtonLabel}
++          </button>
++          {canonicalExportFeedback ? (
++            <p className={`inspector-inline-feedback ${canonicalExportFeedback.tone}`}>
++              {canonicalExportFeedback.message}
++            </p>
++          ) : null}
++        </div>
+       </div>
+ 
+       {workspacePhase === "loading" ? (
+@@ -230,6 +263,45 @@ export default function InspectorPane({
+ 
+           {renderDatasetRunPicker()}
+ 
++          <section className="inspector-block">
++            <h3>Canonical Export</h3>
++            {canonicalExportPreviewStatus === "loading" ? (
++              <p className="muted-copy">Checking accepted export set...</p>
++            ) : canonicalExportPreviewStatus === "error" ? (
++              <p className="muted-copy">Canonical export preview unavailable.</p>
++            ) : canonicalExportPreview ? (
++              <div className="stats-table">
++                <div className="stats-row">
++                  <span>Accepted clips</span>
++                  <span>-</span>
++                  <span>{canonicalExportPreview.accepted_clip_count}</span>
++                </div>
++                <div className="stats-row">
++                  <span>Accepted duration</span>
++                  <span>-</span>
++                  <span>{formatDurationCompact(canonicalExportPreview.total_duration_sec)}</span>
++                </div>
++                <div className="stats-row">
++                  <span>Original audio</span>
++                  <span>-</span>
++                  <span>{canonicalExportPreview.original_audio_count}</span>
++                </div>
++                <div className="stats-row">
++                  <span>Edited audio</span>
++                  <span>-</span>
++                  <span>{canonicalExportPreview.edited_audio_count}</span>
++                </div>
++                <div className="stats-row">
++                  <span>Blocked clips</span>
++                  <span>-</span>
++                  <span>{canonicalExportPreview.blocked_clip_count}</span>
++                </div>
++              </div>
++            ) : (
++              <p className="muted-copy">Select a dataset run to preview canonical export.</p>
++            )}
++          </section>
++
+           <section className="inspector-block">
+             <h3>Waveform EDL</h3>
+             {activeClip.active_commit?.edl_operations.length ? (
+@@ -388,29 +460,6 @@ export default function InspectorPane({
+             ) : null}
+           </section>
+ 
+-          <section className="inspector-block">
+-            <h3>Export Runs</h3>
+-            {exportRuns.length > 0 ? (
+-              <div className="commit-list">
+-                {[...exportRuns].reverse().map((run) => (
+-                  <div key={run.id} className="commit-card">
+-                    <div className="commit-row">
+-                      <strong>{run.id}</strong>
+-                      <span>{run.status}</span>
+-                    </div>
+-                    <p>{run.manifest_path}</p>
+-                    <span className="commit-time">
+-                      {run.accepted_clip_count} slice(s)
+-                      {run.completed_at ? ` • ${new Date(run.completed_at).toLocaleString()}` : ""}
+-                    </span>
+-                  </div>
+-                ))}
+-              </div>
+-            ) : (
+-              <p className="muted-copy">No export runs yet.</p>
+-            )}
+-          </section>
+-
+           <section className="inspector-block">
+             <h3>Provenance</h3>
+             <dl>
+diff --git a/backend/app/canonical_export.py b/backend/app/canonical_export.py
+new file mode 100644
+index 0000000..119b379
+--- /dev/null
++++ b/backend/app/canonical_export.py
+@@ -0,0 +1,407 @@
++from __future__ import annotations
++
++import json
++import os
++import shutil
++import wave
++from datetime import datetime, timezone
++from pathlib import Path
++from typing import Any
++from uuid import uuid4
++
++from sqlmodel import Session
++
++from .clip_lab_audio import sha256_file
++from .clip_lab_audio_ops import render_cache_path
++from .clip_lab_state import (
++    ClipLabValidationError,
++    build_clip_lab_view,
++    clip_lab_run_lock,
++    index_manifest_by_clip_id,
++    load_candidate_manifest,
++    load_clip_lab_state,
++)
++from .dataset_runs import _run_root
++from .models import (
++    CanonicalExportBlockedReasonView,
++    CanonicalExportPreviewView,
++    CanonicalExportSummaryView,
++    ProcessingRun,
++)
++
++SCHEMA_VERSION = 1
++EXPORTS_RELATIVE_DIR = Path("artifacts/canonical_exports")
++MANIFEST_FILENAME = "speechcraft_dataset.jsonl"
++METADATA_FILENAME = "speechcraft_export.json"
++REPORT_FILENAME = "export_report.json"
++
++
++class CanonicalExportConflictError(ValueError):
++    """Current Clip Lab state cannot produce a canonical export."""
++
++
++def _utc_now() -> datetime:
++    return datetime.now(timezone.utc).replace(microsecond=0)
++
++
++def _utc_now_iso() -> str:
++    return _utc_now().isoformat().replace("+00:00", "Z")
++
++
++def _canonical_exports_root(run_root: Path) -> Path:
++    return run_root / EXPORTS_RELATIVE_DIR
++
++
++def _format_export_id(now: datetime) -> str:
++    return f"canonical_export_{now.strftime('%Y-%m-%d_%H%M%S')}_{uuid4().hex[:8]}"
++
++
++def _next_export_id(exports_root: Path) -> str:
++    while True:
++        candidate = _format_export_id(_utc_now())
++        if not (exports_root / candidate).exists():
++            return candidate
++
++
++def _read_wave_metadata(path: Path) -> dict[str, int | float]:
++    with wave.open(str(path), "rb") as handle:
++        frame_count = int(handle.getnframes())
++        sample_rate_hz = int(handle.getframerate())
++        channels = int(handle.getnchannels())
++    if sample_rate_hz <= 0:
++        raise ClipLabValidationError(f"audio file has invalid sample rate: {path}")
++    return {
++        "sample_rate_hz": sample_rate_hz,
++        "channels": channels,
++        "duration_sec": round(frame_count / sample_rate_hz, 6),
++    }
++
++
++def _resolve_manifest_audio_path(run_root: Path, manifest_row: dict[str, Any], *, clip_id: str) -> Path:
++    audio_path = manifest_row.get("audio_path")
++    if not isinstance(audio_path, str) or not audio_path.strip():
++        raise ClipLabValidationError(f"{clip_id} candidate manifest row is missing audio_path")
++    return run_root / audio_path
++
++
++def _relative_path(from_dir: Path, to_path: Path) -> str:
++    return os.path.relpath(to_path, start=from_dir)
++
++
++def _serialize_json(path: Path, payload: dict[str, Any]) -> None:
++    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
++
++
++def _quality_payload(clip_view: dict[str, Any]) -> dict[str, float] | None:
++    quality: dict[str, float] = {}
++    transcript_match = clip_view.get("transcript_match")
++    speaker_check = clip_view.get("speaker_check")
++    if isinstance(transcript_match, (int, float)):
++        quality["transcript_match"] = round(float(transcript_match), 2)
++    if isinstance(speaker_check, (int, float)):
++        quality["speaker_check"] = round(float(speaker_check), 2)
++    return quality or None
++
++
++def _build_clip_export_row(
++    *,
++    export_dir: Path,
++    run_root: Path,
++    manifest_row: dict[str, Any],
++    clip_view: dict[str, Any],
++    clip_entry: dict[str, Any] | None = None,
++) -> tuple[dict[str, Any] | None, list[str], str | None, float]:
++    clip_id = str(clip_view["clip_id"])
++    transcript = clip_view["transcript"]
++    if not isinstance(transcript, str):
++        return None, ["transcript_missing"], None, 0.0
++
++    source_audio_sha256 = clip_view.get("source_audio_sha256")
++    if not isinstance(source_audio_sha256, str) or not source_audio_sha256:
++        return None, ["source_audio_sha256_missing"], None, 0.0
++
++    audio_path: Path | None = None
++    audio_sha256: str | None = None
++    audio_revision_hash: str | None = None
++    reasons: list[str] = []
++    audio_kind: str
++    audio_edit = clip_entry.get("audio_edit") if isinstance(clip_entry, dict) else None
++    has_active_audio_edit = isinstance(audio_edit, dict) and bool(audio_edit.get("ops") or [])
++
++    if has_active_audio_edit:
++        audio_kind = "rendered_revision"
++        render_status = audio_edit.get("render_status")
++        audio_revision_hash = audio_edit.get("audio_revision_hash")
++        rendered_audio_sha256 = audio_edit.get("rendered_audio_sha256")
++        if render_status != "ready":
++            reasons.append("rendered_audio_not_ready")
++        if not isinstance(audio_revision_hash, str) or not audio_revision_hash:
++            reasons.append("audio_revision_hash_missing")
++        if not isinstance(rendered_audio_sha256, str) or not rendered_audio_sha256:
++            reasons.append("rendered_audio_sha256_missing")
++        if not reasons:
++            audio_path = render_cache_path(run_root, clip_id, audio_revision_hash)
++            if not audio_path.is_file():
++                reasons.append("rendered_audio_missing")
++            elif sha256_file(audio_path) != rendered_audio_sha256:
++                reasons.append("rendered_audio_hash_mismatch")
++            else:
++                audio_sha256 = rendered_audio_sha256
++    else:
++        audio_kind = "candidate_original"
++        audio_path = _resolve_manifest_audio_path(run_root, manifest_row, clip_id=clip_id)
++        if not audio_path.is_file():
++            reasons.append("candidate_audio_missing")
++        elif sha256_file(audio_path) != source_audio_sha256:
++            reasons.append("candidate_audio_hash_mismatch")
++        else:
++            audio_sha256 = source_audio_sha256
++
++    if reasons or audio_path is None or audio_sha256 is None:
++        return None, reasons, audio_kind, 0.0
++
++    audio_meta = _read_wave_metadata(audio_path)
++    audio_payload: dict[str, Any] = {
++        "path": _relative_path(export_dir, audio_path),
++        "kind": audio_kind,
++        "sha256": audio_sha256,
++        "source_audio_sha256": source_audio_sha256,
++        "sample_rate_hz": audio_meta["sample_rate_hz"],
++        "channels": audio_meta["channels"],
++        "duration_sec": audio_meta["duration_sec"],
++    }
++    if audio_kind == "rendered_revision" and audio_revision_hash:
++        audio_payload["audio_revision_hash"] = audio_revision_hash
++
++    row: dict[str, Any] = {
++        "schema_version": SCHEMA_VERSION,
++        "clip_id": clip_id,
++        "transcript": transcript,
++        "lineage": {
++            "source_clip_id": clip_id,
++            "parent_clip_ids": [],
++        },
++        "audio": audio_payload,
++        "review": {
++            "status": "accepted",
++            "reviewer_tags": list(clip_view.get("reviewer_tags") or []),
++        },
++    }
++    quality = _quality_payload(clip_view)
++    if quality:
++        row["quality"] = quality
++    return row, [], audio_kind, float(audio_meta["duration_sec"])
++
++
++def _collect_export_material(
++    repository: Any,
++    run_id: str,
++) -> tuple[ProcessingRun, Path, list[tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]], CanonicalExportPreviewView]:
++    with Session(repository.engine) as session:
++        run = session.get(ProcessingRun, run_id)
++        if run is None:
++            raise KeyError("Dataset run not found")
++        run_root = _run_root(repository, run)
++
++    with clip_lab_run_lock(run_root):
++        view = build_clip_lab_view(run_root, run_id=run_id)
++        if view.get("stale_state"):
++            raise CanonicalExportConflictError(
++                f"Clip Lab state is stale: {view.get('stale_reason') or 'candidate manifest changed'}"
++            )
++        if view.get("invalid_state"):
++            raise CanonicalExportConflictError(
++                f"Clip Lab state is invalid: {view.get('invalid_state_reason') or 'validation failed'}"
++            )
++
++        manifest = load_candidate_manifest(run_root)
++        manifest_by_id = index_manifest_by_clip_id(manifest)
++        saved_state = load_clip_lab_state(run_root)
++        stored_clips = saved_state.get("clips") if isinstance(saved_state, dict) else None
++        accepted_clip_views = [dict(clip) for clip in view.get("clips") or [] if clip.get("review_status") == "accepted"]
++        accepted_manifest_rows: dict[str, dict[str, Any]] = {}
++        accepted_clip_entries: dict[str, dict[str, Any] | None] = {}
++        for clip_view in accepted_clip_views:
++            clip_id = str(clip_view["clip_id"])
++            manifest_row = manifest_by_id.get(clip_id)
++            if manifest_row is not None:
++                accepted_manifest_rows[clip_id] = dict(manifest_row)
++            if isinstance(stored_clips, dict) and isinstance(stored_clips.get(clip_id), dict):
++                accepted_clip_entries[clip_id] = dict(stored_clips[clip_id])
++            else:
++                accepted_clip_entries[clip_id] = None
++
++    export_inputs: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]] = []
++    blocked_reasons: list[CanonicalExportBlockedReasonView] = []
++    total_duration_sec = 0.0
++    original_audio_count = 0
++    edited_audio_count = 0
++    preview_export_dir = _canonical_exports_root(run_root) / "preview"
++    for clip_view in accepted_clip_views:
++        clip_id = str(clip_view["clip_id"])
++        manifest_row = accepted_manifest_rows.get(clip_id)
++        if manifest_row is None:
++            blocked_reasons.append(
++                CanonicalExportBlockedReasonView(clip_id=clip_id, reasons=["manifest_row_missing"])
++            )
++            continue
++        row, reasons, audio_kind, duration_sec = _build_clip_export_row(
++            export_dir=preview_export_dir,
++            run_root=run_root,
++            manifest_row=manifest_row,
++            clip_view=clip_view,
++            clip_entry=accepted_clip_entries.get(clip_id),
++        )
++        if reasons:
++            blocked_reasons.append(CanonicalExportBlockedReasonView(clip_id=clip_id, reasons=reasons))
++            continue
++        assert row is not None
++        export_inputs.append((manifest_row, clip_view, accepted_clip_entries.get(clip_id)))
++        total_duration_sec += duration_sec
++        if audio_kind == "rendered_revision":
++            edited_audio_count += 1
++        else:
++            original_audio_count += 1
++
++    preview = CanonicalExportPreviewView(
++        run_id=run_id,
++        accepted_clip_count=len(accepted_clip_views),
++        total_duration_sec=round(total_duration_sec, 6),
++        original_audio_count=original_audio_count,
++        edited_audio_count=edited_audio_count,
++        blocked_clip_count=len(blocked_reasons),
++        blocked_reasons=blocked_reasons,
++    )
++    return run, run_root, export_inputs, preview
++
++
++def preview_canonical_export(repository: Any, run_id: str) -> CanonicalExportPreviewView:
++    _run, _run_root_path, _rows, preview = _collect_export_material(repository, run_id)
++    return preview
++
++
++def create_canonical_export(repository: Any, run_id: str) -> CanonicalExportSummaryView:
++    run, run_root, export_inputs, preview = _collect_export_material(repository, run_id)
++    if preview.accepted_clip_count == 0:
++        raise CanonicalExportConflictError("no accepted clips available for canonical export")
++    if preview.blocked_clip_count > 0:
++        raise CanonicalExportConflictError("accepted clips are blocked; resolve Clip Lab export blockers first")
++
++    exports_root = _canonical_exports_root(run_root)
++    exports_root.mkdir(parents=True, exist_ok=True)
++    export_id = _next_export_id(exports_root)
++    tmp_dir = exports_root / f".tmp_{export_id}_{uuid4().hex}"
++    final_dir = exports_root / export_id
++    if final_dir.exists():
++        raise CanonicalExportConflictError("canonical export snapshot already exists; retry")
++    tmp_dir.mkdir(parents=True, exist_ok=False)
++
++    try:
++        export_rows: list[dict[str, Any]] = []
++        for manifest_row, clip_view, clip_entry in export_inputs:
++            row, reasons, _audio_kind, _duration_sec = _build_clip_export_row(
++                export_dir=final_dir,
++                run_root=run_root,
++                manifest_row=manifest_row,
++                clip_view=clip_view,
++                clip_entry=clip_entry,
++            )
++            if reasons or row is None:
++                raise CanonicalExportConflictError("canonical export inputs changed while exporting; retry")
++            export_rows.append(row)
++
++        manifest_path = tmp_dir / MANIFEST_FILENAME
++        with manifest_path.open("w", encoding="utf-8") as handle:
++            for row in export_rows:
++                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
++                handle.write("\n")
++
++        metadata = {
++            "schema_version": SCHEMA_VERSION,
++            "export_id": export_id,
++            "run_id": run.id,
++            "project_id": run.project_id,
++            "created_at": _utc_now_iso(),
++            "path_mode": "snapshot_relative",
++            "dataset_manifest": MANIFEST_FILENAME,
++            "accepted_clip_count": preview.accepted_clip_count,
++            "total_duration_sec": preview.total_duration_sec,
++            "original_audio_count": preview.original_audio_count,
++            "edited_audio_count": preview.edited_audio_count,
++            "blocked_clip_count": preview.blocked_clip_count,
++        }
++        _serialize_json(tmp_dir / METADATA_FILENAME, metadata)
++        _serialize_json(
++            tmp_dir / REPORT_FILENAME,
++            {
++                "run_id": run.id,
++                "export_id": export_id,
++                "accepted_clip_count": preview.accepted_clip_count,
++                "blocked_clip_count": preview.blocked_clip_count,
++                "blocked_reasons": [item.model_dump() for item in preview.blocked_reasons],
++            },
++        )
++
++        tmp_dir.rename(final_dir)
++    except Exception:
++        shutil.rmtree(tmp_dir, ignore_errors=True)
++        raise
++    return CanonicalExportSummaryView(
++        export_id=export_id,
++        run_id=run.id,
++        project_id=run.project_id,
++        created_at=str(metadata["created_at"]),
++        accepted_clip_count=preview.accepted_clip_count,
++        total_duration_sec=preview.total_duration_sec,
++        snapshot_dir=str(final_dir),
++        manifest_path=str(final_dir / MANIFEST_FILENAME),
++    )
++
++
++def _summary_from_snapshot(run_id: str, snapshot_dir: Path) -> CanonicalExportSummaryView | None:
++    metadata_path = snapshot_dir / METADATA_FILENAME
++    try:
++        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
++    except (OSError, json.JSONDecodeError):
++        return None
++    if not isinstance(payload, dict):
++        return None
++    export_id = payload.get("export_id")
++    project_id = payload.get("project_id")
++    created_at = payload.get("created_at")
++    accepted_clip_count = payload.get("accepted_clip_count")
++    total_duration_sec = payload.get("total_duration_sec")
++    if not isinstance(export_id, str) or not isinstance(project_id, str) or not isinstance(created_at, str):
++        return None
++    if not isinstance(accepted_clip_count, int) or not isinstance(total_duration_sec, (int, float)):
++        return None
++    return CanonicalExportSummaryView(
++        export_id=export_id,
++        run_id=run_id,
++        project_id=project_id,
++        created_at=created_at,
++        accepted_clip_count=accepted_clip_count,
++        total_duration_sec=round(float(total_duration_sec), 6),
++        snapshot_dir=str(snapshot_dir),
++        manifest_path=str(snapshot_dir / MANIFEST_FILENAME),
++    )
++
++
++def list_canonical_exports(repository: Any, run_id: str) -> list[CanonicalExportSummaryView]:
++    with Session(repository.engine) as session:
++        run = session.get(ProcessingRun, run_id)
++        if run is None:
++            raise KeyError("Dataset run not found")
++
++    run_root = _run_root(repository, run)
++    exports_root = _canonical_exports_root(run_root)
++    if not exports_root.exists():
++        return []
++    summaries: list[CanonicalExportSummaryView] = []
++    for child in exports_root.iterdir():
++        if not child.is_dir() or child.name.startswith(".tmp_"):
++            continue
++        summary = _summary_from_snapshot(run_id, child)
++        if summary is not None:
++            summaries.append(summary)
++    return sorted(summaries, key=lambda item: item.created_at, reverse=True)

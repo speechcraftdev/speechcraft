@@ -56,3 +56,6 @@ review_bundles/
 vad_percentile_rms_*_review*/
 vad_percentile_rms_*_clip_review*/
 workers/dataset/fixtures/
+
+# Pinned VoxCPM clone, venv, and weights
+integrations/voxcpm/.vendor/

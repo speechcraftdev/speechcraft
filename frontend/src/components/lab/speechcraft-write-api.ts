@@ -106,7 +106,7 @@ export type DatasetAudioEditOperation =
 export type DatasetClipLabPatchRequest = {
   expected_manifest_sha256: string;
   expected_clip_version: number;
-  review_status?: "unresolved" | "accepted" | "rejected" | "quarantined";
+  review_status?: "unresolved" | "accepted" | "rejected";
   transcript_override?: string | null;
   reviewer_tags?: string[];
 };
@@ -151,6 +151,7 @@ export function mergeClipLabWriteResponse(prev: LabClip, server: DatasetClipLabC
   return {
     ...prev,
     status: server.review_status,
+    path: server.path ?? prev.path,
     transcript: server.transcript_override ?? server.transcript ?? prev.transcript,
     originalTranscript: server.original_transcript ?? prev.originalTranscript,
     tags: server.reviewer_tags ?? prev.tags,
@@ -176,8 +177,9 @@ export function mergeClipLabWriteResponse(prev: LabClip, server: DatasetClipLabC
 
 export type DatasetClipLabClipView = {
   clip_id: string;
+  path?: string | null;
   clip_version: number;
-  review_status: "unresolved" | "accepted" | "rejected" | "quarantined";
+  review_status: "unresolved" | "accepted" | "rejected";
   transcript: string;
   original_transcript: string;
   transcript_override: string | null;
@@ -213,6 +215,7 @@ export type ReferenceClipCandidateView = {
   clip_id: string;
   transcript_text: string;
   filename: string;
+  folder_path: string;
   relative_path: string;
   source_audio_path: string;
   created_at: string;

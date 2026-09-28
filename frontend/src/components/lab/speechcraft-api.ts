@@ -60,6 +60,7 @@ export type SpeechcraftDatasetRun = {
 
 export type ClipLabApiClip = {
   clip_id: string;
+  path: string | null;
   clip_version: number;
   content_hash: string;
   transcript_override: string | null;
@@ -215,7 +216,6 @@ const KNOWN_STATUSES: ReviewStatus[] = [
   "unresolved",
   "accepted",
   "rejected",
-  "quarantined",
 ];
 
 function normalizeStatus(raw: string): ReviewStatus {
@@ -338,6 +338,7 @@ export function mapApiClip(
     speaker: "—",
     language: "en",
     sourceRecording: runId,
+    path: clip.path,
     originalStartSeconds: 0,
     originalEndSeconds: clip.current_duration_sec ?? 0,
     revisions: [],

@@ -65,7 +65,6 @@ class ReviewStatus(str, Enum):
     UNRESOLVED = "unresolved"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
-    QUARANTINED = "quarantined"
 
 
 class JobKind(str, Enum):
@@ -848,8 +847,9 @@ class DatasetClipLabPipelineFindingView(SQLModel):
 
 class DatasetClipLabClipView(SQLModel):
     clip_id: str
+    path: str | None = None
     clip_version: int
-    review_status: Literal["unresolved", "accepted", "rejected", "quarantined"]
+    review_status: Literal["unresolved", "accepted", "rejected"]
     transcript: str
     original_transcript: str
     transcript_override: str | None = None
@@ -931,7 +931,7 @@ class CanonicalExportSummaryView(SQLModel):
 class DatasetClipLabPatchRequest(SQLModel):
     expected_manifest_sha256: str
     expected_clip_version: int
-    review_status: Literal["unresolved", "accepted", "rejected", "quarantined"] | None = None
+    review_status: Literal["unresolved", "accepted", "rejected"] | None = None
     transcript_override: str | None = None
     reviewer_tags: list[str] | None = None
 
@@ -1171,6 +1171,7 @@ class ReferenceClipCandidateView(SQLModel):
     relative_path: str
     source_audio_path: str
     created_at: str
+    folder_path: str = ""
 
 
 class ReferenceRunRerankRequest(SQLModel):

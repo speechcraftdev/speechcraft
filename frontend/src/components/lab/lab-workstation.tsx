@@ -20,6 +20,7 @@ import { KeyboardBar } from "./keyboard-bar";
 import { ProjectPicker } from "./project-picker";
 import { LabRerunDialog } from "./rerun-dialog";
 import { TranscriptPanel } from "./transcript-panel";
+import type { HumanLabeledClip } from "./qc-logic";
 import {
   type ClipEdit,
   type LabClip,
@@ -29,6 +30,7 @@ import {
   createMockClips,
   filterClips,
   sortClips,
+  STATUS_LABELS,
 } from "./lab-data";
 import { demoEnabled } from "@/lib/demo";
 import {
@@ -62,6 +64,9 @@ const PRESET_TAGS = [
 ];
 
 type Mode = "qc" | "lab";
+
+// Isolated experiment switch: set false to remove the human-label overlays.
+const SHOW_HUMAN_LABEL_OVERLAY = true;
 
 /** Optimistic-concurrency tokens the backend requires on every clip write. */
 function tokensFor(clip: LabClip) {
@@ -288,11 +293,80 @@ export function LabWorkstation() {
       unresolved: 0,
       accepted: 0,
       rejected: 0,
-      quarantined: 0,
     };
     for (const clip of clips) counts[clip.status] += 1;
-    return { total: clips.length, reviewed: clips.length - counts.unresolved, counts };
+    const rows = (['unresolved', 'accepted', 'rejected'] as ReviewStatus[]).map((status) => {
+      const matching = clips.filter((clip) => clip.status === status);
+      return {
+        label: STATUS_LABELS[status],
+        clips: matching.length,
+        durationSeconds: matching.reduce((sum, clip) => sum + (clip.durationSeconds || 0), 0),
+      };
+    });
+    const customTags = Array.from(
+      new Set(clips.flatMap((clip) => clip.tags.filter((tag) => !PRESET_TAGS.includes(tag)))),
+    ).sort();
+    const reviewedClipCount = clips.filter(
+      (clip) =>
+        clip.status !== "unresolved" ||
+        clip.tags.some((tag) => !PRESET_TAGS.includes(tag)),
+    ).length;
+    for (const tag of customTags) {
+      const matching = clips.filter((clip) => clip.tags.includes(tag));
+      rows.push({
+        label: tag,
+        clips: matching.length,
+        durationSeconds: matching.reduce((sum, clip) => sum + (clip.durationSeconds || 0), 0),
+      });
+    }
+    const acceptedDurationSeconds = clips
+      .filter((clip) => clip.status === "accepted")
+      .reduce((sum, clip) => sum + (clip.durationSeconds || 0), 0);
+    const rejectedDurationSeconds = clips
+      .filter((clip) => clip.status === "rejected")
+      .reduce((sum, clip) => sum + (clip.durationSeconds || 0), 0);
+    const totalDurationSeconds = clips.reduce(
+      (sum, clip) => sum + (clip.durationSeconds || 0),
+      0,
+    );
+    const reviewedDurationSeconds = acceptedDurationSeconds + rejectedDurationSeconds;
+    const statusReviewedClipCount = counts.accepted + counts.rejected;
+    const acceptanceRate =
+      statusReviewedClipCount > 0 ? counts.accepted / statusReviewedClipCount : null;
+    return {
+      total: clips.length,
+      reviewed: reviewedClipCount,
+      predictedClipCount: acceptanceRate === null ? null : clips.length * acceptanceRate,
+      predictedDurationSeconds:
+        reviewedDurationSeconds > 0
+          ? totalDurationSeconds * (acceptedDurationSeconds / reviewedDurationSeconds)
+          : null,
+      rows,
+    };
   }, [clips]);
+
+  const humanLabeledClips = useMemo<HumanLabeledClip[]>(
+    () =>
+      SHOW_HUMAN_LABEL_OVERLAY
+        ? clips
+            .filter(
+              (clip): clip is LabClip & { status: "accepted" | "rejected" } =>
+                clip.status === "accepted" || clip.status === "rejected",
+            )
+            .map((clip) => ({
+              clipId: clip.id,
+              status: clip.status,
+              transcriptMatch: clip.transcriptMatchRaw,
+              speakerCheck: clip.speakerCheckRaw,
+              cleanAccepted:
+                clip.status === "accepted" &&
+                clip.transcript === clip.originalTranscript &&
+                (clip.audioEditOpCount ?? 0) === 0 &&
+                clip.edits.length === 0,
+            }))
+        : [],
+    [clips],
+  );
 
   const updateClip = useCallback((id: string, fn: (clip: LabClip) => LabClip) => {
     setClips((prev) => prev.map((clip) => (clip.id === id ? fn(clip) : clip)));
@@ -505,25 +579,25 @@ export function LabWorkstation() {
     );
   }, [activeClipId, applyClipWrite, runId, runAudioEdit]);
 
-  const markReference = useCallback(() => {
+  const markReference = useCallback(async (): Promise<string | null> => {
     const clip = clips.find((c) => c.id === activeClipId);
-    if (!clip || !projectId || !runId) return;
-    void (async () => {
-      try {
-        await markReferenceClipCandidate(projectId, runId, {
-          clip_id: clip.id,
-          transcript_text: clip.transcript,
-        });
-        toast({ title: "Marked as reference candidate", variant: "success", duration: 2000 });
-      } catch (err) {
-        toast({
-          title: "Mark reference failed",
-          description: err instanceof SpeechcraftApiError ? err.detail : String(err),
-          variant: "error",
-          duration: 4000,
-        });
-      }
-    })();
+    if (!clip || !projectId || !runId) return null;
+    try {
+      const result = await markReferenceClipCandidate(projectId, runId, {
+        clip_id: clip.id,
+        transcript_text: clip.transcript,
+      });
+      toast({ title: "Saved as reference clip candidate", variant: "success", duration: 2000 });
+      return result.folder_path;
+    } catch (err) {
+      toast({
+        title: "Save reference clip failed",
+        description: err instanceof SpeechcraftApiError ? err.detail : String(err),
+        variant: "error",
+        duration: 4000,
+      });
+      return null;
+    }
   }, [clips, activeClipId, projectId, runId, toast]);
 
   const runModel = useCallback(() => {
@@ -642,7 +716,11 @@ export function LabWorkstation() {
       <ExportDialog runId={runId} open={exportOpen} onOpenChange={setExportOpen} />
 
       {mode === "qc" ? (
-        <DatasetHealthPage runId={runId} demo={useMockClips} />
+        <DatasetHealthPage
+          runId={runId}
+          demo={useMockClips}
+          humanLabeledClips={useMockClips ? [] : humanLabeledClips}
+        />
       ) : viewError ? (
         <div className="flex flex-1 items-center justify-center">
           <div className="max-w-sm text-center">
@@ -714,7 +792,6 @@ export function LabWorkstation() {
                     endAudioEdit={endAudioEdit}
                     onUndo={undoEdit}
                     onRedo={redoEdit}
-                    onMarkReference={markReference}
                     onRunModel={runModel}
                     autoplay={autoplayClipId === activeClip.id}
                     onAutoplayConsumed={() => setAutoplayClipId(null)}

@@ -7,7 +7,8 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 from speechcraft_dataset.assembly import assemble_candidate_review_clips
-from speechcraft_dataset.buffers import read_analysis_audio, run_processing_buffers
+from speechcraft_dataset.audio import map_analysis_sample_to_source
+from speechcraft_dataset.buffers import run_processing_buffers
 from speechcraft_dataset.export import export_native_candidate_clips
 from speechcraft_dataset.generate_qc_scores import main as generate_qc_scores_main
 from speechcraft_dataset.io import sha256_file
@@ -17,6 +18,37 @@ from speechcraft_dataset.run import WORKER_STAGE_ORDER, main
 from speechcraft_dataset.vr_slicer import VrPackedClip, VrSlicerResult, TRUSTED_GEOMETRY_FINGERPRINT
 import sys
 HAS_WORKER_AUDIO_DEPS = bool(importlib.util.find_spec('numpy') and importlib.util.find_spec('soundfile'))
+
+def write_source_audio(run_root: Path, *, sample_rate: int, duration_sec: float, num_channels: int = 1) -> Path:
+    source = run_root / 'source.wav'
+    frames = int(round(sample_rate * duration_sec))
+    source.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(source), 'wb') as handle:
+        handle.setnchannels(num_channels)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(b'\x00\x00' * frames * num_channels)
+    artifacts = run_root / 'artifacts'
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / 'source_audio_manifest.json').write_text(
+        json.dumps(
+            {
+                'sources': [
+                    {
+                        'source_audio_id': 'source_audio_0000',
+                        'path': str(source),
+                        'sample_rate': sample_rate,
+                        'num_channels': num_channels,
+                        'sample_width_bytes': 2,
+                        'num_samples': frames,
+                        'duration_sec': duration_sec,
+                    }
+                ]
+            }
+        ),
+        encoding='utf-8',
+    )
+    return source
 
 def write_silent_wav(path: Path, *, sample_rate: int=16000, duration_sec: float=0.1) -> None:
     frames = int(sample_rate * duration_sec)
@@ -391,28 +423,36 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             self.assertEqual(result['error'], 'ASR model snapshot is incomplete: missing model.bin')
             self.assertFalse(result['load_checked'])
 
-    def test_native_export_maps_analysis_samples_to_original_rate(self) -> None:
+    def test_native_export_uses_source_bounds_without_scaling_again(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_raw:
             temp_dir = Path(temp_dir_raw)
             run_root = temp_dir / 'run'
             artifacts = run_root / 'artifacts'
             artifacts.mkdir(parents=True)
             source = temp_dir / 'source_48k.wav'
-            write_silent_wav(source, sample_rate=48000, duration_sec=5.0)
-            (artifacts / 'source_audio_manifest.json').write_text(json.dumps({'sources': [{'source_audio_id': 'source_audio_0000', 'source_recording_id': 'source', 'path': str(source), 'sample_rate': 48000, 'num_channels': 1, 'sample_width_bytes': 2, 'num_samples': 240000, 'duration_sec': 5.0}]}), encoding='utf-8')
-            (artifacts / 'audio_variants_manifest.json').write_text(json.dumps({'variants': [{'source_audio_id': 'source_audio_0000', 'kind': 'analysis_audio', 'source_sample_rate': 48000, 'analysis_sample_rate': 16000, 'source_num_samples': 240000, 'analysis_num_samples': 80000}]}), encoding='utf-8')
-            (artifacts / 'candidate_review_manifest.json').write_text(json.dumps([{'id': 'candidate_review_clip_000000', 'source_audio_id': 'source_audio_0000', 'source_start_sample': 16000, 'source_end_sample': 48000, 'audio_path': 'artifacts/candidate_review_clips/candidate_review_clip_000000.wav', 'training_text': 'native rate please', 'alignment_text': 'native rate please', 'status': 'candidate_review', 'needs_review': False, 'review_reason_codes': [], 'start_cutpoint_ref': 'cut-0', 'end_cutpoint_ref': 'cut-1', 'word_ids': ['word-0']}]), encoding='utf-8')
+            frames = 240000
+            with wave.open(str(source), 'wb') as handle:
+                handle.setnchannels(2)
+                handle.setsampwidth(2)
+                handle.setframerate(48000)
+                handle.writeframes(b'\x00\x00' * frames * 2)
+            (artifacts / 'source_audio_manifest.json').write_text(json.dumps({'sources': [{'source_audio_id': 'source_audio_0000', 'source_recording_id': 'source', 'path': str(source), 'sample_rate': 48000, 'num_channels': 2, 'sample_width_bytes': 2, 'num_samples': frames, 'duration_sec': 5.0}]}), encoding='utf-8')
+            (artifacts / 'audio_variants_manifest.json').write_text(json.dumps({'variants': [{'source_audio_id': 'source_audio_0000', 'kind': 'analysis_audio', 'source_sample_rate': 48000, 'analysis_sample_rate': 16000, 'source_num_samples': frames, 'analysis_num_samples': 80000, 'recipe': {'channel_mode': 'prompt'}}]}), encoding='utf-8')
+            (artifacts / 'candidate_review_manifest.json').write_text(json.dumps([{'id': 'candidate_review_clip_000000', 'source_audio_id': 'source_audio_0000', 'source_start_sample': 48000, 'source_end_sample': 144000, 'audio_path': 'artifacts/candidate_review_clips/candidate_review_clip_000000.wav', 'training_text': 'native rate please', 'alignment_text': 'native rate please', 'status': 'candidate_review', 'needs_review': False, 'review_reason_codes': [], 'start_cutpoint_ref': 'cut-0', 'end_cutpoint_ref': 'cut-1', 'word_ids': ['word-0']}]), encoding='utf-8')
             summary = export_native_candidate_clips(run_root, {'config_hash': 'sha256:test'})
             manifest = read_json(artifacts / 'export_manifest.json')
             exported = manifest[0]
             self.assertEqual(summary['exported_clip_count'], 1)
             self.assertEqual(summary['sample_rates'], [48000])
+            self.assertEqual(summary['channel_counts'], [1])
             self.assertEqual(exported['native_start_sample'], 48000)
             self.assertEqual(exported['native_end_sample'], 144000)
             self.assertEqual(exported['duration_samples'], 96000)
             self.assertEqual(exported['duration_sec'], 2.0)
+            self.assertEqual(exported['num_channels'], 1)
             with wave.open(str(run_root / exported['audio_path']), 'rb') as handle:
                 self.assertEqual(handle.getframerate(), 48000)
+                self.assertEqual(handle.getnchannels(), 1)
                 self.assertEqual(handle.getnframes(), 96000)
 
     def test_export_native_falls_back_to_manifest_status_without_dataset_qc(self) -> None:
@@ -513,7 +553,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             analysis = run_root / 'audio' / 'analysis' / 'source_audio_0000.mono16000.wav'
             analysis.parent.mkdir(parents=True)
             write_silent_wav(analysis, sample_rate=16000, duration_sec=10.0)
-            artifacts.mkdir()
+            write_source_audio(run_root, sample_rate=16000, duration_sec=10.0)
             (artifacts / 'processing_buffers.json').write_text(
                 json.dumps(
                     [
@@ -582,7 +622,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             analysis = run_root / 'audio' / 'analysis' / 'source_audio_0000.mono16000.wav'
             analysis.parent.mkdir(parents=True)
             write_silent_wav(analysis, sample_rate=16000, duration_sec=20.0)
-            artifacts.mkdir()
+            write_source_audio(run_root, sample_rate=16000, duration_sec=20.0)
             (artifacts / 'processing_buffers.json').write_text(
                 json.dumps(
                     [
@@ -639,13 +679,11 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                 clips=clips,
                 selected_cutpoints=(),
             )
-            with (
-                patch('speechcraft_dataset.assembly.slice_wav', return_value=fake_result),
-                patch('speechcraft_dataset.assembly.read_analysis_audio', wraps=read_analysis_audio) as read_audio,
-            ):
+            with patch('speechcraft_dataset.assembly.slice_wav', return_value=fake_result):
                 summary = assemble_candidate_review_clips(run_root, {'analysis_sample_rate': 16000, 'config_hash': 'sha256:test'})
             self.assertEqual(summary['candidate_review_clips'], 2)
-            self.assertEqual(read_audio.call_count, 1)
+            self.assertFalse(analysis.exists())
+            self.assertTrue((run_root / 'source.wav').exists())
 
     @unittest.skipUnless(HAS_WORKER_AUDIO_DEPS, 'requires worker audio deps')
     def test_candidate_assembly_rejects_empty_buffers_even_when_source_emits_clips(self) -> None:
@@ -655,7 +693,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             analysis = run_root / 'audio' / 'analysis' / 'source_audio_0000.mono16000.wav'
             analysis.parent.mkdir(parents=True)
             write_silent_wav(analysis, sample_rate=16000, duration_sec=20.0)
-            artifacts.mkdir()
+            write_source_audio(run_root, sample_rate=16000, duration_sec=20.0)
             (artifacts / 'processing_buffers.json').write_text(
                 json.dumps(
                     [
@@ -716,6 +754,86 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             self.assertEqual(len(rejected), 1)
             self.assertEqual(rejected[0]['buffer_id'], 'buffer_000001')
             self.assertEqual(rejected[0]['reason_codes'], ['vr_slicer_emitted_no_clips'])
+
+    @unittest.skipUnless(HAS_WORKER_AUDIO_DEPS, 'requires worker audio deps')
+    def test_candidate_clips_are_cut_from_source_rate_and_analysis_file_is_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_raw:
+            run_root = Path(temp_dir_raw)
+            artifacts = run_root / 'artifacts'
+            analysis = run_root / 'audio' / 'analysis' / 'source_audio_0000.mono16000.wav'
+            analysis.parent.mkdir(parents=True)
+            write_silent_wav(analysis, sample_rate=16000, duration_sec=10.0)
+            source = write_source_audio(run_root, sample_rate=48000, duration_sec=10.0, num_channels=2)
+            frames = 480000
+            with wave.open(str(source), 'wb') as handle:
+                handle.setnchannels(2)
+                handle.setsampwidth(2)
+                handle.setframerate(48000)
+                left = (1000).to_bytes(2, 'little', signed=True)
+                right = (3000).to_bytes(2, 'little', signed=True)
+                handle.writeframes((left + right) * frames)
+            (artifacts / 'audio_variants_manifest.json').write_text(
+                json.dumps({'variants': [{'source_audio_id': 'source_audio_0000', 'kind': 'analysis_audio', 'recipe': {'channel_mode': 'prompt'}}]}),
+                encoding='utf-8',
+            )
+            (artifacts / 'processing_buffers.json').write_text(
+                json.dumps(
+                    [
+                        {
+                            'buffer_id': 'buffer_000000',
+                            'source_audio_id': 'source_audio_0000',
+                            'analysis_audio_path': 'audio/analysis/source_audio_0000.mono16000.wav',
+                            'audio_path': 'audio/analysis/source_audio_0000.mono16000.wav',
+                            'sample_rate': 16000,
+                            'trusted_start_sample': 0,
+                            'trusted_end_sample': 160000,
+                            'trusted_start_sec': 0.0,
+                            'trusted_end_sec': 10.0,
+                            'source_start_sample': 0,
+                            'source_end_sample': 160000,
+                        }
+                    ]
+                ),
+                encoding='utf-8',
+            )
+            fake_clip = VrPackedClip(
+                detector_name='vad_percentile_rms',
+                packer_name='optimal_weighted_interval',
+                source_id='source_audio_0000',
+                recording_id='source_audio_0000',
+                buffer_id='buffer_000000',
+                clip_id='clip-0',
+                start_sec=1.0,
+                end_sec=9.0,
+                duration_sec=8.0,
+                start_cutpoint_id='cut-a',
+                end_cutpoint_id='cut-b',
+                selected_weight=1.0,
+            )
+            fake_result = VrSlicerResult(
+                geometry_fingerprint=TRUSTED_GEOMETRY_FINGERPRINT,
+                cutpoints=(),
+                clips=(fake_clip,),
+                selected_cutpoints=(),
+            )
+            with patch('speechcraft_dataset.assembly.slice_wav', return_value=fake_result):
+                assemble_candidate_review_clips(run_root, {'analysis_sample_rate': 16000, 'config_hash': 'sha256:test'})
+            manifest = read_json(artifacts / 'candidate_review_manifest.json')
+            clip = manifest[0]
+            self.assertEqual(clip['sample_rate'], 48000)
+            self.assertEqual(clip['source_start_sample'], 48000)
+            self.assertEqual(clip['source_end_sample'], 432000)
+            self.assertEqual(clip['duration_samples'], 384000)
+            self.assertEqual(clip['duration_sec'], 8.0)
+            self.assertEqual(map_analysis_sample_to_source(108165, 16000, 48000), 324495)
+            self.assertFalse(analysis.exists())
+            self.assertTrue(source.exists())
+            with wave.open(str(run_root / clip['audio_path']), 'rb') as handle:
+                self.assertEqual(handle.getframerate(), 48000)
+                self.assertEqual(handle.getnchannels(), 1)
+                self.assertEqual(handle.getnframes(), 384000)
+                first = int.from_bytes(handle.readframes(1), 'little', signed=True)
+            self.assertEqual(first, 2000)
 
     @unittest.skipUnless(HAS_WORKER_AUDIO_DEPS, 'requires worker audio deps')
     def test_pipeline_ingest_to_candidates_does_not_require_whisper_or_mfa(self) -> None:

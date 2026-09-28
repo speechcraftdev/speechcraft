@@ -807,6 +807,24 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
         }
       };
 
+      const onDocumentKeyDown = (e: KeyboardEvent) => {
+        if (e.defaultPrevented || el.contains(e.target as Node)) return;
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.key !== " " && e.code !== "Space") return;
+        const target = e.target as HTMLElement | null;
+        if (
+          target?.isContentEditable ||
+          target?.tagName === "INPUT" ||
+          target?.tagName === "TEXTAREA" ||
+          target?.tagName === "SELECT"
+        ) {
+          return;
+        }
+        e.preventDefault();
+        if (e.shiftKey) playFromStart();
+        else togglePlayback();
+      };
+
       el.addEventListener("pointerenter", onPointerEnter);
       el.addEventListener("pointerdown", onPointerDown);
       el.addEventListener("pointermove", onPointerMove);
@@ -816,6 +834,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
       el.addEventListener("dblclick", onDblClick);
       el.addEventListener("wheel", onWheel, { passive: false });
       el.addEventListener("keydown", onKeyDown);
+      document.addEventListener("keydown", onDocumentKeyDown);
       return () => {
         el.removeEventListener("pointerenter", onPointerEnter);
         el.removeEventListener("pointerdown", onPointerDown);
@@ -826,6 +845,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
         el.removeEventListener("dblclick", onDblClick);
         el.removeEventListener("wheel", onWheel);
         el.removeEventListener("keydown", onKeyDown);
+        document.removeEventListener("keydown", onDocumentKeyDown);
         stopAutoScroll();
       };
     }, []);

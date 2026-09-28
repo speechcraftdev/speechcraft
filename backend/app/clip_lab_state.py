@@ -46,10 +46,12 @@ LOCK_TIMEOUT_SEC = 5
 _SHA256_HEX = re.compile(r"^[a-f0-9]{64}$")
 _ISO_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
-ReviewStatus = Literal["unresolved", "accepted", "rejected", "quarantined"]
+ReviewStatus = Literal["unresolved", "accepted", "rejected"]
 
-REVIEW_STATUSES: frozenset[str] = frozenset({"unresolved", "accepted", "rejected", "quarantined"})
-RESERVED_REVIEWER_TAG_NAMES: frozenset[str] = frozenset({"accepted", "rejected", "quarantined", "unresolved"})
+REVIEW_STATUSES: frozenset[str] = frozenset({"unresolved", "accepted", "rejected"})
+RESERVED_REVIEWER_TAG_NAMES: frozenset[str] = frozenset(
+    {"accepted", "rejected", "quarantined", "unresolved"}
+)
 
 MAX_REVIEWER_TAGS = 20
 MAX_REVIEWER_TAG_LENGTH = 48
@@ -409,6 +411,11 @@ def load_clip_lab_state(run_root: Path) -> dict[str, Any] | None:
     payload = _read_json(path)
     if not isinstance(payload, dict):
         raise ClipLabValidationError(f"{CLIP_LAB_STATE_REL} must be a JSON object")
+    clips = payload.get("clips")
+    if isinstance(clips, dict):
+        for entry in clips.values():
+            if isinstance(entry, dict) and entry.get("review_status") == "quarantined":
+                entry["review_status"] = "unresolved"
     return payload
 
 
@@ -633,13 +640,19 @@ def _build_clip_view(
 
     transcript_row = transcript_by_id.get(clip_id, {})
     speaker_row = speaker_by_id.get(clip_id, {})
+    whisper_transcript = transcript_row.get("whisper_text")
+    if not isinstance(whisper_transcript, str):
+        whisper_transcript = ""
+    displayed_transcript = transcript or whisper_transcript
+    displayed_original_transcript = original_transcript or whisper_transcript
 
     view = {
         "clip_id": clip_id,
+        "path": str(manifest_row.get("audio_path") or "") or None,
         "clip_version": int(clip_entry.get("clip_version") or 0),
         "review_status": review_status,
-        "transcript": transcript,
-        "original_transcript": original_transcript,
+        "transcript": displayed_transcript,
+        "original_transcript": displayed_original_transcript,
         "transcript_override": override_value,
         "reviewer_tags": tags,
         "pipeline_findings": pipeline_findings_from_manifest_row(manifest_row),
@@ -929,6 +942,7 @@ def _serialize_clip_lab_clip(raw: dict[str, Any]) -> Any:
     ]
     return DatasetClipLabClipView(
         clip_id=raw["clip_id"],
+        path=raw.get("path"),
         clip_version=int(raw.get("clip_version") or 0),
         review_status=raw["review_status"],
         transcript=raw["transcript"],

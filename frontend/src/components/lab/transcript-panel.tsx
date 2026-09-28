@@ -87,12 +87,6 @@ export function TranscriptPanel({
           className="resize-none border-border text-sm leading-relaxed"
         />
 
-        <p className="text-xs text-muted-foreground">
-          Source: <span className="text-foreground">{clip.variant === "source" ? "aligned" : clip.variant}</span>
-          <span className="mx-2 text-border">•</span>
-          Edits autosave — use Undo to revert.
-        </p>
-
         {/* QC score cards + tag composer */}
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <Card className="border-border p-4">

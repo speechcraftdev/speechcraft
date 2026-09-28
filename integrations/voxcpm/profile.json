@@ -1,0 +1,35 @@
+{
+  "profile_id": "voxcpm-1.5-lora-v1",
+  "label": "VoxCPM 1.5 LoRA Standard v1",
+  "voxcpm_git": "https://github.com/OpenBMB/VoxCPM.git",
+  "voxcpm_commit": "acaadb19e99dc91b21fba58ced0dea22d6482fb6",
+  "hf_model_id": "openbmb/VoxCPM1.5",
+  "sample_rate_hz": 44100,
+  "dataset_id": 0,
+  "lora": {
+    "enable_lm": true,
+    "enable_dit": true,
+    "enable_proj": false,
+    "r": 8,
+    "alpha": 16,
+    "dropout": 0.1
+  },
+  "train": {
+    "batch_size": 1,
+    "grad_accum_steps": 16,
+    "num_workers": 2,
+    "max_batch_tokens": 2048,
+    "num_iters": 700,
+    "max_steps": 700,
+    "log_interval": 10,
+    "save_interval": 100,
+    "valid_interval": 0,
+    "learning_rate": 3.5e-5,
+    "weight_decay": 0.01,
+    "warmup_steps": 60
+  },
+  "infer": {
+    "cfg_value": 1.7,
+    "inference_timesteps": 10
+  }
+}

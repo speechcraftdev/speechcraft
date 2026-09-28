@@ -12,29 +12,30 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@midday/ui/tooltip";
+import { useEffect, useState } from "react";
 import {
   type LabClip,
   type ReviewStatus,
-  MACHINE_BUCKET_LABELS,
   REASON_CODE_LABELS,
   REVIEW_STATUS_ORDER,
   STATUS_LABELS,
   formatDurationCompact,
   formatSeconds,
 } from "./lab-data";
-import { StatusBadge } from "./status-badge";
 
 type Stats = {
   total: number;
   reviewed: number;
-  counts: Record<ReviewStatus, number>;
+  predictedClipCount: number | null;
+  predictedDurationSeconds: number | null;
+  rows: Array<{ label: string; clips: number; durationSeconds: number }>;
 };
 
 type InspectorRailProps = {
   clip: LabClip;
   stats: Stats;
   onStatusChange: (status: ReviewStatus) => void;
-  onSaveReference: () => void;
+  onSaveReference: () => Promise<string | null>;
 };
 
 function StatRow({ label, value }: { label: string; value: string }) {
@@ -53,6 +54,24 @@ export function InspectorRail({
   onSaveReference,
 }: InspectorRailProps) {
   const reviewedPercent = stats.total > 0 ? (stats.reviewed / stats.total) * 100 : 0;
+  const [isSavingReference, setIsSavingReference] = useState(false);
+  const [referenceFolderPath, setReferenceFolderPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    setIsSavingReference(false);
+    setReferenceFolderPath(null);
+  }, [clip.id]);
+
+  const saveReference = async () => {
+    if (isSavingReference) return;
+    setIsSavingReference(true);
+    try {
+      const folderPath = await onSaveReference();
+      setReferenceFolderPath(folderPath);
+    } finally {
+      setIsSavingReference(false);
+    }
+  };
 
   return (
     <TooltipProvider delayDuration={100}>
@@ -70,7 +89,6 @@ export function InspectorRail({
             <span className="text-xs uppercase tracking-wide text-muted-foreground">
               Live status
             </span>
-            <StatusBadge status={clip.status} />
           </div>
 
           <div className="grid grid-cols-2 gap-1.5">
@@ -86,26 +104,6 @@ export function InspectorRail({
                 {STATUS_LABELS[status]}
               </Button>
             ))}
-          </div>
-
-          {/* Snapshot machine bucket — advisory, visually distinct from live */}
-          <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wide text-muted-foreground">
-              Machine QC
-            </span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Badge variant="outline" className="cursor-default gap-1">
-                  {MACHINE_BUCKET_LABELS[clip.machineBucket]} · {clip.qcScore.toFixed(2)}
-                </Badge>
-              </TooltipTrigger>
-              <TooltipContent side="left" className="max-w-56">
-                <p className="text-xs">
-                  Advisory machine triage from QC — a snapshot, not a decision. Your
-                  live status above is the authoritative truth.
-                </p>
-              </TooltipContent>
-            </Tooltip>
           </div>
 
           {clip.reasonCodes.length > 0 ? (
@@ -130,16 +128,37 @@ export function InspectorRail({
 
         {/* Always visible: compact stats + progress */}
         <div className="space-y-3 border-b border-border p-4">
-          <div>
-            <StatRow label="Total" value={String(stats.total)} />
-            {REVIEW_STATUS_ORDER.filter((s) => stats.counts[s] > 0).map((status) => (
-              <StatRow
-                key={status}
-                label={STATUS_LABELS[status]}
-                value={String(stats.counts[status])}
-              />
-            ))}
-          </div>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                <th className="pb-2 text-left font-medium" />
+                <th className="pb-2 text-right font-medium">Clips</th>
+                <th className="pb-2 text-right font-medium">Duration</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.rows.map((row) => (
+                <tr key={row.label}>
+                  <th className="py-1.5 text-left font-normal text-muted-foreground">{row.label}</th>
+                  <td className="py-1.5 text-right tabular-nums">{row.clips}</td>
+                  <td className="py-1.5 text-right tabular-nums">
+                    {formatDurationCompact(row.durationSeconds)}
+                  </td>
+                </tr>
+              ))}
+              <tr>
+                <th className="pt-2 text-left font-normal text-muted-foreground">Predicted size</th>
+                <td className="pt-2 text-right tabular-nums">
+                  {stats.predictedClipCount === null ? "—" : Math.round(stats.predictedClipCount)}
+                </td>
+                <td className="pt-2 text-right tabular-nums">
+                  {stats.predictedDurationSeconds === null
+                    ? "—"
+                    : formatDurationCompact(stats.predictedDurationSeconds)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
           <Separator />
           <div>
             <div className="mb-1.5 flex items-center justify-between text-sm">
@@ -148,42 +167,52 @@ export function InspectorRail({
             </div>
             <Progress value={reviewedPercent} className="h-2" />
           </div>
+          <div className="space-y-2 border-t border-border pt-3">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              disabled={isSavingReference}
+              onClick={() => void saveReference()}
+            >
+              {isSavingReference ? "Saving reference clip…" : "Save as reference clip candidate"}
+            </Button>
+            {referenceFolderPath ? (
+              <p className="break-words text-xs text-muted-foreground" aria-live="polite">
+                Saved at <span className="font-mono">{referenceFolderPath}</span>
+              </p>
+            ) : null}
+          </div>
         </div>
 
         {/* Deep tooling behind tabs */}
         <div className="p-4">
-          <Tabs defaultValue="history">
-            <TabsList className="grid w-full grid-cols-4">
-              <TabsTrigger value="history">History</TabsTrigger>
+          <Tabs defaultValue="edits">
+            <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="edits">Edits</TabsTrigger>
               <TabsTrigger value="provenance">Source</TabsTrigger>
-              <TabsTrigger value="reference">Ref</TabsTrigger>
             </TabsList>
 
-            <TabsContent value="history" className="space-y-2">
-              {clip.revisions.length > 0 ? (
-                [...clip.revisions].reverse().map((rev) => (
-                  <div key={rev.id} className="border border-border p-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium">{rev.message}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {rev.milestone ? "milestone" : "auto"}
-                      </span>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-                      {rev.transcript || "(blank transcript)"}
-                    </p>
-                    <span className="mt-1 block text-[11px] tabular-nums text-muted-foreground">
-                      {new Date(rev.createdAt).toLocaleString()}
-                    </span>
-                  </div>
-                ))
-              ) : (
-                <p className="py-4 text-sm text-muted-foreground">No saved history yet.</p>
-              )}
-            </TabsContent>
-
             <TabsContent value="edits" className="space-y-2">
+              {clip.originalTranscript !== clip.transcript ? (
+                <div className="border border-border p-3 text-sm">
+                  <div className="font-medium">Transcript</div>
+                  <div className="mt-2 space-y-2 text-xs">
+                    <div>
+                      <span className="text-muted-foreground">Original</span>
+                      <p className="mt-0.5 whitespace-pre-wrap">
+                        {clip.originalTranscript || "(blank transcript)"}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Edited</span>
+                      <p className="mt-0.5 whitespace-pre-wrap">
+                        {clip.transcript || "(blank transcript)"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               {clip.edits.length > 0 ? (
                 clip.edits.map((edit, index) => (
                   <div
@@ -202,15 +231,16 @@ export function InspectorRail({
                     </span>
                   </div>
                 ))
-              ) : (
+              ) : clip.originalTranscript === clip.transcript ? (
                 <p className="py-4 text-sm text-muted-foreground">
-                  No waveform edits on this clip yet.
+                  No transcript or waveform edits on this clip yet.
                 </p>
-              )}
+              ) : null}
             </TabsContent>
 
             <TabsContent value="provenance" className="space-y-2">
               <StatRow label="Source" value={clip.sourceRecording} />
+              <StatRow label="Path" value={clip.path ?? "—"} />
               <StatRow label="Speaker" value={clip.speaker} />
               <StatRow label="Language" value={clip.language} />
               <StatRow
@@ -220,20 +250,6 @@ export function InspectorRail({
               <StatRow label="Duration" value={formatDurationCompact(clip.durationSeconds)} />
             </TabsContent>
 
-            <TabsContent value="reference" className="space-y-3">
-              <p className="text-sm text-muted-foreground">
-                Save the current rendered slice — including active edits — into the
-                reference library.
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                className="w-full"
-                onClick={onSaveReference}
-              >
-                Save current slice state
-              </Button>
-            </TabsContent>
           </Tabs>
         </div>
       </aside>

@@ -9,10 +9,12 @@ from unittest.mock import patch
 import numpy as np
 
 from speechcraft_dataset.eval_speaker_purity import (
+    TARGET_SAMPLE_RATE,
     SpeakerPurityConfig,
     _percentile_score_0_100,
     outlier_guillotine,
     prepare_window_samples,
+    resample_mono,
     run_speaker_purity,
     window_is_scorable,
 )
@@ -62,6 +64,15 @@ class EvalSpeakerPurityTests(unittest.TestCase):
         self.assertTrue(scorable)
         self.assertGreaterEqual(window_rms, config.silence_rms_threshold)
         self.assertLess(silent_fraction, config.max_silent_frame_fraction)
+
+    def test_resample_mono_keeps_duration_and_does_not_write_audio(self) -> None:
+        source_rate = 48000
+        samples = np.linspace(-0.2, 0.2, source_rate, dtype=np.float32)
+        resampled = resample_mono(samples, source_rate, TARGET_SAMPLE_RATE)
+        self.assertEqual(resampled.size, TARGET_SAMPLE_RATE)
+        unchanged = resample_mono(resampled, TARGET_SAMPLE_RATE, TARGET_SAMPLE_RATE)
+        self.assertEqual(unchanged.size, TARGET_SAMPLE_RATE)
+        self.assertTrue(np.shares_memory(unchanged, resampled) or np.array_equal(unchanged, resampled))
 
     def test_prepare_window_samples_zero_pads_short_clip(self) -> None:
         short = np.ones(8000, dtype=np.float32) * 0.1

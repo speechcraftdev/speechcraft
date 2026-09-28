@@ -6,6 +6,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .audio import read_mono_source_span
+from .buffers import write_pcm16_mono
 from .io import read_json_value, resolve_under_root, sha256_file, write_json
 
 QC_SOURCE_DATASET_QC = "artifacts/dataset_qc.json"
@@ -86,26 +88,24 @@ def _source_maps(run_root: Path) -> tuple[dict[str, dict[str, Any]], dict[str, d
     return sources, variants
 
 
-def _analysis_to_native_sample(analysis_sample: int, variant: dict[str, Any]) -> int:
-    analysis_rate = int(variant["analysis_sample_rate"])
-    source_rate = int(variant["source_sample_rate"])
-    return int(round(analysis_sample * (source_rate / analysis_rate)))
+def _channel_mode(variant: dict[str, Any]) -> str:
+    recipe = variant.get("recipe") if isinstance(variant.get("recipe"), dict) else {}
+    return str(recipe.get("channel_mode") or "downmix")
 
 
-def _slice_native_wav(source_path: Path, output_path: Path, start_frame: int, end_frame: int) -> dict[str, Any]:
-    if end_frame <= start_frame:
-        raise ValueError(f"Invalid native export bounds: {start_frame}:{end_frame}")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(source_path), "rb") as source:
-        total_frames = source.getnframes()
-        if start_frame < 0 or end_frame > total_frames:
-            raise ValueError(f"Native export bounds escape source WAV: {start_frame}:{end_frame} > {total_frames}")
-        params = source.getparams()
-        source.setpos(start_frame)
-        frames = source.readframes(end_frame - start_frame)
-    with wave.open(str(output_path), "wb") as output:
-        output.setparams(params)
-        output.writeframes(frames)
+def _slice_native_wav(
+    source_path: Path,
+    output_path: Path,
+    start_frame: int,
+    end_frame: int,
+    *,
+    sample_rate: int,
+    channel_mode: str,
+) -> dict[str, Any]:
+    samples, clip_rate = read_mono_source_span(source_path, start_frame, end_frame, channel_mode)
+    if clip_rate != sample_rate:
+        raise ValueError(f"Native export sample-rate mismatch: {clip_rate} != {sample_rate}")
+    write_pcm16_mono(output_path, samples, sample_rate)
     with wave.open(str(output_path), "rb") as exported:
         return {
             "sample_rate": exported.getframerate(),
@@ -190,17 +190,23 @@ def export_native_candidate_clips(run_root: Path, config: dict[str, Any]) -> dic
             )
             continue
 
-        analysis_start = int(candidate["source_start_sample"])
-        analysis_end = int(candidate["source_end_sample"])
-        native_start = _analysis_to_native_sample(analysis_start, variant)
-        native_end = _analysis_to_native_sample(analysis_end, variant)
+        source_rate = int(source["sample_rate"])
+        native_start = int(candidate["source_start_sample"])
+        native_end = int(candidate["source_end_sample"])
         source_num_samples = int(source["num_samples"])
         native_start = max(0, min(source_num_samples, native_start))
         native_end = max(0, min(source_num_samples, native_end))
         rel_audio_path = f"artifacts/native_export_clips/{clip_id}.wav"
         output_path = resolve_under_root(run_root, rel_audio_path)
-        native_info = _slice_native_wav(Path(str(source["path"])), output_path, native_start, native_end)
-        expected_duration_sec = (analysis_end - analysis_start) / int(variant["analysis_sample_rate"])
+        native_info = _slice_native_wav(
+            Path(str(source["path"])),
+            output_path,
+            native_start,
+            native_end,
+            sample_rate=source_rate,
+            channel_mode=_channel_mode(variant),
+        )
+        expected_duration_sec = (native_end - native_start) / source_rate
         exported.append(
             {
                 "id": clip_id,
@@ -211,8 +217,8 @@ def export_native_candidate_clips(run_root: Path, config: dict[str, Any]) -> dic
                 "sample_rate": native_info["sample_rate"],
                 "num_channels": native_info["num_channels"],
                 "sample_width_bytes": native_info["sample_width_bytes"],
-                "analysis_start_sample": analysis_start,
-                "analysis_end_sample": analysis_end,
+                "analysis_start_sample": native_start,
+                "analysis_end_sample": native_end,
                 "native_start_sample": native_start,
                 "native_end_sample": native_end,
                 "duration_samples": native_info["duration_samples"],

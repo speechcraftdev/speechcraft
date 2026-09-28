@@ -13,6 +13,14 @@ export type QcClip = {
   trainingText: string;
 };
 
+export type HumanLabeledClip = {
+  clipId: string;
+  status: "accepted" | "rejected";
+  transcriptMatch: number | null;
+  speakerCheck: number | null;
+  cleanAccepted: boolean;
+};
+
 export type ManualOverride = "force_keep" | "force_reject";
 export type ThresholdStatus = "accepted" | "rejected";
 

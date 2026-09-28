@@ -116,3 +116,55 @@ def create_analysis_audio_variants(run_root: Path, sources: list[dict[str, Any]]
     write_json(resolve_under_root(run_root, "artifacts/audio_variants_manifest.json"), {"variants": variants})
     write_json(resolve_under_root(run_root, "artifacts/audio_variants_summary.json"), summary)
     return summary
+
+
+def map_analysis_sample_to_source(analysis_sample: int, analysis_rate: int, source_rate: int) -> int:
+    """Map an analysis-timeline sample onto the original recording. No audio is resampled."""
+    if analysis_rate <= 0 or source_rate <= 0:
+        raise ValueError(f"sample rates must be positive, got analysis={analysis_rate} source={source_rate}")
+    return int(round(analysis_sample * (source_rate / analysis_rate)))
+
+
+def read_mono_source_span(
+    path: Path,
+    start_frame: int,
+    end_frame: int,
+    channel_mode: str,
+) -> tuple[Any, int]:
+    """Read one span of the original WAV and downmix to mono at the source sample rate."""
+    import numpy as np
+    import soundfile as sf
+
+    if end_frame <= start_frame:
+        raise ValueError(f"Invalid source span: {start_frame}:{end_frame}")
+    info = sf.info(str(path))
+    if start_frame < 0 or end_frame > info.frames:
+        raise ValueError(
+            f"Source span escapes WAV: {start_frame}:{end_frame} > {info.frames} ({path})"
+        )
+    data, sample_rate = sf.read(str(path), start=start_frame, stop=end_frame, dtype="float32", always_2d=True)
+    channels = int(data.shape[1]) if data.ndim == 2 else 1
+    if channels == 1 or channel_mode == "left":
+        mono = data[:, 0]
+    elif channel_mode == "right" and channels > 1:
+        mono = data[:, 1]
+    else:
+        mono = data.mean(axis=1)
+    return np.asarray(mono, dtype=np.float32), int(sample_rate)
+
+
+def delete_analysis_wavs(run_root: Path, relative_paths: set[str], *, source_paths: set[Path]) -> list[str]:
+    """Remove temporary analysis copies. Never delete the original recording."""
+    removed: list[str] = []
+    protected = {path.resolve() for path in source_paths}
+    for relative in sorted(relative_paths):
+        if not relative:
+            continue
+        path = resolve_under_root(run_root, relative)
+        if not path.is_file():
+            continue
+        if path.resolve() in protected:
+            continue
+        path.unlink()
+        removed.append(relative)
+    return removed
