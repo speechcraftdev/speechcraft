@@ -19,8 +19,6 @@ import {
   dragSelect,
   extendSelection,
   fitView,
-  insertSilence,
-  insertSilenceSampleCount,
   mappingFromState,
   moveCursor,
   panView,
@@ -34,7 +32,6 @@ import {
   shiftClick,
   snapSelectionToZeroCrossings,
   splicePcmDelete,
-  splicePcmInsertSilence,
   zoomAround,
   zoomToSelection,
   type TimelineState,
@@ -61,7 +58,6 @@ export type WaveformEditorHandle = {
   stopPlayback: () => void;
   setPlaybackRate: (rate: number) => void;
   deleteSelection: () => Promise<void>;
-  insertSilenceAtCursor: () => Promise<void>;
   focus: () => void;
 };
 
@@ -512,36 +508,6 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
       }
     };
 
-    const insertSilenceAtCursor = async () => {
-      if (!callbacksRef.current.tryBeginAudioEdit()) return;
-      try {
-        stopPlayback();
-        const durationSamples = insertSilenceSampleCount(stateRef.current.sampleRateHz);
-        if (durationSamples <= 0) return;
-        const snapshot: EditorSnapshot = {
-          state: stateRef.current,
-          pcm: pcmRef.current,
-          peak: peakRef.current,
-        };
-        const inserted = insertSilence(stateRef.current, durationSamples);
-        pcmRef.current = splicePcmInsertSilence(pcmRef.current, inserted.atSample, inserted.durationSamples);
-        peakRef.current = clipPeakAbs(pcmRef.current);
-        stateRef.current = inserted.state;
-        paintWaveform();
-        publishHasSelection();
-        await commitEdit(
-          {
-            kind: "insert_silence",
-            at_sample: inserted.atSample,
-            duration_samples: inserted.durationSamples,
-          },
-          snapshot,
-        );
-      } finally {
-        callbacksRef.current.endAudioEdit();
-      }
-    };
-
     useImperativeHandle(ref, () => ({
       togglePlayback,
       playFromStart,
@@ -551,7 +517,6 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
         playbackRef.current.setPlaybackRate(rate);
       },
       deleteSelection,
-      insertSilenceAtCursor,
       focus: () => rootRef.current?.focus(),
     }));
 

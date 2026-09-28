@@ -220,16 +220,6 @@ export function ClipLabPanel({
         <Button type="button" variant="ghost" size="sm" className="h-8 text-neutral-200 hover:text-foreground" onClick={mergeClip}>
           Merge next
         </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-8 text-neutral-200 hover:text-foreground"
-          onClick={() => void editorRef.current?.insertSilenceAtCursor()}
-          disabled={audioEditInFlight || !clip.audioUrl}
-        >
-          Insert silence
-        </Button>
         {hasSelection ? (
           <Button
             type="button"

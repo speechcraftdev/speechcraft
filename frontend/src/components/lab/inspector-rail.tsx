@@ -76,20 +76,7 @@ export function InspectorRail({
   return (
     <TooltipProvider delayDuration={100}>
       <aside className="flex h-full w-[340px] flex-shrink-0 flex-col overflow-y-auto border-l border-border">
-        <div className="border-b border-border p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Inspector
-          </p>
-          <h2 className="mt-0.5 font-serif text-lg">Clip Review</h2>
-        </div>
-
-        {/* Always visible: live status + control */}
         <div className="space-y-4 border-b border-border p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wide text-muted-foreground">
-              Live status
-            </span>
-          </div>
 
           <div className="grid grid-cols-2 gap-1.5">
             {REVIEW_STATUS_ORDER.map((status) => (

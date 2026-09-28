@@ -192,6 +192,11 @@ export async function fetchCanonicalExportPreview(runId: string): Promise<Canoni
   return getJson<CanonicalExportPreview>(`/api/dataset-runs/${runId}/canonical-export-preview`);
 }
 
+/** List completed canonical JSONL exports for a dataset run, newest first. */
+export async function fetchCanonicalExports(runId: string): Promise<CanonicalExportSummary[]> {
+  return getJson<CanonicalExportSummary[]>(`/api/dataset-runs/${runId}/canonical-exports`);
+}
+
 /** Relative artifact path for a canonical export snapshot (under the run root). */
 export function canonicalExportArtifactPath(exportId: string): string {
   return `artifacts/canonical_exports/${exportId}`;
