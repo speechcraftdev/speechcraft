@@ -37,6 +37,7 @@ import {
   type TimelineState,
   createTimelineState,
   endpointAtX,
+  xFromSample,
 } from "./timeline";
 import {
   clipPeakAbs,
@@ -50,6 +51,7 @@ import {
 const HEIGHT_CSS = 200;
 const DRAG_THRESHOLD_PX = 4;
 const EDGE_HIT_PX = 6;
+export const CURSOR_HIT_PX = 6;
 const ZOOM_FACTOR = 1.25;
 
 export type WaveformEditorHandle = {
@@ -89,6 +91,7 @@ type Gesture =
       pointerId: number;
       startX: number;
       startSample: number;
+      anchorSample: number;
       grabbed: "anchor" | "focus" | null;
       shiftKey: boolean;
     }
@@ -107,6 +110,15 @@ function isDarkTheme(): boolean {
 
 function sampleToSeconds(sample: number, sampleRateHz: number): number {
   return sampleRateHz > 0 ? sample / sampleRateHz : 0;
+}
+
+export function cursorDragAnchorSample(
+  cursorSample: number,
+  pointerX: number,
+  mapping: Parameters<typeof xFromSample>[1],
+): number | null {
+  const cursorX = xFromSample(cursorSample, mapping);
+  return Math.abs(pointerX - cursorX) <= CURSOR_HIT_PX ? cursorSample : null;
 }
 
 export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorProps>(
@@ -461,7 +473,8 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
           root.style.cursor = "text";
         }
       } else {
-        root.style.cursor = "text";
+        root.style.cursor =
+          cursorDragAnchorSample(state.cursorSample, x, mapping()) === null ? "text" : "ew-resize";
       }
       paintOverlay();
     };
@@ -617,11 +630,15 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
         const grabbed = stateRef.current.selection
           ? endpointAtX(stateRef.current.selection, mapping(), x, EDGE_HIT_PX)
           : null;
+        const cursorAnchor = !stateRef.current.selection
+          ? cursorDragAnchorSample(stateRef.current.cursorSample, x, mapping())
+          : null;
         gestureRef.current = {
           kind: "pending",
           pointerId: e.pointerId,
           startX: e.clientX,
           startSample: sample,
+          anchorSample: cursorAnchor ?? sample,
           grabbed,
           shiftKey: e.shiftKey,
         };
@@ -649,7 +666,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
             gestureRef.current = {
               kind: "selecting",
               pointerId: e.pointerId,
-              anchorSample: gesture.startSample,
+              anchorSample: gesture.anchorSample,
             };
           }
         }
@@ -673,7 +690,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
           if (gesture.shiftKey || e.shiftKey) {
             stateRef.current = shiftClick(stateRef.current, sample);
           } else {
-            stateRef.current = clickWaveform(stateRef.current, sample);
+            stateRef.current = clickWaveform(stateRef.current, gesture.startSample);
           }
         } else if (gesture.kind === "selecting") {
           stateRef.current = dragSelect(stateRef.current, gesture.anchorSample, sample);
