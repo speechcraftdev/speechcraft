@@ -1,14 +1,12 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   CartesianGrid,
   Line,
   LineChart,
-  ReferenceLine,
   ResponsiveContainer,
   Scatter,
-  Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
@@ -32,6 +30,7 @@ export type HumanLabelMarker = {
 
 const Y_AXIS_WIDTH = 44;
 const PLOT_MARGIN = { top: 6, right: 8, bottom: 0, left: 0 };
+const X_AXIS_HEIGHT = 30;
 
 /** Same padding the pre-revamp card used so a shallow curve still fills the plot. */
 export function durationDomain(points: Array<{ acceptedDurationSec: number | null }>): { min: number; max: number } {
@@ -66,42 +65,6 @@ function formatDurationHms(totalSeconds: number): string {
   return `${seconds}s`;
 }
 
-type TooltipPayloadItem = {
-  payload?:
-    | (CurvePoint & { acceptedDurationSec: number | null })
-    | (HumanLabelMarker & { kind: "human-marker"; x: number; y: number });
-};
-
-function CurveTooltip({
-  active,
-  payload,
-}: {
-  active?: boolean;
-  payload?: TooltipPayloadItem[];
-}) {
-  if (!active || !payload?.length) return null;
-  const point = payload[0]?.payload;
-  if (!point) return null;
-  if ("kind" in point && point.kind === "human-marker") {
-    return (
-      <div className="border border-border bg-background px-2.5 py-1.5 text-xs shadow-sm">
-        <p className="font-medium">{point.clipId}</p>
-        <p className="text-[#878787]">
-          {point.cleanAccepted ? "Accepted · clean" : point.status === "rejected" ? "Rejected" : "Accepted · edited"}
-        </p>
-        <p className="text-[#878787]">Score = {point.score}</p>
-      </div>
-    );
-  }
-  const curvePoint = point as CurvePoint & { acceptedDurationSec: number | null };
-  return (
-    <div className="border border-border bg-background px-2.5 py-1.5 text-xs shadow-sm">
-      <p className="font-medium tabular-nums">Threshold = {curvePoint.threshold}</p>
-      <p className="text-[#878787]">Duration = {formatDurationHms(curvePoint.acceptedDurationSec ?? 0)}</p>
-    </div>
-  );
-}
-
 export function ThresholdImpactChart({
   title,
   points,
@@ -111,7 +74,14 @@ export function ThresholdImpactChart({
   height = 240,
 }: ThresholdImpactChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [dragging, setDragging] = useState(false);
+  const sliderRef = useRef<HTMLDivElement>(null);
+  const hoverMetricsRef = useRef<HTMLDivElement>(null);
+  const hoverThresholdRef = useRef<HTMLSpanElement>(null);
+  const hoverDurationRef = useRef<HTMLSpanElement>(null);
+  const hoverCircleRef = useRef<HTMLDivElement>(null);
+  const axisThresholdRef = useRef<HTMLSpanElement>(null);
+  const axisDurationRef = useRef<HTMLSpanElement>(null);
+  const dragValueRef = useRef(threshold);
   const linePoints = useMemo(
     () =>
       points.map((point) => ({
@@ -137,7 +107,11 @@ export function ThresholdImpactChart({
       };
     });
   }, [humanLabels, yDomain]);
-  const current = points[threshold];
+  const meaningfulThresholds = useMemo(
+    () => points.map((point) => point.threshold).sort((a, b) => a - b),
+    [points],
+  );
+  const current = points.find((point) => point.threshold >= threshold) ?? points.at(-1);
   const nothingLeft = !current || current.acceptedClipCount === 0;
   const plotLeft = PLOT_MARGIN.left + Y_AXIS_WIDTH;
   const plotRight = PLOT_MARGIN.right;
@@ -151,45 +125,171 @@ export function ThresholdImpactChart({
     if (plotWidth <= 0) return threshold;
     const ratio = (clientX - left) / plotWidth;
     const clamped = Math.max(0, Math.min(1, ratio));
-    return Math.round(clamped * 100);
-  }, [threshold, plotLeft, plotRight]);
+    const rawScore = clamped * 100;
+    return meaningfulThresholds.reduce((nearest, candidate) =>
+      Math.abs(candidate - rawScore) < Math.abs(nearest - rawScore) ? candidate : nearest,
+    meaningfulThresholds[0] ?? threshold);
+  }, [meaningfulThresholds, threshold, plotLeft, plotRight]);
+
+  const setSliderPosition = useCallback(
+    (value: number) => {
+      if (!sliderRef.current) return;
+      sliderRef.current.style.left =
+        `calc(${plotLeft}px + (100% - ${plotLeft + plotRight}px) * ${value / 100})`;
+    },
+    [plotLeft, plotRight],
+  );
+
+  const updateHoverAtScore = useCallback(
+    (score: number, showCircle: boolean) => {
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const plotWidth = rect.width - plotLeft - plotRight;
+      const plotHeight = height - PLOT_MARGIN.top - X_AXIS_HEIGHT - PLOT_MARGIN.bottom;
+      if (plotWidth <= 0 || plotHeight <= 0) return;
+
+      const clampedScore = Math.max(0, Math.min(100, score));
+      const ratio = clampedScore / 100;
+      const curvePoint = points.find((point) => point.threshold >= clampedScore) ?? points.at(-1);
+      if (!curvePoint) return;
+      const duration = curvePoint.acceptedDurationSec;
+      const yRatio = (duration - yDomain.min) / (yDomain.max - yDomain.min || 1);
+      const circle = hoverCircleRef.current;
+      if (circle) {
+        circle.style.left = `${plotLeft + ratio * plotWidth}px`;
+        circle.style.top = `${PLOT_MARGIN.top + (1 - yRatio) * plotHeight}px`;
+        circle.classList.toggle("invisible", !showCircle);
+      }
+      if (hoverThresholdRef.current) {
+        hoverThresholdRef.current.textContent = `Threshold: ${clampedScore.toFixed(2)}`;
+      }
+      if (hoverDurationRef.current) {
+        hoverDurationRef.current.textContent = `Accepted Duration: ${formatDurationHms(duration)}`;
+      }
+      hoverMetricsRef.current?.classList.remove("invisible");
+    },
+    [height, linePoints, plotLeft, plotRight, points, yDomain],
+  );
+
+  const updateAxisLabels = useCallback(
+    (value: number, visible: boolean) => {
+      const el = containerRef.current;
+      const curvePoint = points.find((point) => point.threshold >= value) ?? points.at(-1);
+      if (!el || !curvePoint) return;
+      const rect = el.getBoundingClientRect();
+      const plotWidth = rect.width - plotLeft - plotRight;
+      const plotHeight = height - PLOT_MARGIN.top - X_AXIS_HEIGHT - PLOT_MARGIN.bottom;
+      if (plotWidth <= 0 || plotHeight <= 0) return;
+
+      const clampedValue = Math.max(0, Math.min(100, value));
+      const yRatio = (curvePoint.acceptedDurationSec - yDomain.min) / (yDomain.max - yDomain.min || 1);
+      if (axisThresholdRef.current) {
+        axisThresholdRef.current.textContent = clampedValue.toFixed(2);
+        axisThresholdRef.current.style.left = `${plotLeft + (clampedValue / 100) * plotWidth}px`;
+        axisThresholdRef.current.classList.toggle("invisible", !visible);
+      }
+      if (axisDurationRef.current) {
+        axisDurationRef.current.textContent = formatDurationCompact(curvePoint.acceptedDurationSec);
+        axisDurationRef.current.style.top = `${PLOT_MARGIN.top + (1 - yRatio) * plotHeight}px`;
+        axisDurationRef.current.classList.toggle("invisible", !visible);
+      }
+    },
+    [height, plotLeft, plotRight, points, yDomain],
+  );
+
+  useEffect(() => {
+    updateAxisLabels(threshold, true);
+  }, [threshold, updateAxisLabels]);
+
+  const updateHover = useCallback(
+    (clientX: number) => {
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const plotWidth = rect.width - plotLeft - plotRight;
+      if (plotWidth <= 0) return;
+      const score = Math.max(0, Math.min(1, (clientX - rect.left - plotLeft) / plotWidth)) * 100;
+      updateHoverAtScore(score, true);
+    },
+    [plotLeft, plotRight, updateHoverAtScore],
+  );
+
+  const hideHover = useCallback(() => {
+    hoverMetricsRef.current?.classList.add("invisible");
+    hoverCircleRef.current?.classList.add("invisible");
+  }, []);
 
   const handlePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       event.preventDefault();
-      setDragging(true);
-      onThresholdChange(scoreFromClientX(event.clientX));
+      const initialValue = scoreFromClientX(event.clientX);
+      dragValueRef.current = initialValue;
+      setSliderPosition(initialValue);
+      updateAxisLabels(initialValue, false);
+      hoverCircleRef.current?.classList.add("invisible");
+      updateHoverAtScore(initialValue, false);
       const onMove = (moveEvent: PointerEvent) => {
-        onThresholdChange(scoreFromClientX(moveEvent.clientX));
+        const nextValue = scoreFromClientX(moveEvent.clientX);
+        dragValueRef.current = nextValue;
+        setSliderPosition(nextValue);
+        updateAxisLabels(nextValue, false);
+        hoverCircleRef.current?.classList.add("invisible");
+        updateHoverAtScore(nextValue, false);
       };
       const onUp = () => {
-        setDragging(false);
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onCancel);
+        onThresholdChange(dragValueRef.current);
+        updateAxisLabels(dragValueRef.current, true);
+        updateHoverAtScore(dragValueRef.current, true);
+      };
+      const onCancel = () => {
+        setSliderPosition(threshold);
+        updateAxisLabels(threshold, true);
+        updateHoverAtScore(threshold, true);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onCancel);
       };
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onCancel);
     },
-    [onThresholdChange, scoreFromClientX],
+    [onThresholdChange, scoreFromClientX, setSliderPosition, threshold, updateAxisLabels, updateHoverAtScore],
   );
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (event.key === "ArrowLeft") {
         event.preventDefault();
-        onThresholdChange(Math.max(0, threshold - 1));
+        const previous = [...meaningfulThresholds].reverse().find((value) => value < threshold);
+        const nextThreshold = previous ?? meaningfulThresholds[0] ?? 0;
+        updateAxisLabels(nextThreshold, true);
+        onThresholdChange(nextThreshold);
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
-        onThresholdChange(Math.min(100, threshold + 1));
+        const next = meaningfulThresholds.find((value) => value > threshold);
+        const nextThreshold = next ?? meaningfulThresholds.at(-1) ?? 100;
+        updateAxisLabels(nextThreshold, true);
+        onThresholdChange(nextThreshold);
       }
     },
-    [onThresholdChange, threshold],
+    [meaningfulThresholds, onThresholdChange, threshold, updateAxisLabels],
   );
 
   return (
     <div className="border border-border p-4">
-      <div className="mb-1 flex items-baseline justify-between">
+      <div className="mb-1 flex items-baseline justify-between gap-4">
         <h3 className="font-serif text-lg leading-none">{title}</h3>
+        <div
+          ref={hoverMetricsRef}
+          className="invisible flex h-10 shrink-0 flex-col items-end text-xs leading-5 tabular-nums text-white"
+        >
+          <span ref={hoverThresholdRef}>Threshold: 00.00</span>
+          <span ref={hoverDurationRef}>Accepted Duration: 0s</span>
+        </div>
       </div>
       {humanLabels.length > 0 ? (
         <div className="mb-2 flex items-center gap-3 text-[11px] text-muted-foreground">
@@ -211,9 +311,14 @@ export function ThresholdImpactChart({
         className="relative touch-none select-none"
         style={{ height }}
         onPointerDown={handlePointerDown}
+        onMouseMove={(event) => updateHover(event.clientX)}
+        onMouseLeave={hideHover}
       >
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={linePoints} margin={PLOT_MARGIN}>
+          <LineChart
+            data={linePoints}
+            margin={PLOT_MARGIN}
+          >
             <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid-stroke, #e6e6e6)" vertical={false} />
             <XAxis
               dataKey="threshold"
@@ -232,13 +337,13 @@ export function ThresholdImpactChart({
               tickFormatter={formatDurationCompact}
               tick={{ fill: "#878787", fontSize: 10 }}
             />
-            <Tooltip content={<CurveTooltip />} cursor={false} />
             <Line
-              type="linear"
+              type="stepAfter"
               dataKey="acceptedDurationSec"
               stroke="var(--chart-bar-fill)"
               strokeWidth={1.5}
               dot={false}
+              activeDot={false}
               connectNulls={false}
               isAnimationActive={false}
             />
@@ -263,17 +368,32 @@ export function ThresholdImpactChart({
                 isAnimationActive={false}
               />
             ) : null}
-            <ReferenceLine
-              x={threshold}
-              stroke="currentColor"
-              strokeWidth={1.5}
-              zIndex={500}
-              className="text-foreground"
-            />
           </LineChart>
         </ResponsiveContainer>
 
+        <span
+          ref={axisThresholdRef}
+          className="pointer-events-none invisible absolute bottom-0 -translate-x-1/2 translate-y-full bg-background px-0.5 text-[10px] tabular-nums text-[#878787]"
+          aria-hidden="true"
+        >
+          {threshold.toFixed(2)}
+        </span>
+        <span
+          ref={axisDurationRef}
+          className="pointer-events-none invisible absolute left-0 -translate-x-full -translate-y-1/2 bg-background pr-1 text-[10px] tabular-nums text-[#878787]"
+          aria-hidden="true"
+        >
+          {formatDurationCompact(current?.acceptedDurationSec ?? 0)}
+        </span>
+
         <div
+          ref={hoverCircleRef}
+          className="invisible pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-background bg-foreground"
+          aria-hidden="true"
+        />
+
+        <div
+          ref={sliderRef}
           role="slider"
           aria-label={`${title} minimum threshold`}
           aria-valuemin={0}
@@ -286,11 +406,8 @@ export function ThresholdImpactChart({
             left: `calc(${plotLeft}px + (100% - ${plotLeft + plotRight}px) * ${threshold / 100})`,
           }}
         >
-          <div
-            className={`mt-[-4px] h-2.5 w-2.5 rotate-45 border border-foreground bg-background transition-transform ${
-              dragging ? "scale-125" : ""
-            }`}
-          />
+          <div className="pointer-events-none absolute inset-y-0 w-px bg-foreground" />
+          <div className="pointer-events-none relative z-10 mt-[-4px] h-2.5 w-2.5 rotate-45 border border-foreground bg-background" />
         </div>
       </div>
     </div>

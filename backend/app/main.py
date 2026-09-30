@@ -44,6 +44,8 @@ from .clip_lab_state import (
     StaleClipError,
     StaleManifestError,
     get_dataset_clip_lab,
+    clear_qc_subset,
+    save_qc_subset,
     get_dataset_clip_lab_audio_bytes,
     get_dataset_clip_lab_waveform_peaks,
     patch_dataset_clip_lab_clip,
@@ -67,6 +69,7 @@ from .models import (
     DatasetClipLabAudioStackRequest,
     DatasetClipLabPatchRequest,
     DatasetClipLabView,
+    DatasetQcSubsetRequest,
     DatasetExportResultsView,
     DatasetExportRerunRequest,
     DatasetQcFinalizeRequest,
@@ -350,6 +353,64 @@ def finalize_dataset_qc_route(run_id: str, payload: DatasetQcFinalizeRequest) ->
 def read_dataset_clip_lab(run_id: str) -> DatasetClipLabView:
     try:
         return get_dataset_clip_lab(repository, run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ClipLabValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ClipLabStateError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.put("/api/dataset-runs/{run_id}/clip-lab/qc-subset", response_model=DatasetClipLabView)
+def set_dataset_clip_lab_qc_subset(
+    run_id: str,
+    payload: DatasetQcSubsetRequest,
+) -> DatasetClipLabView:
+    from sqlmodel import Session
+    from .dataset_runs import _run_root
+    from .models import ProcessingRun
+    from .clip_lab_state import candidate_manifest_path, compute_manifest_sha256, clip_lab_run_lock, build_clip_lab_view
+
+    try:
+        with Session(repository.engine) as session:
+            run = session.get(ProcessingRun, run_id)
+            if run is None:
+                raise KeyError("Dataset run not found")
+            root = _run_root(repository, run)
+        with clip_lab_run_lock(root):
+            manifest_sha = compute_manifest_sha256(candidate_manifest_path(root))
+            save_qc_subset(
+                root,
+                candidate_manifest_sha256=manifest_sha,
+                transcript_match_min=payload.transcript_match_min,
+                speaker_check_min=payload.speaker_check_min,
+            )
+            from .clip_lab_state import _serialize_clip_lab_view
+            return _serialize_clip_lab_view(build_clip_lab_view(root, run_id=run_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ClipLabValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ClipLabStateError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.delete("/api/dataset-runs/{run_id}/clip-lab/qc-subset", response_model=DatasetClipLabView)
+def clear_dataset_clip_lab_qc_subset(run_id: str) -> DatasetClipLabView:
+    from sqlmodel import Session
+    from .dataset_runs import _run_root
+    from .models import ProcessingRun
+    from .clip_lab_state import clip_lab_run_lock, build_clip_lab_view, _serialize_clip_lab_view
+
+    try:
+        with Session(repository.engine) as session:
+            run = session.get(ProcessingRun, run_id)
+            if run is None:
+                raise KeyError("Dataset run not found")
+            root = _run_root(repository, run)
+        with clip_lab_run_lock(root):
+            clear_qc_subset(root)
+            return _serialize_clip_lab_view(build_clip_lab_view(root, run_id=run_id))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ClipLabValidationError as exc:

@@ -198,8 +198,8 @@ def _threshold_status(
     *,
     transcript_match: float | None,
     speaker_check: float | None,
-    transcript_threshold: int,
-    speaker_threshold: int,
+    transcript_threshold: float,
+    speaker_threshold: float,
     audio_missing: bool = False,
 ) -> Literal["accepted", "rejected"]:
     if audio_missing or transcript_match is None or speaker_check is None:
@@ -228,8 +228,8 @@ def _failed_checks(
     *,
     transcript_match: float | None,
     speaker_check: float | None,
-    transcript_threshold: int,
-    speaker_threshold: int,
+    transcript_threshold: float,
+    speaker_threshold: float,
     audio_missing: bool = False,
 ) -> list[str]:
     failed: list[str] = []
@@ -321,7 +321,16 @@ def _read_finalized_state(
     transcript_min = thresholds.get("transcript_match_min")
     speaker_min = thresholds.get("speaker_check_min")
     finalized_thresholds = None
-    if isinstance(transcript_min, int) and isinstance(speaker_min, int):
+    if (
+        isinstance(transcript_min, (int, float))
+        and not isinstance(transcript_min, bool)
+        and isinstance(speaker_min, (int, float))
+        and not isinstance(speaker_min, bool)
+        and math.isfinite(float(transcript_min))
+        and math.isfinite(float(speaker_min))
+        and 0 <= float(transcript_min) <= 100
+        and 0 <= float(speaker_min) <= 100
+    ):
         finalized_thresholds = DatasetQcFinalizedThresholdsView(
             transcript_match_min=transcript_min,
             speaker_check_min=speaker_min,
@@ -526,7 +535,12 @@ def get_dataset_qc(repository: Any, run_id: str) -> DatasetQcPayloadView:
                     audio_path=audio_path,
                     audio_url=_audio_url(run_id, clip_id),
                     duration_sec=duration_sec,
-                    training_text=str(candidate.get("training_text") or ""),
+                    training_text=str(
+                        candidate.get("training_text")
+                        or (transcript_row or {}).get("whisper_text")
+                        or candidate.get("alignment_text")
+                        or ""
+                    ),
                     alignment_text=(
                         str(candidate.get("alignment_text"))
                         if candidate.get("alignment_text") is not None

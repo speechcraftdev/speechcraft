@@ -6,6 +6,7 @@
 
 export type QcClip = {
   clipId: string;
+  audioUrl?: string | null;
   durationSec: number;
   transcriptMatch: number | null;
   speakerCheck: number | null;
@@ -48,7 +49,6 @@ export type CombinedSummary = {
 };
 
 export type KeptSort = "risk" | "transcript" | "speaker";
-export type RejectedSort = "closest" | "transcript_only" | "speaker_only";
 
 const NEG_INF = Number.NEGATIVE_INFINITY;
 
@@ -140,75 +140,60 @@ export function riskiestKept(
   return kept;
 }
 
-/** Rejected clips ordered so the best rejected (closest to passing) come first. */
-export function bestRejected(
+/** Select up to ten accepted clips, spread across their source order. */
+export function evenlyDistributedKept(
   clips: QcClip[],
   transcriptThreshold: number,
   speakerThreshold: number,
-  sort: RejectedSort = "closest",
   overrides: Record<string, ManualOverride | null | undefined> = {},
+  random: () => number = Math.random,
 ): ClipWithMargins[] {
-  const rejected = withMarginsByStatus(clips, transcriptThreshold, speakerThreshold, "rejected", overrides).filter(
-    (entry) => {
-      if (sort === "transcript_only") {
-        return (
-          scoreOr(entry.clip.transcriptMatch) < transcriptThreshold &&
-          scoreOr(entry.clip.speakerCheck) >= speakerThreshold
-        );
-      }
-      if (sort === "speaker_only") {
-        return (
-          scoreOr(entry.clip.speakerCheck) < speakerThreshold &&
-          scoreOr(entry.clip.transcriptMatch) >= transcriptThreshold
-        );
-      }
-      return true;
-    },
-  );
-  rejected.sort((l, r) => {
-    if (sort === "transcript_only") {
-      return scoreOr(r.clip.transcriptMatch) - scoreOr(l.clip.transcriptMatch) || byClipId(l.clip, r.clip);
-    }
-    if (sort === "speaker_only") {
-      return scoreOr(r.clip.speakerCheck) - scoreOr(l.clip.speakerCheck) || byClipId(l.clip, r.clip);
-    }
-    return l.recoveryGap - r.recoveryGap || byClipId(l.clip, r.clip);
+  const kept = withMarginsByStatus(clips, transcriptThreshold, speakerThreshold, "accepted", overrides);
+  const sampleSize = Math.min(10, kept.length);
+  if (sampleSize === 0) return [];
+  if (sampleSize === kept.length) return kept;
+
+  return Array.from({ length: sampleSize }, (_, index) => {
+    const start = Math.floor((index * kept.length) / sampleSize);
+    const end = Math.floor(((index + 1) * kept.length) / sampleSize);
+    const rangeSize = Math.max(1, end - start);
+    const randomIndex = Math.min(rangeSize - 1, Math.floor(random() * rangeSize));
+    return kept[start + randomIndex];
   });
-  return rejected;
 }
 
-export function clampScoreToBucket(score: number | null | undefined): number | null {
+export function clampScore(score: number | null | undefined): number | null {
   if (typeof score !== "number" || !Number.isFinite(score)) return null;
-  const bucket = Math.floor(score);
-  if (bucket < 0) return 0;
-  if (bucket > 100) return 100;
-  return bucket;
+  return Math.max(0, Math.min(100, score));
 }
 
 /**
- * Yield curve: for every integer threshold 0..100, the accepted duration and
- * clip count if that single gate were applied alone. This is the "area under
- * the graph" the threshold handle sweeps.
+ * Yield curve at every threshold that can change the accepted set. Scores are
+ * preserved so the threshold handle can snap to the actual clip boundaries.
  */
 export function thresholdImpactCurve(
   clips: QcClip[],
   getScore: (clip: QcClip) => number | null | undefined,
 ): CurvePoint[] {
-  const durationAt = new Float64Array(101);
-  const countAt = new Uint32Array(101);
+  const events = new Map<number, { duration: number; count: number }>();
   for (const clip of clips) {
-    const bucket = clampScoreToBucket(getScore(clip));
-    if (bucket === null) continue;
-    durationAt[bucket] += clip.durationSec;
-    countAt[bucket] += 1;
+    const score = clampScore(getScore(clip));
+    if (score === null) continue;
+    const event = events.get(score) ?? { duration: 0, count: 0 };
+    event.duration += clip.durationSec;
+    event.count += 1;
+    events.set(score, event);
   }
-  const curve: CurvePoint[] = new Array(101);
+  const thresholds = Array.from(new Set([0, 100, ...events.keys()])).sort((a, b) => a - b);
+  const curve: CurvePoint[] = new Array(thresholds.length);
   let acceptedDurationSec = 0;
   let acceptedClipCount = 0;
-  for (let threshold = 100; threshold >= 0; threshold -= 1) {
-    acceptedDurationSec += durationAt[threshold];
-    acceptedClipCount += countAt[threshold];
-    curve[threshold] = {
+  for (let index = thresholds.length - 1; index >= 0; index -= 1) {
+    const threshold = thresholds[index];
+    const event = events.get(threshold);
+    acceptedDurationSec += event?.duration ?? 0;
+    acceptedClipCount += event?.count ?? 0;
+    curve[index] = {
       threshold,
       acceptedDurationSec: Number(acceptedDurationSec.toFixed(6)),
       acceptedClipCount,

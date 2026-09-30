@@ -32,6 +32,7 @@ from filelock import FileLock, Timeout
 logger = logging.getLogger(__name__)
 
 CLIP_LAB_STATE_REL = "artifacts/clip_lab_state.json"
+QC_SUBSET_REL = "artifacts/clip_lab_qc_subset.json"
 CLIP_LAB_STATE_ARCHIVE_REL = "artifacts/clip_lab_state_archive"
 CLIP_LAB_RENDERS_REL = "artifacts/clip_lab_renders"
 CLIP_LAB_PEAKS_REL = "artifacts/clip_lab_peaks"
@@ -113,6 +114,62 @@ def _utc_now_iso() -> str:
 
 def clip_lab_state_path(run_root: Path) -> Path:
     return run_root / CLIP_LAB_STATE_REL
+
+
+def qc_subset_path(run_root: Path) -> Path:
+    return run_root / QC_SUBSET_REL
+
+
+def load_qc_subset(run_root: Path, *, candidate_manifest_sha256: str) -> dict[str, Any] | None:
+    path = qc_subset_path(run_root)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ClipLabValidationError(f"{QC_SUBSET_REL} is malformed") from exc
+    if not isinstance(payload, dict):
+        raise ClipLabValidationError(f"{QC_SUBSET_REL} must be a JSON object")
+    if payload.get("candidate_manifest_sha256") != candidate_manifest_sha256:
+        return None
+    try:
+        transcript = float(payload["transcript_match_min"])
+        speaker = float(payload["speaker_check_min"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ClipLabValidationError(f"{QC_SUBSET_REL} has invalid thresholds") from exc
+    if not (0 <= transcript <= 100 and 0 <= speaker <= 100):
+        raise ClipLabValidationError(f"{QC_SUBSET_REL} thresholds must be between 0 and 100")
+    return {
+        "candidate_manifest_sha256": candidate_manifest_sha256,
+        "transcript_match_min": transcript,
+        "speaker_check_min": speaker,
+    }
+
+
+def save_qc_subset(
+    run_root: Path,
+    *,
+    candidate_manifest_sha256: str,
+    transcript_match_min: float,
+    speaker_check_min: float,
+) -> dict[str, Any]:
+    if not (0 <= transcript_match_min <= 100 and 0 <= speaker_check_min <= 100):
+        raise ClipLabValidationError("QC thresholds must be between 0 and 100")
+    payload = {
+        "schema_version": 1,
+        "candidate_manifest_sha256": candidate_manifest_sha256,
+        "transcript_match_min": float(transcript_match_min),
+        "speaker_check_min": float(speaker_check_min),
+    }
+    _atomic_write_json(qc_subset_path(run_root), payload)
+    return payload
+
+
+def clear_qc_subset(run_root: Path) -> None:
+    try:
+        qc_subset_path(run_root).unlink()
+    except FileNotFoundError:
+        pass
 
 
 def clip_lab_lock_path(run_root: Path) -> Path:
@@ -674,6 +731,7 @@ def _build_clip_view(
 def build_clip_lab_view(run_root: Path, *, run_id: str) -> dict[str, Any]:
     manifest = load_candidate_manifest(run_root)
     current_manifest_sha = compute_manifest_sha256(candidate_manifest_path(run_root))
+    active_qc_subset = load_qc_subset(run_root, candidate_manifest_sha256=current_manifest_sha)
     saved_state = load_clip_lab_state(run_root)
     qc_state = _load_optional_qc_indexes(run_root)
 
@@ -728,6 +786,7 @@ def build_clip_lab_view(run_root: Path, *, run_id: str) -> dict[str, Any]:
         "saved_state_clip_count": saved_state_clip_count,
         "qc_available": qc_state.qc_available,
         "qc_error": qc_state.qc_error,
+        "active_qc_subset": active_qc_subset,
         "clips": clips_out,
     }
 
@@ -975,7 +1034,10 @@ def _serialize_clip_lab_clip(raw: dict[str, Any]) -> Any:
 
 
 def _serialize_clip_lab_view(raw: dict[str, Any]) -> Any:
-    from .models import DatasetClipLabView
+    from .models import DatasetClipLabView, DatasetQcSubsetView
+
+    raw_subset = raw.get("active_qc_subset")
+    active_subset = DatasetQcSubsetView(**raw_subset) if isinstance(raw_subset, dict) else None
 
     return DatasetClipLabView(
         run_id=raw["run_id"],
@@ -987,6 +1049,7 @@ def _serialize_clip_lab_view(raw: dict[str, Any]) -> Any:
         saved_state_clip_count=int(raw.get("saved_state_clip_count") or 0),
         qc_available=bool(raw.get("qc_available")),
         qc_error=raw.get("qc_error"),
+        active_qc_subset=active_subset,
         clips=[_serialize_clip_lab_clip(clip) for clip in raw.get("clips") or []],
     )
 

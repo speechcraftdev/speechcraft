@@ -36,8 +36,6 @@ export function ProjectPicker() {
     router.replace(`${pathname}?${params.toString()}`);
   };
 
-  const initials = (activeProject?.name ?? "··").slice(0, 2).toUpperCase();
-
   return (
     <TooltipProvider delayDuration={50}>
       <Popover>
@@ -47,13 +45,9 @@ export function ProjectPicker() {
               <button
                 type="button"
                 aria-label="Switch project"
-                className="flex items-center justify-center"
+                className="flex h-8 items-center justify-center px-2 text-sm text-foreground hover:bg-secondary"
               >
-                <Avatar className="h-8 w-8 rounded-none border border-border">
-                  <AvatarFallback className="rounded-none text-xs">
-                    {initials}
-                  </AvatarFallback>
-                </Avatar>
+                Projects
               </button>
             </PopoverTrigger>
           </TooltipTrigger>
@@ -66,30 +60,33 @@ export function ProjectPicker() {
           <p className="px-2 py-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
             Project
           </p>
-          {projects.map((project) => {
-            const isActive = project.id === activeProject?.id;
-            return (
-              <button
-                key={project.id}
-                type="button"
-                onClick={() => selectProject(project.id)}
-                className={cn(
-                  "flex w-full items-center justify-between px-2 py-1.5 text-sm transition-colors hover:bg-secondary",
-                  isActive && "text-foreground",
-                )}
-              >
-                <span className="flex items-center gap-2">
-                  <Avatar className="h-5 w-5 rounded-none border border-border">
-                    <AvatarFallback className="rounded-none text-[9px]">
-                      {project.name.slice(0, 2).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                  {project.name}
-                </span>
-                {isActive ? <Icons.Check className="size-4" /> : null}
-              </button>
-            );
-          })}
+          <div className="max-h-[min(70vh,24rem)] overflow-y-auto">
+            {projects.map((project) => {
+              const isActive = project.id === activeProject?.id;
+              return (
+                <button
+                  key={project.id}
+                  type="button"
+                  onClick={() => selectProject(project.id)}
+                  title={project.name}
+                  className={cn(
+                    "flex w-full items-center justify-between gap-2 px-2 py-1.5 text-sm transition-colors hover:bg-secondary",
+                    isActive && "text-foreground",
+                  )}
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <Avatar className="h-5 w-5 shrink-0 rounded-none border border-border">
+                      <AvatarFallback className="rounded-none text-[9px]">
+                        {project.name.slice(0, 2).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="truncate">{project.name}</span>
+                  </span>
+                  {isActive ? <Icons.Check className="size-4 shrink-0" /> : null}
+                </button>
+              );
+            })}
+          </div>
         </PopoverContent>
       </Popover>
     </TooltipProvider>

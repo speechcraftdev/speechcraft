@@ -265,6 +265,8 @@ def _collect_export_material(
 
     preview = CanonicalExportPreviewView(
         run_id=run_id,
+        export_scope="all_accepted",
+        active_qc_subset=view.get("active_qc_subset"),
         accepted_clip_count=len(accepted_clip_views),
         total_duration_sec=round(total_duration_sec, 6),
         original_audio_count=original_audio_count,

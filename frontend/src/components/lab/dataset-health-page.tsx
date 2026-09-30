@@ -1,33 +1,24 @@
 "use client";
 
 import { Button } from "@midday/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@midday/ui/alert-dialog";
 import { useToast } from "@midday/ui/use-toast";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { BestRejectedTable, RiskiestKeptTable } from "./boundary-tables";
+import { RiskiestKeptTable, RandomKeptTable } from "./boundary-tables";
 import {
   combinedSummary,
   thresholdImpactCurve,
   type HumanLabeledClip,
   type QcClip,
 } from "./qc-logic";
-import { fetchDatasetQc, type DatasetQcClipApi } from "./speechcraft-api";
-import { finalizeDatasetQc, SpeechcraftApiError } from "./speechcraft-write-api";
+import { fetchDatasetQc, resolveMediaUrl, type DatasetQcClipApi, type QcSubset } from "./speechcraft-api";
+import { SpeechcraftApiError } from "./speechcraft-write-api";
 import { ThresholdImpactChart, type HumanLabelMarker } from "./threshold-impact-chart";
 
 function toQcClip(api: DatasetQcClipApi): QcClip {
   return {
     clipId: api.clip_id,
+    audioUrl: resolveMediaUrl(api.audio_url),
     durationSec: api.duration_sec,
     transcriptMatch: api.transcript_match,
     speakerCheck: api.speaker_check,
@@ -66,15 +57,21 @@ export function DatasetHealthPage({
   runId,
   demo = false,
   humanLabeledClips = [],
+  activeQcSubset,
+  draftQcThresholds,
+  onDraftQcThresholdsChange,
+  onOpenInClipLab,
 }: {
   runId: string | null;
   demo?: boolean;
   humanLabeledClips?: HumanLabeledClip[];
+  activeQcSubset: QcSubset | null;
+  draftQcThresholds: { transcript_match_min: number; speaker_check_min: number };
+  onDraftQcThresholdsChange: (next: { transcript_match_min: number; speaker_check_min: number }) => void;
+  onOpenInClipLab: (thresholds: { transcript_match_min: number; speaker_check_min: number }) => Promise<void>;
 }) {
   const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [committing, setCommitting] = useState(false);
+  const [opening, setOpening] = useState(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["sc-dataset-qc", runId],
@@ -88,22 +85,13 @@ export function DatasetHealthPage({
     [demo, data],
   );
 
-  const defaults = data?.defaults ?? { transcript_match_threshold: 85, speaker_check_threshold: 70 };
-  const initialTranscript = data?.finalized_thresholds?.transcript_match_min ?? defaults.transcript_match_threshold;
-  const initialSpeaker = data?.finalized_thresholds?.speaker_check_min ?? defaults.speaker_check_threshold;
-
-  const [transcriptThreshold, setTranscriptThreshold] = useState(initialTranscript);
-  const [speakerThreshold, setSpeakerThreshold] = useState(initialSpeaker);
-
-  // Re-sync local thresholds once when the finalized state actually loads
-  // (demo mode has no async load, so it's already correct on first render).
-  const syncKey = demo ? "demo" : data ? "loaded" : "pending";
-  const [lastSyncKey, setLastSyncKey] = useState<string | null>(null);
-  if (syncKey !== "pending" && syncKey !== lastSyncKey) {
-    setTranscriptThreshold(initialTranscript);
-    setSpeakerThreshold(initialSpeaker);
-    setLastSyncKey(syncKey);
-  }
+  const transcriptThreshold = draftQcThresholds.transcript_match_min;
+  const speakerThreshold = draftQcThresholds.speaker_check_min;
+  const subsetIsOpen = Boolean(
+    activeQcSubset &&
+      activeQcSubset.transcript_match_min === transcriptThreshold &&
+      activeQcSubset.speaker_check_min === speakerThreshold,
+  );
 
   const transcriptCurve = useMemo(
     () => thresholdImpactCurve(clips, (c) => c.transcriptMatch),
@@ -147,32 +135,29 @@ export function DatasetHealthPage({
   const ready = demo || (data?.ready ?? false);
   const qcNotReady = !demo && data && !data.ready;
 
-  const handleCommit = async () => {
-    if (!runId) return;
-    setCommitting(true);
+  const handleOpen = async () => {
+    if (subsetIsOpen) return;
+    setOpening(true);
     try {
-      const result = await finalizeDatasetQc(runId, {
+      await onOpenInClipLab({
         transcript_match_min: transcriptThreshold,
         speaker_check_min: speakerThreshold,
       });
       toast({
-        title: "Thresholds committed",
-        description: `${result.summary.accepted_count} clips accepted (${formatDuration(result.summary.accepted_duration_sec)}). Export is now stale.`,
+        title: "Opened in Clip Lab",
+        description: `${summary.acceptedCount} clips pass both QC gates at these thresholds.`,
         variant: "success",
         duration: 4000,
       });
-      queryClient.invalidateQueries({ queryKey: ["sc-dataset-qc", runId] });
-      queryClient.invalidateQueries({ queryKey: ["sc-cliplab", runId] });
     } catch (err) {
       toast({
-        title: "Commit failed",
+        title: "Could not open Clip Lab",
         description: err instanceof SpeechcraftApiError ? err.detail : String(err),
         variant: "error",
         duration: 4500,
       });
     } finally {
-      setCommitting(false);
-      setConfirmOpen(false);
+      setOpening(false);
     }
   };
 
@@ -227,21 +212,20 @@ export function DatasetHealthPage({
           <div className="font-serif text-lg leading-none">
             {summary.acceptedCount} of {clips.length} clips pass both gates at these thresholds ·{" "}
             {formatDuration(summary.acceptedDurationSec)}
-            {data?.finalized && (
-              <span className="ml-2 text-xs text-[#878787]">
-                (committed: {data.finalized_thresholds?.transcript_match_min}/
-                {data.finalized_thresholds?.speaker_check_min})
-              </span>
-            )}
+            {activeQcSubset ? <span className="ml-2 text-xs text-[#878787]">(active subset)</span> : null}
           </div>
           <Button
             type="button"
             size="sm"
-            className="h-8"
-            disabled={demo || !runId || committing}
-            onClick={() => setConfirmOpen(true)}
+            variant={subsetIsOpen ? "secondary" : "default"}
+            className={subsetIsOpen
+              ? "h-8 border border-[#3a3a3a] !bg-[#1b1b1b] !text-white hover:!bg-[#1b1b1b]"
+              : "h-8"}
+            disabled={(!demo && !runId) || opening}
+            onClick={() => void handleOpen()}
+            aria-pressed={subsetIsOpen}
           >
-            {committing ? "Committing…" : "Commit thresholds"}
+            {opening ? "Opening…" : "Open in Clip Lab"}
           </Button>
         </div>
 
@@ -250,14 +234,20 @@ export function DatasetHealthPage({
             title="Transcript match"
             points={transcriptCurve}
             threshold={transcriptThreshold}
-            onThresholdChange={setTranscriptThreshold}
+            onThresholdChange={(value) => onDraftQcThresholdsChange({
+              transcript_match_min: value,
+              speaker_check_min: speakerThreshold,
+            })}
             humanLabels={transcriptMarkers}
           />
           <ThresholdImpactChart
             title="Speaker check"
             points={speakerCurve}
             threshold={speakerThreshold}
-            onThresholdChange={setSpeakerThreshold}
+            onThresholdChange={(value) => onDraftQcThresholdsChange({
+              transcript_match_min: transcriptThreshold,
+              speaker_check_min: value,
+            })}
             humanLabels={speakerMarkers}
           />
         </div>
@@ -268,7 +258,7 @@ export function DatasetHealthPage({
             transcriptThreshold={transcriptThreshold}
             speakerThreshold={speakerThreshold}
           />
-          <BestRejectedTable
+          <RandomKeptTable
             clips={clips}
             transcriptThreshold={transcriptThreshold}
             speakerThreshold={speakerThreshold}
@@ -276,24 +266,6 @@ export function DatasetHealthPage({
         </div>
       </div>
 
-      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle className="font-serif">Commit these thresholds?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This writes the verdict for every clip at transcript ≥ {transcriptThreshold} and
-              speaker ≥ {speakerThreshold}, and invalidates any existing export for this run.
-              Human overrides in Clip Lab still take priority.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={committing}>Cancel</AlertDialogCancel>
-            <AlertDialogAction disabled={committing} onClick={() => void handleCommit()}>
-              {committing ? "Committing…" : "Commit"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
+import math
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -785,8 +786,8 @@ class DatasetQcClipView(SQLModel):
 
 
 class DatasetQcFinalizedThresholdsView(SQLModel):
-    transcript_match_min: int
-    speaker_check_min: int
+    transcript_match_min: float
+    speaker_check_min: float
 
 
 class DatasetQcPayloadView(SQLModel):
@@ -801,15 +802,18 @@ class DatasetQcPayloadView(SQLModel):
 
 
 class DatasetQcThresholdsRequest(SQLModel):
-    transcript_match_min: int = Field(ge=0, le=100)
-    speaker_check_min: int = Field(ge=0, le=100)
+    transcript_match_min: float = Field(ge=0, le=100)
+    speaker_check_min: float = Field(ge=0, le=100)
 
     @field_validator("transcript_match_min", "speaker_check_min", mode="before")
     @classmethod
-    def strict_integer_threshold(cls, value: Any) -> int:
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("threshold must be an integer 0-100")
-        return value
+    def finite_threshold(cls, value: Any) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("threshold must be a finite number 0-100")
+        threshold = float(value)
+        if not math.isfinite(threshold) or threshold < 0 or threshold > 100:
+            raise ValueError("threshold must be a finite number 0-100")
+        return threshold
 
 
 class DatasetQcManualOverrideRequest(SQLModel):
@@ -889,6 +893,17 @@ class DatasetClipLabAudioStackRequest(SQLModel):
     expected_clip_version: int
 
 
+class DatasetQcSubsetView(SQLModel):
+    candidate_manifest_sha256: str
+    transcript_match_min: float = Field(ge=0, le=100)
+    speaker_check_min: float = Field(ge=0, le=100)
+
+
+class DatasetQcSubsetRequest(SQLModel):
+    transcript_match_min: float = Field(ge=0, le=100)
+    speaker_check_min: float = Field(ge=0, le=100)
+
+
 class DatasetClipLabView(SQLModel):
     run_id: str
     candidate_manifest_sha256: str
@@ -899,6 +914,7 @@ class DatasetClipLabView(SQLModel):
     saved_state_clip_count: int = 0
     qc_available: bool = False
     qc_error: str | None = None
+    active_qc_subset: DatasetQcSubsetView | None = None
     clips: list[DatasetClipLabClipView] = Field(default_factory=list)
 
 
@@ -909,6 +925,8 @@ class CanonicalExportBlockedReasonView(SQLModel):
 
 class CanonicalExportPreviewView(SQLModel):
     run_id: str
+    export_scope: str = "all_accepted"
+    active_qc_subset: DatasetQcSubsetView | None = None
     accepted_clip_count: int = 0
     total_duration_sec: float = 0.0
     original_audio_count: int = 0

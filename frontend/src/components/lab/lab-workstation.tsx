@@ -34,17 +34,18 @@ import {
 } from "./lab-data";
 import { demoEnabled } from "@/lib/demo";
 import {
-  effectiveQcThresholds,
   fetchClipLabView,
-  fetchDatasetQc,
   fetchDatasetRuns,
   fetchProjects,
   mapApiClip,
   pickReviewableRun,
+  type QcSubset,
 } from "./speechcraft-api";
 import {
   type DatasetAudioEditOperation,
   type DatasetClipLabClipView,
+  clearQcSubset,
+  setQcSubset,
   SpeechcraftApiError,
   appendAudioOperation,
   markReferenceClipCandidate,
@@ -78,6 +79,17 @@ function tokensFor(clip: LabClip) {
 
 const isLiveBacked = (clip: LabClip) =>
   clip.manifestSha != null && clip.clipVersion != null;
+
+function passesQcSubset(clip: LabClip, subset: QcSubset | null): boolean {
+  if (!subset) return true;
+  if (subset.transcript_match_min === 0 && subset.speaker_check_min === 0) return true;
+  return (
+    clip.transcriptMatchRaw != null &&
+    clip.speakerCheckRaw != null &&
+    clip.transcriptMatchRaw >= subset.transcript_match_min &&
+    clip.speakerCheckRaw >= subset.speaker_check_min
+  );
+}
 
 export function LabWorkstation() {
   const searchParams = useSearchParams();
@@ -171,14 +183,6 @@ export function LabWorkstation() {
   // Committed (or default) QC thresholds — drives machineBucket below so
   // "auto_kept" in Clip Lab means whatever Dataset Health has committed,
   // not a hardcoded guess. Refetched whenever Dataset Health commits.
-  const { data: qcPayload } = useQuery({
-    queryKey: ["sc-dataset-qc", runId],
-    queryFn: () => fetchDatasetQc(runId!),
-    enabled: !useMockClips && !!runId,
-    staleTime: 30_000,
-  });
-  const qcThresholds = useMemo(() => effectiveQcThresholds(qcPayload), [qcPayload]);
-
   // ── Local (optimistic) working copy, seeded per run ──
   const [mode, setMode] = useState<Mode>("lab");
   const [exportOpen, setExportOpen] = useState(false);
@@ -190,12 +194,20 @@ export function LabWorkstation() {
   const [sortMode, setSortMode] = useState<SortMode>("source");
   const [filterBuckets, setFilterBuckets] = useState<MachineBucket[]>([]);
   const [autoplayClipId, setAutoplayClipId] = useState<string | null>(null);
+  const [activeQcSubset, setActiveQcSubset] = useState<QcSubset | null>(null);
+  const [draftQcThresholds, setDraftQcThresholds] = useState<{
+    transcript_match_min: number;
+    speaker_check_min: number;
+  }>({ transcript_match_min: 0, speaker_check_min: 0 });
   const seededRunRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!useMockClips && view && runId && seededRunRef.current !== runId) {
       const mapped = view.clips.map((clip, index) =>
-        mapApiClip(clip, index, runId, view.candidate_manifest_sha256, qcThresholds),
+        mapApiClip(clip, index, runId, view.candidate_manifest_sha256, {
+          transcriptMatchMin: view.active_qc_subset?.transcript_match_min ?? 0,
+          speakerCheckMin: view.active_qc_subset?.speaker_check_min ?? 0,
+        }),
       );
       setClips(mapped);
       setActiveClipId(mapped[0]?.id ?? null);
@@ -203,27 +215,36 @@ export function LabWorkstation() {
       setFilterStatuses([]);
       setFilterTags([]);
       setFilterBuckets([]);
+      setActiveQcSubset(view.active_qc_subset);
+      setDraftQcThresholds({
+        transcript_match_min: view.active_qc_subset?.transcript_match_min ?? 0,
+        speaker_check_min: view.active_qc_subset?.speaker_check_min ?? 0,
+      });
       seededRunRef.current = runId;
     }
-    // qcThresholds intentionally excluded: this effect only seeds once per
+    // activeQcSubset intentionally excluded: this effect only seeds once per
     // run. Threshold changes after seeding are handled by the re-derive
     // effect below so in-progress edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, runId, useMockClips]);
 
-  // Committed thresholds can change after clips are already seeded (Dataset
-  // Health commits mid-session). Re-derive machineBucket/qcScore in place —
+  // Active subset thresholds can change after clips are already seeded. Re-derive
+  // machineBucket/qcScore in place —
   // never touch review status, transcript, or audio edit state.
   useEffect(() => {
     if (useMockClips) return;
+    const thresholds = {
+      transcriptMatchMin: activeQcSubset?.transcript_match_min ?? 0,
+      speakerCheckMin: activeQcSubset?.speaker_check_min ?? 0,
+    };
     setClips((prev) =>
       prev.map((clip) => {
         const scoresKnown = clip.transcriptMatchRaw != null && clip.speakerCheckRaw != null;
         const hardFailed = clip.reasonCodes.length > 0;
         const passesGate =
           scoresKnown &&
-          (clip.transcriptMatchRaw as number) >= qcThresholds.transcriptMatchMin &&
-          (clip.speakerCheckRaw as number) >= qcThresholds.speakerCheckMin;
+          (clip.transcriptMatchRaw as number) >= thresholds.transcriptMatchMin &&
+          (clip.speakerCheckRaw as number) >= thresholds.speakerCheckMin;
         const machineBucket: MachineBucket = !scoresKnown
           ? "needs_review"
           : hardFailed || !passesGate
@@ -235,8 +256,8 @@ export function LabWorkstation() {
               Math.min(
                 1,
                 Math.min(
-                  (clip.transcriptMatchRaw as number) / qcThresholds.transcriptMatchMin,
-                  (clip.speakerCheckRaw as number) / qcThresholds.speakerCheckMin,
+                  thresholds.transcriptMatchMin > 0 ? (clip.transcriptMatchRaw as number) / thresholds.transcriptMatchMin : 1,
+                  thresholds.speakerCheckMin > 0 ? (clip.speakerCheckRaw as number) / thresholds.speakerCheckMin : 1,
                 ),
               ),
             )
@@ -245,7 +266,7 @@ export function LabWorkstation() {
         return { ...clip, machineBucket, qcScore: Number(qcScore.toFixed(3)) };
       }),
     );
-  }, [qcThresholds, useMockClips]);
+  }, [activeQcSubset, useMockClips]);
 
   // Demo / UI-review mode: seed from mock clips, no backend. Writes stay local
   // (mock clips have no manifestSha/clipVersion, so applyClipWrite is a no-op
@@ -255,13 +276,20 @@ export function LabWorkstation() {
       const mock = createMockClips();
       setClips(mock);
       setActiveClipId(mock[0]?.id ?? null);
+      setActiveQcSubset(null);
+      setDraftQcThresholds({ transcript_match_min: 0, speaker_check_min: 0 });
       seededRunRef.current = "demo";
     }
   }, [useMockClips]);
 
+  const qcScopedClips = useMemo(
+    () => clips.filter((clip) => passesQcSubset(clip, activeQcSubset)),
+    [clips, activeQcSubset],
+  );
+
   const visibleClips = useMemo(
-    () => sortClips(filterClips(clips, search, filterStatuses, filterTags, filterBuckets), sortMode),
-    [clips, search, filterStatuses, filterTags, filterBuckets, sortMode],
+    () => sortClips(filterClips(qcScopedClips, search, filterStatuses, filterTags, filterBuckets), sortMode),
+    [qcScopedClips, search, filterStatuses, filterTags, filterBuckets, sortMode],
   );
 
   // If filters/search/sort hide the active clip, clear selection so the queue
@@ -294,9 +322,9 @@ export function LabWorkstation() {
       accepted: 0,
       rejected: 0,
     };
-    for (const clip of clips) counts[clip.status] += 1;
+    for (const clip of qcScopedClips) counts[clip.status] += 1;
     const rows = (['unresolved', 'accepted', 'rejected'] as ReviewStatus[]).map((status) => {
-      const matching = clips.filter((clip) => clip.status === status);
+      const matching = qcScopedClips.filter((clip) => clip.status === status);
       return {
         label: STATUS_LABELS[status],
         clips: matching.length,
@@ -304,46 +332,65 @@ export function LabWorkstation() {
       };
     });
     const customTags = Array.from(
-      new Set(clips.flatMap((clip) => clip.tags.filter((tag) => !PRESET_TAGS.includes(tag)))),
+      new Set(qcScopedClips.flatMap((clip) => clip.tags.filter((tag) => !PRESET_TAGS.includes(tag)))),
     ).sort();
-    const reviewedClipCount = clips.filter(
+    const reviewedClipCount = qcScopedClips.filter(
       (clip) =>
         clip.status !== "unresolved" ||
         clip.tags.some((tag) => !PRESET_TAGS.includes(tag)),
     ).length;
     for (const tag of customTags) {
-      const matching = clips.filter((clip) => clip.tags.includes(tag));
+      const matching = qcScopedClips.filter((clip) => clip.tags.includes(tag));
       rows.push({
         label: tag,
         clips: matching.length,
         durationSeconds: matching.reduce((sum, clip) => sum + (clip.durationSeconds || 0), 0),
       });
     }
-    const acceptedDurationSeconds = clips
+    const acceptedDurationSeconds = qcScopedClips
       .filter((clip) => clip.status === "accepted")
       .reduce((sum, clip) => sum + (clip.durationSeconds || 0), 0);
-    const rejectedDurationSeconds = clips
+    const rejectedDurationSeconds = qcScopedClips
       .filter((clip) => clip.status === "rejected")
       .reduce((sum, clip) => sum + (clip.durationSeconds || 0), 0);
-    const totalDurationSeconds = clips.reduce(
+    const totalDurationSeconds = qcScopedClips.reduce(
       (sum, clip) => sum + (clip.durationSeconds || 0),
       0,
     );
     const reviewedDurationSeconds = acceptedDurationSeconds + rejectedDurationSeconds;
+    const durations = qcScopedClips.map((clip) => clip.durationSeconds || 0).sort((a, b) => a - b);
+    const meanDurationSeconds = durations.length
+      ? durations.reduce((sum, duration) => sum + duration, 0) / durations.length
+      : null;
+    const medianDurationSeconds = durations.length
+      ? durations.length % 2
+        ? durations[Math.floor(durations.length / 2)]
+        : (durations[durations.length / 2 - 1] + durations[durations.length / 2]) / 2
+      : null;
+    const variance = meanDurationSeconds === null
+      ? null
+      : durations.reduce((sum, duration) => sum + (duration - meanDurationSeconds) ** 2, 0) / durations.length;
     const statusReviewedClipCount = counts.accepted + counts.rejected;
     const acceptanceRate =
       statusReviewedClipCount > 0 ? counts.accepted / statusReviewedClipCount : null;
     return {
-      total: clips.length,
+      total: qcScopedClips.length,
       reviewed: reviewedClipCount,
-      predictedClipCount: acceptanceRate === null ? null : clips.length * acceptanceRate,
+      predictedClipCount: acceptanceRate === null ? null : qcScopedClips.length * acceptanceRate,
       predictedDurationSeconds:
         reviewedDurationSeconds > 0
           ? totalDurationSeconds * (acceptedDurationSeconds / reviewedDurationSeconds)
           : null,
       rows,
+      subsetCount: qcScopedClips.length,
+      subsetDurationSeconds: totalDurationSeconds,
+      meanDurationSeconds,
+      medianDurationSeconds,
+      standardDeviationSeconds: variance === null ? null : Math.sqrt(variance),
+      minDurationSeconds: durations[0] ?? null,
+      maxDurationSeconds: durations.at(-1) ?? null,
     };
-  }, [clips]);
+  }, [qcScopedClips]);
 
   const humanLabeledClips = useMemo<HumanLabeledClip[]>(
     () =>
@@ -600,6 +647,46 @@ export function LabWorkstation() {
     }
   }, [clips, activeClipId, projectId, runId, toast]);
 
+  const applyQcSubsetView = useCallback((nextView: { active_qc_subset: QcSubset | null }) => {
+    const nextSubset = nextView.active_qc_subset;
+    setActiveQcSubset(nextSubset);
+    setSearch("");
+    setFilterStatuses([]);
+    setFilterTags([]);
+    setFilterBuckets([]);
+    setSortMode("source");
+    const nextVisible = clips.filter((clip) => passesQcSubset(clip, nextSubset));
+    setActiveClipId(nextVisible[0]?.id ?? null);
+  }, [clips]);
+
+  const openQcSubset = useCallback(async (
+    thresholds: { transcript_match_min: number; speaker_check_min: number },
+  ): Promise<void> => {
+    if (useMockClips) {
+      setDraftQcThresholds(thresholds);
+      applyQcSubsetView({ active_qc_subset: thresholds });
+      setMode("lab");
+      return;
+    }
+    if (!runId) throw new Error("No dataset run selected");
+    const nextView = await setQcSubset(runId, thresholds);
+    setDraftQcThresholds(thresholds);
+    queryClient.setQueryData(["sc-cliplab", runId], nextView);
+    applyQcSubsetView(nextView);
+    setMode("lab");
+  }, [applyQcSubsetView, queryClient, runId, useMockClips]);
+
+  const resetQcSubset = useCallback(async (): Promise<void> => {
+    if (useMockClips) {
+      applyQcSubsetView({ active_qc_subset: null });
+      return;
+    }
+    if (!runId) return;
+    const nextView = await clearQcSubset(runId);
+    queryClient.setQueryData(["sc-cliplab", runId], nextView);
+    applyQcSubsetView(nextView);
+  }, [applyQcSubsetView, queryClient, runId, useMockClips]);
+
   const runModel = useCallback(() => {
     if (!activeClip) return;
     const clipId = activeClip.id;
@@ -720,6 +807,10 @@ export function LabWorkstation() {
           runId={runId}
           demo={useMockClips}
           humanLabeledClips={useMockClips ? [] : humanLabeledClips}
+          activeQcSubset={activeQcSubset}
+          draftQcThresholds={draftQcThresholds}
+          onDraftQcThresholdsChange={setDraftQcThresholds}
+          onOpenInClipLab={openQcSubset}
         />
       ) : viewError ? (
         <div className="flex flex-1 items-center justify-center">
@@ -818,6 +909,8 @@ export function LabWorkstation() {
               stats={stats}
               onStatusChange={commitStatus}
               onSaveReference={markReference}
+              activeQcSubset={activeQcSubset}
+              onResetQcSubset={resetQcSubset}
             />
           ) : null}
         </div>

@@ -22,12 +22,20 @@ import {
   formatDurationCompact,
   formatSeconds,
 } from "./lab-data";
+import type { QcSubset } from "./speechcraft-api";
 
 type Stats = {
   total: number;
   reviewed: number;
   predictedClipCount: number | null;
   predictedDurationSeconds: number | null;
+  subsetCount: number;
+  subsetDurationSeconds: number;
+  meanDurationSeconds: number | null;
+  medianDurationSeconds: number | null;
+  standardDeviationSeconds: number | null;
+  minDurationSeconds: number | null;
+  maxDurationSeconds: number | null;
   rows: Array<{ label: string; clips: number; durationSeconds: number }>;
 };
 
@@ -36,6 +44,8 @@ type InspectorRailProps = {
   stats: Stats;
   onStatusChange: (status: ReviewStatus) => void;
   onSaveReference: () => Promise<string | null>;
+  activeQcSubset: QcSubset | null;
+  onResetQcSubset: () => Promise<void>;
 };
 
 function StatRow({ label, value }: { label: string; value: string }) {
@@ -52,10 +62,13 @@ export function InspectorRail({
   stats,
   onStatusChange,
   onSaveReference,
+  activeQcSubset,
+  onResetQcSubset,
 }: InspectorRailProps) {
   const reviewedPercent = stats.total > 0 ? (stats.reviewed / stats.total) * 100 : 0;
   const [isSavingReference, setIsSavingReference] = useState(false);
   const [referenceFolderPath, setReferenceFolderPath] = useState<string | null>(null);
+  const [resettingSubset, setResettingSubset] = useState(false);
 
   useEffect(() => {
     setIsSavingReference(false);
@@ -70,6 +83,16 @@ export function InspectorRail({
       setReferenceFolderPath(folderPath);
     } finally {
       setIsSavingReference(false);
+    }
+  };
+
+  const resetSubset = async () => {
+    if (resettingSubset) return;
+    setResettingSubset(true);
+    try {
+      await onResetQcSubset();
+    } finally {
+      setResettingSubset(false);
     }
   };
 
@@ -115,6 +138,22 @@ export function InspectorRail({
 
         {/* Always visible: compact stats + progress */}
         <div className="space-y-3 border-b border-border p-4">
+          <div className="space-y-2 border-b border-border pb-3">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Current subset</div>
+            {activeQcSubset ? (
+              <>
+                <div className="space-y-1 text-xs">
+                  <div className="flex justify-between gap-3"><span className="text-muted-foreground">Speaker purity</span><span>≥ {activeQcSubset.speaker_check_min}</span></div>
+                  <div className="flex justify-between gap-3"><span className="text-muted-foreground">Transcript match</span><span>≥ {activeQcSubset.transcript_match_min}</span></div>
+                </div>
+                <Button type="button" variant="outline" size="sm" className="h-7 w-full text-xs" disabled={resettingSubset} onClick={() => void resetSubset()}>
+                  {resettingSubset ? "Resetting…" : "Reset"}
+                </Button>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">All clips · no QC thresholds applied</p>
+            )}
+          </div>
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -134,14 +173,12 @@ export function InspectorRail({
                 </tr>
               ))}
               <tr>
-                <th className="pt-2 text-left font-normal text-muted-foreground">Predicted size</th>
+                <th className="pt-2 text-left font-normal text-muted-foreground">Current subset</th>
                 <td className="pt-2 text-right tabular-nums">
-                  {stats.predictedClipCount === null ? "—" : Math.round(stats.predictedClipCount)}
+                  {stats.subsetCount}
                 </td>
                 <td className="pt-2 text-right tabular-nums">
-                  {stats.predictedDurationSeconds === null
-                    ? "—"
-                    : formatDurationCompact(stats.predictedDurationSeconds)}
+                  {formatDurationCompact(stats.subsetDurationSeconds)}
                 </td>
               </tr>
             </tbody>
@@ -175,9 +212,10 @@ export function InspectorRail({
         {/* Deep tooling behind tabs */}
         <div className="p-4">
           <Tabs defaultValue="edits">
-            <TabsList className="grid w-full grid-cols-2">
+            <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="edits">Edits</TabsTrigger>
               <TabsTrigger value="provenance">Source</TabsTrigger>
+              <TabsTrigger value="duration">Duration</TabsTrigger>
             </TabsList>
 
             <TabsContent value="edits" className="space-y-2">
@@ -235,6 +273,14 @@ export function InspectorRail({
                 value={`${formatSeconds(clip.originalStartSeconds)}–${formatSeconds(clip.originalEndSeconds)}`}
               />
               <StatRow label="Duration" value={formatDurationCompact(clip.durationSeconds)} />
+            </TabsContent>
+
+            <TabsContent value="duration" className="space-y-1">
+              <div className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">Clip duration</div>
+              <StatRow label="Mean" value={stats.meanDurationSeconds === null ? "—" : formatSeconds(stats.meanDurationSeconds)} />
+              <StatRow label="Median" value={stats.medianDurationSeconds === null ? "—" : formatSeconds(stats.medianDurationSeconds)} />
+              <StatRow label="Std deviation" value={stats.standardDeviationSeconds === null ? "—" : formatSeconds(stats.standardDeviationSeconds)} />
+              <StatRow label="Min / max" value={stats.minDurationSeconds === null || stats.maxDurationSeconds === null ? "—" : `${formatSeconds(stats.minDurationSeconds)}–${formatSeconds(stats.maxDurationSeconds)}`} />
             </TabsContent>
 
           </Tabs>

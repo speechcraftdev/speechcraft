@@ -159,6 +159,23 @@ class DatasetQcTests(TestCase):
         self.assertIn("missing_transcript_qc", missing_both.qc_reason_codes)
         self.assertIn("missing_speaker_qc", missing_both.qc_reason_codes)
 
+    def test_get_qc_uses_whisper_transcript_when_manifest_text_is_empty(self) -> None:
+        run_root = self.repository.media_root / str(self.run.artifact_root)
+        manifest_path = run_root / "artifacts" / "candidate_review_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest[0]["training_text"] = ""
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        transcript_path = run_root / "artifacts" / "transcript_qc.json"
+        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+        transcript["clips"][0]["whisper_text"] = "Transcript from Whisper."
+        transcript_path.write_text(json.dumps(transcript), encoding="utf-8")
+
+        payload = get_dataset_qc(self.repository, self.run.id)
+        clip = next(row for row in payload.clips if row.clip_id == "candidate_review_clip_000001")
+
+        self.assertEqual(clip.training_text, "Transcript from Whisper.")
+
     def test_per_clip_malformed_score_treated_as_missing(self) -> None:
         run_root = self.repository.media_root / str(self.run.artifact_root)
         transcript = json.loads((run_root / "artifacts" / "transcript_qc.json").read_text(encoding="utf-8"))
@@ -483,13 +500,14 @@ class DatasetQcTests(TestCase):
         self.assertGreater(first.summary.accepted_count, 0)
 
         second_request = DatasetQcFinalizeRequest(
-            thresholds=DatasetQcThresholdsRequest(transcript_match_min=90, speaker_check_min=75),
+            thresholds=DatasetQcThresholdsRequest(transcript_match_min=90.25, speaker_check_min=75.5),
             manual_overrides=[],
         )
         finalize_dataset_qc(self.repository, self.run.id, second_request)
         dataset_qc_second = json.loads(dataset_qc_path.read_text(encoding="utf-8"))
         self.assertEqual(dataset_qc_second["created_at"], created_at)
-        self.assertEqual(dataset_qc_second["thresholds"]["transcript_match_min"], 90)
+        self.assertEqual(dataset_qc_second["thresholds"]["transcript_match_min"], 90.25)
+        self.assertEqual(dataset_qc_second["thresholds"]["speaker_check_min"], 75.5)
         self.assertNotEqual(dataset_qc_second["updated_at"], created_at)
 
         refreshed = refresh_dataset_run(self.repository, self.run.id)
@@ -532,8 +550,13 @@ class DatasetQcTests(TestCase):
         self.assertNotIn(RunArtifactKind.EXPORT_SUMMARY_JSON, kinds)
 
     def test_finalize_rejects_invalid_thresholds_and_overrides(self) -> None:
+        thresholds = DatasetQcThresholdsRequest(transcript_match_min=85.5, speaker_check_min=70)
+        self.assertEqual(thresholds.transcript_match_min, 85.5)
+
         with self.assertRaises(ValidationError):
-            DatasetQcThresholdsRequest(transcript_match_min=85.5, speaker_check_min=70)
+            DatasetQcThresholdsRequest(transcript_match_min=101, speaker_check_min=70)
+        with self.assertRaises(ValidationError):
+            DatasetQcThresholdsRequest(transcript_match_min=float("nan"), speaker_check_min=70)
 
         with self.assertRaisesRegex(ValueError, "Unknown clip_id"):
             finalize_dataset_qc(

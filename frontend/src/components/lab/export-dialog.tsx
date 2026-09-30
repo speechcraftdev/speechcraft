@@ -184,8 +184,18 @@ export function ExportDialog({ runId, open, onOpenChange }: ExportDialogProps) {
                   ? previewError.message
                   : "Could not load export preview."}
               </p>
-            ) : preview ? (
+              ) : preview ? (
               <div className="space-y-3 text-sm">
+                <div className="border border-border/70 p-3 text-xs">
+                  <p className="uppercase tracking-wide text-[#878787]">Export scope</p>
+                  <p className="mt-1">All Accepted clips</p>
+                  <p className="mt-2 uppercase tracking-wide text-[#878787]">Current QC subset</p>
+                  <p className="mt-1">
+                    {preview.active_qc_subset
+                      ? `Speaker Purity ≥ ${preview.active_qc_subset.speaker_check_min} · Transcript Match ≥ ${preview.active_qc_subset.transcript_match_min}`
+                      : "All clips · no QC thresholds applied"}
+                  </p>
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <p className="text-xs text-[#878787]">Accepted clips</p>

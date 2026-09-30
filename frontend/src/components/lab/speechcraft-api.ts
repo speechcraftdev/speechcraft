@@ -91,7 +91,14 @@ export type ClipLabApiView = {
   candidate_manifest_sha256: string;
   stale_state: boolean;
   qc_available: boolean;
+  active_qc_subset: QcSubset | null;
   clips: ClipLabApiClip[];
+};
+
+export type QcSubset = {
+  candidate_manifest_sha256?: string;
+  transcript_match_min: number;
+  speaker_check_min: number;
 };
 
 async function getJson<T>(path: string): Promise<T> {
@@ -112,6 +119,11 @@ export async function fetchDatasetRuns(projectId: string): Promise<SpeechcraftDa
 
 export async function fetchClipLabView(runId: string): Promise<ClipLabApiView> {
   return getJson<ClipLabApiView>(`/api/dataset-runs/${runId}/clip-lab`);
+}
+
+export function qcSubsetLabel(subset: QcSubset | null): string {
+  if (!subset) return "All clips";
+  return `Speaker Purity ≥ ${subset.speaker_check_min} · Transcript Match ≥ ${subset.transcript_match_min}`;
 }
 
 // ── Dataset Health (QC) ─────────────────────────────────────────────────
@@ -168,6 +180,8 @@ export type CanonicalExportBlockedReason = {
 
 export type CanonicalExportPreview = {
   run_id: string;
+  export_scope: "all_accepted";
+  active_qc_subset: QcSubset | null;
   accepted_clip_count: number;
   total_duration_sec: number;
   original_audio_count: number;

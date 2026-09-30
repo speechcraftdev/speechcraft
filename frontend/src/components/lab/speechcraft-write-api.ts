@@ -6,7 +6,12 @@
 
 import { speechcraftApiBase } from "@/lib/api-base";
 import type { ClipEdit, LabClip } from "./lab-data";
-import { resolveMediaUrl, type CanonicalExportSummary } from "./speechcraft-api";
+import {
+  resolveMediaUrl,
+  type CanonicalExportSummary,
+  type ClipLabApiView,
+  type QcSubset,
+} from "./speechcraft-api";
 
 const BASE = speechcraftApiBase();
 
@@ -77,7 +82,7 @@ async function parseError(res: Response): Promise<SpeechcraftApiError> {
 
 async function sendJson<T>(
   path: string,
-  method: "POST" | "PATCH",
+  method: "POST" | "PATCH" | "PUT",
   body: unknown,
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -323,6 +328,22 @@ export async function finalizeDatasetQc(
     "POST",
     { thresholds, manual_overrides: manualOverrides },
   );
+}
+
+export async function setQcSubset(
+  runId: string,
+  thresholds: Pick<QcSubset, "transcript_match_min" | "speaker_check_min">,
+): Promise<ClipLabApiView> {
+  return sendJson<ClipLabApiView>(`/api/dataset-runs/${runId}/clip-lab/qc-subset`, "PUT", thresholds);
+}
+
+export async function clearQcSubset(runId: string): Promise<ClipLabApiView> {
+  const res = await fetch(`${BASE}/api/dataset-runs/${runId}/clip-lab/qc-subset`, {
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw await parseError(res);
+  return (await res.json()) as ClipLabApiView;
 }
 
 // ── Canonical export ──────────────────────────────────────────────────────

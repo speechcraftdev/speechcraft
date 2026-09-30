@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  bestRejected,
   combinedSummary,
+  evenlyDistributedKept,
   histogram,
   riskiestKept,
   thresholdImpactCurve,
@@ -60,30 +60,42 @@ describe("riskiestKept", () => {
   });
 });
 
-describe("bestRejected", () => {
-  test("closest to passing first (smallest recovery gap)", () => {
-    const rejected = bestRejected(clips, T, S, "closest");
-    // c (transcript 84, gap 1) and d (speaker 68, gap 2) should lead
-    expect(rejected[0].clip.clipId).toBe("c");
+describe("evenlyDistributedKept", () => {
+  test("selects accepted clips from separate portions of the dataset", () => {
+    const source = Array.from({ length: 20 }, (_, index) => clip(String(index), 95, 90));
+    const sampled = evenlyDistributedKept(source, T, S, {}, () => 0);
+    expect(sampled.map((row) => row.clip.clipId)).toEqual([
+      "0", "2", "4", "6", "8", "10", "12", "14", "16", "18",
+    ]);
   });
-  test("transcript_only isolates transcript-only failures", () => {
-    const rejected = bestRejected(clips, T, S, "transcript_only");
-    // c (84) fails transcript with passing speaker; f (null transcript, speaker 80)
-    // is also transcript-only. Ordered by descending transcript score, so c then f.
-    expect(rejected.map((r) => r.clip.clipId)).toEqual(["c", "f"]);
+
+  test("returns all accepted clips when fewer than ten qualify", () => {
+    const sampled = evenlyDistributedKept(clips, T, S, {}, () => 0);
+    expect(sampled.map((row) => row.clip.clipId)).toEqual(["a", "b"]);
   });
-  test("speaker_only isolates speaker-only failures", () => {
-    const rejected = bestRejected(clips, T, S, "speaker_only");
-    expect(rejected.map((r) => r.clip.clipId)).toEqual(["d"]);
+
+  test("never includes rejected clips and caps the sample at ten", () => {
+    const source = Array.from({ length: 30 }, (_, index) => clip(String(index), 95, 90));
+    source[5] = clip("rejected", 20, 20);
+    const sampled = evenlyDistributedKept(source, T, S, {}, () => 0.99);
+    expect(sampled).toHaveLength(10);
+    expect(sampled.every((row) => row.clip.clipId !== "rejected")).toBe(true);
   });
 });
 
 describe("thresholdImpactCurve", () => {
   test("accepted count is monotonic non-increasing as threshold rises", () => {
     const curve = thresholdImpactCurve(clips, (c) => c.transcriptMatch);
-    expect(curve[0].acceptedClipCount).toBeGreaterThanOrEqual(curve[100].acceptedClipCount);
+    expect(curve[0].acceptedClipCount).toBeGreaterThanOrEqual(curve.at(-1)!.acceptedClipCount);
     // at threshold 0, every scored clip counts (5 of 6; f is null)
     expect(curve[0].acceptedClipCount).toBe(5);
+  });
+
+  test("preserves exact score boundaries", () => {
+    const curve = thresholdImpactCurve(clips, (c) => c.transcriptMatch);
+    expect(curve.map((point) => point.threshold)).toEqual([0, 40, 84, 86, 90, 95, 100]);
+    expect(curve.find((point) => point.threshold === 84)?.acceptedClipCount).toBe(4);
+    expect(curve.find((point) => point.threshold === 86)?.acceptedClipCount).toBe(3);
   });
 });
 

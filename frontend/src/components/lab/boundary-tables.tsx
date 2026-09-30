@@ -17,13 +17,13 @@ import {
 } from "@midday/ui/table";
 import { useMemo, useState } from "react";
 import {
-  bestRejected,
+  evenlyDistributedKept,
   riskiestKept,
   type KeptSort,
   type ManualOverride,
   type QcClip,
-  type RejectedSort,
 } from "./qc-logic";
+import { QcMiniWaveform } from "./qc-mini-waveform";
 
 function formatScore(score: number | null): string {
   return score === null ? "—" : score.toFixed(2);
@@ -35,8 +35,19 @@ function formatMargin(margin: number): string {
   return `${sign}${margin.toFixed(2)}`;
 }
 
-function truncate(text: string, max = 64): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+function ClipPreview({ clip }: { clip: QcClip }) {
+  return (
+    <div className="min-w-0 space-y-1.5">
+      {clip.audioUrl ? (
+        <QcMiniWaveform audioUrl={clip.audioUrl} label={clip.trainingText || "this clip"} />
+      ) : (
+        <span className="text-xs text-muted-foreground">Audio unavailable</span>
+      )}
+      <span className="block whitespace-normal break-words text-xs leading-relaxed text-muted-foreground">
+        {clip.trainingText || "No transcript text recorded."}
+      </span>
+    </div>
+  );
 }
 
 type BoundaryTablesProps = {
@@ -86,35 +97,28 @@ export function RiskiestKeptTable({
       {rows.length === 0 ? (
         <p className="p-4 text-sm text-[#878787]">No accepted clips at these thresholds.</p>
       ) : (
-        <Table>
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow>
-              <TableHead>Clip</TableHead>
-              <TableHead className="text-right">Transcript</TableHead>
-              <TableHead className="text-right">Speaker</TableHead>
-              <TableHead className="text-right">Risk margin</TableHead>
+              <TableHead className="w-[68%]">Clip</TableHead>
+              <TableHead className="w-[16%] whitespace-nowrap text-right">Transcript</TableHead>
+              <TableHead className="w-[16%] whitespace-nowrap text-right">Speaker</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map(({ clip, transcriptMargin, speakerMargin, riskMargin }) => (
+            {rows.map(({ clip, transcriptMargin, speakerMargin }) => (
               <TableRow key={clip.clipId}>
-                <TableCell className="max-w-0">
-                  <span className="block truncate font-mono text-xs">{clip.clipId}</span>
-                  {clip.trainingText && (
-                    <span className="block truncate text-xs text-[#878787]">
-                      {truncate(clip.trainingText)}
-                    </span>
-                  )}
+                <TableCell className="max-w-0 align-top">
+                  <ClipPreview clip={clip} />
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="whitespace-nowrap text-right tabular-nums">
                   {formatScore(clip.transcriptMatch)}
                   <span className="ml-1 text-[#878787]">({formatMargin(transcriptMargin)})</span>
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="whitespace-nowrap text-right tabular-nums">
                   {formatScore(clip.speakerCheck)}
                   <span className="ml-1 text-[#878787]">({formatMargin(speakerMargin)})</span>
                 </TableCell>
-                <TableCell className="text-right tabular-nums">{formatMargin(riskMargin)}</TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -124,78 +128,55 @@ export function RiskiestKeptTable({
   );
 }
 
-export function BestRejectedTable({
+export function RandomKeptTable({
   clips,
   transcriptThreshold,
   speakerThreshold,
   overrides = {},
   limit = 10,
 }: BoundaryTablesProps) {
-  const [sort, setSort] = useState<RejectedSort>("closest");
-
   const rows = useMemo(
     () =>
-      bestRejected(clips, transcriptThreshold, speakerThreshold, sort, overrides).slice(0, limit),
-    [clips, transcriptThreshold, speakerThreshold, sort, overrides, limit],
+      evenlyDistributedKept(clips, transcriptThreshold, speakerThreshold, overrides).slice(0, limit),
+    [clips, transcriptThreshold, speakerThreshold, overrides, limit],
   );
 
   return (
     <div className="border border-border">
-      <div className="flex items-center justify-between border-b border-border p-4">
+      <div className="border-b border-border p-4">
         <div>
-          <h3 className="font-serif text-lg leading-none">Best rejected</h3>
+          <h3 className="font-serif text-lg leading-none">Random kept</h3>
           <p className="mt-1 text-xs text-[#878787]">
-            Rejected clips closest to passing — recoverable if thresholds relax.
+            Ten accepted clips spread across the dataset for a quick spot check.
           </p>
         </div>
-        <Select value={sort} onValueChange={(v) => setSort(v as RejectedSort)}>
-          <SelectTrigger className="h-8 w-[160px] text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="closest">Closest to passing</SelectItem>
-            <SelectItem value="transcript_only">Transcript-only fail</SelectItem>
-            <SelectItem value="speaker_only">Speaker-only fail</SelectItem>
-          </SelectContent>
-        </Select>
       </div>
 
       {rows.length === 0 ? (
-        <p className="p-4 text-sm text-[#878787]">No rejected clips match this filter.</p>
+        <p className="p-4 text-sm text-[#878787]">No accepted clips at these thresholds.</p>
       ) : (
-        <Table>
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow>
-              <TableHead>Clip</TableHead>
-              <TableHead className="text-right">Transcript</TableHead>
-              <TableHead className="text-right">Speaker</TableHead>
-              <TableHead className="text-right">Recovery gap</TableHead>
+              <TableHead className="w-[68%]">Clip</TableHead>
+              <TableHead className="w-[16%] whitespace-nowrap text-right">Transcript</TableHead>
+              <TableHead className="w-[16%] whitespace-nowrap text-right">Speaker</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map(({ clip, transcriptGap, speakerGap, recoveryGap }) => (
+            {rows.map(({ clip, transcriptMargin, speakerMargin }) => (
               <TableRow key={clip.clipId}>
-                <TableCell className="max-w-0">
-                  <span className="block truncate font-mono text-xs">{clip.clipId}</span>
-                  {clip.trainingText && (
-                    <span className="block truncate text-xs text-[#878787]">
-                      {truncate(clip.trainingText)}
-                    </span>
-                  )}
+                <TableCell className="max-w-0 align-top">
+                  <ClipPreview clip={clip} />
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="whitespace-nowrap text-right tabular-nums">
                   {formatScore(clip.transcriptMatch)}
-                  {transcriptGap > 0 && (
-                    <span className="ml-1 text-[#878787]">(-{transcriptGap.toFixed(2)})</span>
-                  )}
+                  <span className="ml-1 text-[#878787]">({formatMargin(transcriptMargin)})</span>
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="whitespace-nowrap text-right tabular-nums">
                   {formatScore(clip.speakerCheck)}
-                  {speakerGap > 0 && (
-                    <span className="ml-1 text-[#878787]">(-{speakerGap.toFixed(2)})</span>
-                  )}
+                  <span className="ml-1 text-[#878787]">({formatMargin(speakerMargin)})</span>
                 </TableCell>
-                <TableCell className="text-right tabular-nums">{recoveryGap.toFixed(2)}</TableCell>
               </TableRow>
             ))}
           </TableBody>
