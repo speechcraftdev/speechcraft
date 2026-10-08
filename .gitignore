@@ -50,6 +50,8 @@ docs/review_bundles/*.patch
 
 # Local eval / experiment / review artifacts (keep working tree usable)
 eval_runs/
+/runs/titanet_onnx_parity/
+.uv-cache/
 tmp/
 frontend/tmp/
 review_bundles/

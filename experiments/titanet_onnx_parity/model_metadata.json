@@ -1,0 +1,56 @@
+{
+  "baseline": {
+    "repository": "nvidia/speakerverification_en_titanet_large",
+    "cached_revision": "0dc382f40121a5fbd34db10a2bb04d826c2be6a8",
+    "checkpoint_path": "/home/aaravthegreat/.cache/huggingface/hub/models--nvidia--speakerverification_en_titanet_large/blobs/e838520693f269e7984f55bc8eb3c2d60ccf246bf4b896d4be9bcabe3e4b0fe3",
+    "checkpoint_sha256": "e838520693f269e7984f55bc8eb3c2d60ccf246bf4b896d4be9bcabe3e4b0fe3",
+    "checkpoint_bytes": 101621760,
+    "runtime_model": "NeMo EncDecSpeakerLabelModel.from_pretrained(nvidia/speakerverification_en_titanet_large)",
+    "runtime_versions": "NeMo 2.7.3, Torch 2.11.0+cu128, NumPy 2.4.6, SciPy 1.17.1, SoundFile 0.13.1",
+    "device": "CPU for this experiment; production baseline may choose CUDA",
+    "precision": "FP32",
+    "embedding_dim": 192,
+    "sample_rate_hz": 16000,
+    "preprocessing": {
+      "mel_features": 80,
+      "window": "Hann",
+      "window_ms": 25,
+      "stride_ms": 10,
+      "normalization": "per_feature",
+      "dither_config": 0.00001,
+      "audio_scale": "mono float32 PCM scale; no harness gain normalization"
+    }
+  },
+  "candidate": {
+    "repository": "csukuangfj/speaker-embedding-models",
+    "file": "nemo_en_titanet_large.onnx",
+    "revision": "0743f30",
+    "source_url": "https://huggingface.co/csukuangfj/speaker-embedding-models/blob/0743f30/nemo_en_titanet_large.onnx",
+    "sha256": "d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77",
+    "bytes": 101405493,
+    "runtime": "sherpa-onnx 1.13.8, CPU provider; sherpa-onnx-core 1.13.8",
+    "runtime_versions": "NumPy 2.5.3, SciPy 1.18.1, SoundFile 0.14.0",
+    "precision": "FP32, no INT8 quantization",
+    "embedding_dim": 192,
+    "sample_rate_hz": 16000,
+    "onnx_metadata": {
+      "framework": "nemo",
+      "language": "English",
+      "url": "https://catalog.nvidia.com/orgs/nvidia/teams/nemo/models/titanet_large",
+      "feature_normalize_type": "per_feature",
+      "window_type": "hann",
+      "window_size_ms": 25,
+      "window_stride_ms": 10,
+      "feat_dim": 80,
+      "output_dim": 192
+    }
+  },
+  "tensor_identity_audit": {
+    "onnx_initializers": 64,
+    "nemo_checkpoint_state_tensors": 124,
+    "same_name_same_shape_byte_identical_tensors": 25,
+    "all_same_name_overlaps_match": true,
+    "interpretation": "Strong evidence that the ONNX export shares weights with this checkpoint, supported by its NeMo NGC TitaNet-Large metadata. 39 ONNX initializers are exported under transformed/generated names and were not directly matched; no complete converted-weight proof is claimed.",
+    "strict_parity_label": "replacement-model comparison pending output and behavior comparison; exact checkpoint provenance is strongly supported but not fully proven"
+  }
+}

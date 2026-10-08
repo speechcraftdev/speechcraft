@@ -1,0 +1,60 @@
+{
+  "evaluation_only": true,
+  "production_algorithm_changed": false,
+  "corpus_archive": "/home/aaravthegreat/Projects/speaker_ts_eval/runs/2026-09-09_pyannote_sp_incremental",
+  "corpus_provenance": {
+    "experiment": "pyannote Community-1 -> frozen VR slicer -> NeMo SP",
+    "source_count": 24,
+    "clip_count": 798,
+    "clip_manifest": "clips.jsonl",
+    "clip_audio": "clip_wavs/<source_id>/<clip_id>.wav",
+    "enrollment_manifest": "sources/<source_id>/enrollment_chunks.jsonl",
+    "enrollment_audio": "sources/<source_id>/enrollment/all_chunks/enroll_NNN.wav",
+    "gold": "non_target_leak_sec and enrollment gold_wrong_speaker from VoxConverse reference annotations"
+  },
+  "frozen_sp": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "dtype": "float32",
+    "min_region_sec": 4.0,
+    "enroll_chunk_sec": 3.0,
+    "max_enroll_chunks": 20,
+    "outlier_percentile": 25,
+    "window_sec": 3.0,
+    "window_hop_sec": 0.5,
+    "purity_threshold": 0.7,
+    "suspicious_threshold": 0.55,
+    "silence_frame_ms": 10.0,
+    "silence_rms_threshold": 0.02,
+    "max_silent_frame_fraction": 0.7,
+    "aggregation": "minimum valid scorable-window cosine similarity"
+  },
+  "candidate": {
+    "repository": "csukuangfj/speaker-embedding-models",
+    "file": "nemo_en_titanet_large.onnx",
+    "revision": "0743f30",
+    "sha256": "d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77",
+    "precision": "FP32",
+    "runtime": "sherpa-onnx",
+    "provider": "CPU",
+    "embedding_dim": 192,
+    "sample_rate_hz": 16000,
+    "model_metadata_reference": "NeMo TitaNet-Large, NGC titanet_large"
+  },
+  "baseline": {
+    "repository": "nvidia/speakerverification_en_titanet_large",
+    "cached_revision": "0dc382f40121a5fbd34db10a2bb04d826c2be6a8",
+    "cached_checkpoint_sha256": "e838520693f269e7984f55bc8eb3c2d60ccf246bf4b896d4be9bcabe3e4b0fe3",
+    "cached_checkpoint_bytes": 101621760,
+    "precision": "FP32",
+    "runtime": "NeMo EncDecSpeakerLabelModel",
+    "provider": "CPU",
+    "embedding_dim": 192,
+    "sample_rate_hz": 16000
+  },
+  "weight_identity": {
+    "status": "not_proven",
+    "interpretation": "replacement-model comparison, not identical-weight numerical parity",
+    "reason": "ONNX file metadata identifies the NeMo TitaNet-Large family/NGC source, but the Hugging Face repository has no model card tying this export to the exact cached NeMo checkpoint revision."
+  }
+}
