@@ -455,6 +455,71 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                 self.assertEqual(handle.getnchannels(), 1)
                 self.assertEqual(handle.getnframes(), 96000)
 
+    def test_native_export_scales_historical_analysis_sample_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_raw:
+            temp_dir = Path(temp_dir_raw)
+            run_root = temp_dir / 'run'
+            artifacts = write_minimal_native_export_fixture(
+                run_root,
+                temp_dir,
+                [{
+                    'id': 'candidate_review_clip_000000',
+                    'source_audio_id': 'source_audio_0000',
+                    'source_start_sample': 16000,
+                    'source_end_sample': 32000,
+                    'sample_rate': 16000,
+                    'duration_samples': 16000,
+                    'duration_sec': 1.0,
+                    'status': 'candidate_review',
+                    'training_text': 'historical analysis coordinates',
+                    'alignment_text': 'historical analysis coordinates',
+                }],
+            )
+
+            summary = export_native_candidate_clips(run_root, {'config_hash': 'sha256:test'})
+            exported = read_json(artifacts / 'export_manifest.json')[0]
+
+            self.assertEqual(summary['sample_rates'], [48000])
+            self.assertEqual(exported['analysis_start_sample'], 16000)
+            self.assertEqual(exported['analysis_end_sample'], 32000)
+            self.assertEqual(exported['native_start_sample'], 48000)
+            self.assertEqual(exported['native_end_sample'], 96000)
+            self.assertEqual(exported['duration_samples'], 48000)
+            self.assertEqual(exported['duration_sec'], 1.0)
+
+    def test_native_export_uses_explicit_source_coordinate_rate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_raw:
+            temp_dir = Path(temp_dir_raw)
+            run_root = temp_dir / 'run'
+            artifacts = write_minimal_native_export_fixture(
+                run_root,
+                temp_dir,
+                [{
+                    'id': 'candidate_review_clip_000000',
+                    'source_audio_id': 'source_audio_0000',
+                    'source_start_sample': 16000,
+                    'source_end_sample': 32000,
+                    'source_coordinate_sample_rate_hz': 16000,
+                    'sample_rate': 48000,
+                    'duration_samples': 48000,
+                    'duration_sec': 1.0,
+                    'status': 'candidate_review',
+                    'training_text': 'native review audio with analysis coordinates',
+                    'alignment_text': 'native review audio with analysis coordinates',
+                }],
+            )
+
+            summary = export_native_candidate_clips(run_root, {'config_hash': 'sha256:test'})
+            exported = read_json(artifacts / 'export_manifest.json')[0]
+
+            self.assertEqual(summary['sample_rates'], [48000])
+            self.assertEqual(exported['analysis_start_sample'], 16000)
+            self.assertEqual(exported['analysis_end_sample'], 32000)
+            self.assertEqual(exported['native_start_sample'], 48000)
+            self.assertEqual(exported['native_end_sample'], 96000)
+            self.assertEqual(exported['duration_samples'], 48000)
+            self.assertEqual(exported['duration_sec'], 1.0)
+
     def test_export_native_falls_back_to_manifest_status_without_dataset_qc(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_raw:
             temp_dir = Path(temp_dir_raw)

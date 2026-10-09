@@ -93,6 +93,40 @@ def _channel_mode(variant: dict[str, Any]) -> str:
     return str(recipe.get("channel_mode") or "downmix")
 
 
+def _candidate_native_bounds(
+    candidate: dict[str, Any],
+    source: dict[str, Any],
+    variant: dict[str, Any],
+) -> tuple[int, int, int, int, int]:
+    """Return candidate bounds and source bounds in their respective sample rates.
+
+    Current manifests store source_start/end_sample in native source coordinates.
+    Historical ASR+MFA manifests store the same fields in analysis coordinates.
+    Their sample_rate identifies that format unless the row explicitly records
+    a separate source_coordinate_sample_rate_hz. Convert analysis coordinates
+    to source coordinates while leaving current native coordinates untouched.
+    """
+    start = int(candidate["source_start_sample"])
+    end = int(candidate["source_end_sample"])
+    source_rate = int(source["sample_rate"])
+    coordinate_rate = int(
+        candidate.get("source_coordinate_sample_rate_hz")
+        or candidate.get("sample_rate")
+        or source_rate
+    )
+    analysis_rate = int(variant["analysis_sample_rate"])
+    if coordinate_rate == source_rate:
+        return start, end, start, end, coordinate_rate
+    if coordinate_rate != analysis_rate:
+        raise ValueError(
+            f"Unsupported candidate sample rate {coordinate_rate}; expected "
+            f"native {source_rate} or analysis {analysis_rate}"
+        )
+    native_start = int(round(start * source_rate / coordinate_rate))
+    native_end = int(round(end * source_rate / coordinate_rate))
+    return start, end, native_start, native_end, coordinate_rate
+
+
 def _slice_native_wav(
     source_path: Path,
     output_path: Path,
@@ -191,8 +225,21 @@ def export_native_candidate_clips(run_root: Path, config: dict[str, Any]) -> dic
             continue
 
         source_rate = int(source["sample_rate"])
-        native_start = int(candidate["source_start_sample"])
-        native_end = int(candidate["source_end_sample"])
+        try:
+            coordinate_start, coordinate_end, native_start, native_end, coordinate_rate = (
+                _candidate_native_bounds(candidate, source, variant)
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            rejected.append(
+                {
+                    "candidate_id": clip_id,
+                    "source_audio_id": source_audio_id,
+                    "qc_source": qc_source,
+                    "reason_codes": ["invalid_candidate_sample_coordinates"],
+                    "detail": str(exc),
+                }
+            )
+            continue
         source_num_samples = int(source["num_samples"])
         native_start = max(0, min(source_num_samples, native_start))
         native_end = max(0, min(source_num_samples, native_end))
@@ -217,13 +264,13 @@ def export_native_candidate_clips(run_root: Path, config: dict[str, Any]) -> dic
                 "sample_rate": native_info["sample_rate"],
                 "num_channels": native_info["num_channels"],
                 "sample_width_bytes": native_info["sample_width_bytes"],
-                "analysis_start_sample": native_start,
-                "analysis_end_sample": native_end,
+                "analysis_start_sample": coordinate_start,
+                "analysis_end_sample": coordinate_end,
                 "native_start_sample": native_start,
                 "native_end_sample": native_end,
                 "duration_samples": native_info["duration_samples"],
                 "duration_sec": native_info["duration_sec"],
-                "analysis_duration_sec": round(expected_duration_sec, 6),
+                "analysis_duration_sec": round((coordinate_end - coordinate_start) / coordinate_rate, 6),
                 "duration_delta_sec": round(native_info["duration_sec"] - expected_duration_sec, 9),
                 "training_text": str(candidate.get("training_text") or ""),
                 "alignment_text": str(candidate.get("alignment_text") or ""),
