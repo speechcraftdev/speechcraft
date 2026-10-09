@@ -28,6 +28,7 @@ import {
   splicePcmDelete,
   zeroCrossWindowSamples,
   splicePcmInsertSilence,
+  shouldResumePlaybackAfterGesture,
   xFromSample,
   zoomAround,
   zoomToSelection,
@@ -133,6 +134,15 @@ describe("selection", () => {
     expect(selectionEnd(state.selection!) - selectionStart(state.selection!)).toBe(1);
     expect(state.selection).not.toEqual({ anchorSample: 7, focusSample: 7 });
     expectInvariants(state);
+  });
+});
+
+describe("playback seek gesture", () => {
+  test("resumes only after a plain click that interrupted active playback", () => {
+    expect(shouldResumePlaybackAfterGesture(true, "plain-click")).toBe(true);
+    expect(shouldResumePlaybackAfterGesture(false, "plain-click")).toBe(false);
+    expect(shouldResumePlaybackAfterGesture(true, "modified-click")).toBe(false);
+    expect(shouldResumePlaybackAfterGesture(true, "drag")).toBe(false);
   });
 });
 

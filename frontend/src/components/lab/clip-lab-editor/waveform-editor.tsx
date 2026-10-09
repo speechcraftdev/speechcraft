@@ -37,6 +37,7 @@ import {
   type TimelineState,
   createTimelineState,
   endpointAtX,
+  shouldResumePlaybackAfterGesture,
   xFromSample,
 } from "./timeline";
 import {
@@ -94,6 +95,7 @@ type Gesture =
       anchorSample: number;
       grabbed: "anchor" | "focus" | null;
       shiftKey: boolean;
+      wasPlaying: boolean;
     }
   | { kind: "selecting"; pointerId: number; anchorSample: number }
   | { kind: "resizing"; pointerId: number; grabbed: "anchor" | "focus" };
@@ -617,6 +619,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
         if (!readyRef.current && pcmRef.current.length === 0) return;
         e.preventDefault();
         el.focus();
+        const wasPlaying = playingRef.current;
         stopPlayback();
         cacheRect();
         try {
@@ -641,6 +644,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
           anchorSample: cursorAnchor ?? sample,
           grabbed,
           shiftKey: e.shiftKey,
+          wasPlaying,
         };
       };
 
@@ -686,8 +690,17 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
           sampleFromX(xFromClientX(e.clientX), mapping()),
           stateRef.current.durationSamples,
         );
+        const wasPlaying = gesture.kind === "pending" && gesture.wasPlaying;
+        const isModifiedClick = gesture.kind === "pending" && (gesture.shiftKey || e.shiftKey);
+        const playbackGesture =
+          gesture.kind !== "pending" || e.type !== "pointerup"
+            ? "drag"
+            : isModifiedClick
+              ? "modified-click"
+              : "plain-click";
+        let resumeFromSample: number | null = null;
         if (gesture.kind === "pending") {
-          if (gesture.shiftKey || e.shiftKey) {
+          if (isModifiedClick) {
             stateRef.current = shiftClick(stateRef.current, sample);
           } else {
             stateRef.current = clickWaveform(stateRef.current, gesture.startSample);
@@ -701,6 +714,12 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
         hoverSampleRef.current = sample;
         publishHasSelection();
         paintOverlay();
+        if (shouldResumePlaybackAfterGesture(wasPlaying, playbackGesture)) {
+          resumeFromSample = stateRef.current.cursorSample;
+        }
+        if (resumeFromSample !== null) {
+          void playRange(resumeFromSample, stateRef.current.durationSamples);
+        }
       };
 
       const onPointerLeave = () => {

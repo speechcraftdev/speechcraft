@@ -147,6 +147,15 @@ export function clickWaveform(state: TimelineState, sample: number): TimelineSta
   };
 }
 
+export type PlaybackResumeGesture = "plain-click" | "modified-click" | "drag";
+
+export function shouldResumePlaybackAfterGesture(
+  wasPlaying: boolean,
+  gesture: PlaybackResumeGesture,
+): boolean {
+  return wasPlaying && gesture === "plain-click";
+}
+
 export function dragSelect(state: TimelineState, anchorSample: number, focusSample: number): TimelineState {
   return {
     ...state,
