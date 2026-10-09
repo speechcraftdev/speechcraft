@@ -25,6 +25,8 @@ import {
 import type { QcSubset } from "./speechcraft-api";
 
 type Stats = {
+  allClipCount: number;
+  allDurationSeconds: number;
   total: number;
   reviewed: number;
   predictedClipCount: number | null;
@@ -46,13 +48,22 @@ type InspectorRailProps = {
   onSaveReference: () => Promise<string | null>;
   activeQcSubset: QcSubset | null;
   onResetQcSubset: () => Promise<void>;
+  sourceFileNames: Record<string, string>;
 };
 
-function StatRow({ label, value }: { label: string; value: string }) {
+function StatRow({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  valueClassName?: string;
+}) {
   return (
-    <div className="flex items-center justify-between py-1 text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="tabular-nums">{value}</span>
+    <div className="flex items-start gap-3 py-1.5 text-sm">
+      <span className="w-24 shrink-0 text-muted-foreground">{label}</span>
+      <span className={cn("min-w-0 flex-1 break-words text-right tabular-nums", valueClassName)}>{value}</span>
     </div>
   );
 }
@@ -64,8 +75,12 @@ export function InspectorRail({
   onSaveReference,
   activeQcSubset,
   onResetQcSubset,
+  sourceFileNames,
 }: InspectorRailProps) {
   const reviewedPercent = stats.total > 0 ? (stats.reviewed / stats.total) * 100 : 0;
+  const speakerThreshold = activeQcSubset?.speaker_check_min ?? 0;
+  const transcriptThreshold = activeQcSubset?.transcript_match_min ?? 0;
+  const hasActiveQcSubset = speakerThreshold > 0 || transcriptThreshold > 0;
   const [isSavingReference, setIsSavingReference] = useState(false);
   const [referenceFolderPath, setReferenceFolderPath] = useState<string | null>(null);
   const [resettingSubset, setResettingSubset] = useState(false);
@@ -138,22 +153,18 @@ export function InspectorRail({
 
         {/* Always visible: compact stats + progress */}
         <div className="space-y-3 border-b border-border p-4">
-          <div className="space-y-2 border-b border-border pb-3">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Current subset</div>
-            {activeQcSubset ? (
-              <>
-                <div className="space-y-1 text-xs">
-                  <div className="flex justify-between gap-3"><span className="text-muted-foreground">Speaker purity</span><span>≥ {activeQcSubset.speaker_check_min}</span></div>
-                  <div className="flex justify-between gap-3"><span className="text-muted-foreground">Transcript match</span><span>≥ {activeQcSubset.transcript_match_min}</span></div>
-                </div>
-                <Button type="button" variant="outline" size="sm" className="h-7 w-full text-xs" disabled={resettingSubset} onClick={() => void resetSubset()}>
-                  {resettingSubset ? "Resetting…" : "Reset"}
-                </Button>
-              </>
-            ) : (
-              <p className="text-xs text-muted-foreground">All clips · no QC thresholds applied</p>
-            )}
-          </div>
+          {hasActiveQcSubset ? (
+            <div className="space-y-2 border-b border-border pb-3">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Current subset</div>
+              <div className="space-y-1 text-xs">
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">Speaker purity</span><span>≥ {speakerThreshold}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">Transcript match</span><span>≥ {transcriptThreshold}</span></div>
+              </div>
+              <Button type="button" variant="outline" size="sm" className="h-7 w-full text-xs" disabled={resettingSubset} onClick={() => void resetSubset()}>
+                {resettingSubset ? "Resetting…" : "Reset"}
+              </Button>
+            </div>
+          ) : null}
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -163,7 +174,16 @@ export function InspectorRail({
               </tr>
             </thead>
             <tbody>
-              {stats.rows.map((row) => (
+              <tr>
+                <th className="py-1.5 text-left font-medium">Total</th>
+                <td className="py-1.5 text-right font-medium tabular-nums">
+                  {stats.allClipCount}
+                </td>
+                <td className="py-1.5 text-right font-medium tabular-nums">
+                  {formatDurationCompact(stats.allDurationSeconds)}
+                </td>
+              </tr>
+              {stats.rows.slice(0, 3).map((row) => (
                 <tr key={row.label}>
                   <th className="py-1.5 text-left font-normal text-muted-foreground">{row.label}</th>
                   <td className="py-1.5 text-right tabular-nums">{row.clips}</td>
@@ -173,14 +193,36 @@ export function InspectorRail({
                 </tr>
               ))}
               <tr>
-                <th className="pt-2 text-left font-normal text-muted-foreground">Current subset</th>
-                <td className="pt-2 text-right tabular-nums">
-                  {stats.subsetCount}
+                <th className="py-1.5 text-left font-normal text-muted-foreground">Predicted size</th>
+                <td className="py-1.5 text-right tabular-nums">
+                  {stats.predictedClipCount === null ? "—" : Math.round(stats.predictedClipCount)}
                 </td>
-                <td className="pt-2 text-right tabular-nums">
-                  {formatDurationCompact(stats.subsetDurationSeconds)}
+                <td className="py-1.5 text-right tabular-nums">
+                  {stats.predictedDurationSeconds === null
+                    ? "—"
+                    : formatDurationCompact(stats.predictedDurationSeconds)}
                 </td>
               </tr>
+              {stats.rows.slice(3).map((row) => (
+                <tr key={row.label}>
+                  <th className="py-1.5 text-left font-normal text-muted-foreground">{row.label}</th>
+                  <td className="py-1.5 text-right tabular-nums">{row.clips}</td>
+                  <td className="py-1.5 text-right tabular-nums">
+                    {formatDurationCompact(row.durationSeconds)}
+                  </td>
+                </tr>
+              ))}
+              {hasActiveQcSubset ? (
+                <tr>
+                  <th className="pt-2 text-left font-normal text-muted-foreground">Current subset</th>
+                  <td className="pt-2 text-right tabular-nums">
+                    {stats.subsetCount}
+                  </td>
+                  <td className="pt-2 text-right tabular-nums">
+                    {formatDurationCompact(stats.subsetDurationSeconds)}
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
           <Separator />
@@ -263,9 +305,18 @@ export function InspectorRail({
               ) : null}
             </TabsContent>
 
-            <TabsContent value="provenance" className="space-y-2">
-              <StatRow label="Source" value={clip.sourceRecording} />
-              <StatRow label="Path" value={clip.path ?? "—"} />
+            <TabsContent value="provenance" className="space-y-3">
+              <StatRow
+                label="Original WAV"
+                value={sourceFileNames[clip.sourceRecording] ?? sourceFileNames["*"] ?? clip.sourceRecording}
+                valueClassName="font-medium"
+              />
+              <div className="border border-border p-3">
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Clip artifact</div>
+                <div className="mt-1 break-all font-mono text-xs leading-5 text-foreground">
+                  {clip.path ?? "—"}
+                </div>
+              </div>
               <StatRow label="Speaker" value={clip.speaker} />
               <StatRow label="Language" value={clip.language} />
               <StatRow

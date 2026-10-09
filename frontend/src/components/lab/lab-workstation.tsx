@@ -37,6 +37,7 @@ import {
   fetchClipLabView,
   fetchDatasetRuns,
   fetchProjects,
+  fetchProjectSourceRecordings,
   mapApiClip,
   pickReviewableRun,
   type QcSubset,
@@ -146,6 +147,25 @@ export function LabWorkstation() {
     projects[0] ??
     null;
   const projectId = activeProject?.id ?? null;
+
+  const { data: sourceRecordings = [] } = useQuery({
+    queryKey: ["sc-source-recordings", projectId],
+    queryFn: () => fetchProjectSourceRecordings(projectId!),
+    enabled: !useMockClips && !!projectId,
+    staleTime: 60_000,
+  });
+  const sourceFileNames = useMemo(
+    () => {
+      const names = Object.fromEntries(
+        sourceRecordings.map((source) => [source.id, source.display_name ?? source.id]),
+      );
+      if (sourceRecordings.length === 1) {
+        names["*"] = sourceRecordings[0].display_name ?? sourceRecordings[0].id;
+      }
+      return names;
+    },
+    [sourceRecordings],
+  );
 
   const { data: runs = [], isLoading: runsLoading } = useQuery({
     queryKey: ["sc-runs", projectId],
@@ -357,6 +377,10 @@ export function LabWorkstation() {
       (sum, clip) => sum + (clip.durationSeconds || 0),
       0,
     );
+    const allDurationSeconds = clips.reduce(
+      (sum, clip) => sum + (clip.durationSeconds || 0),
+      0,
+    );
     const reviewedDurationSeconds = acceptedDurationSeconds + rejectedDurationSeconds;
     const durations = qcScopedClips.map((clip) => clip.durationSeconds || 0).sort((a, b) => a - b);
     const meanDurationSeconds = durations.length
@@ -374,6 +398,8 @@ export function LabWorkstation() {
     const acceptanceRate =
       statusReviewedClipCount > 0 ? counts.accepted / statusReviewedClipCount : null;
     return {
+      allClipCount: clips.length,
+      allDurationSeconds,
       total: qcScopedClips.length,
       reviewed: reviewedClipCount,
       predictedClipCount: acceptanceRate === null ? null : qcScopedClips.length * acceptanceRate,
@@ -390,7 +416,7 @@ export function LabWorkstation() {
       minDurationSeconds: durations[0] ?? null,
       maxDurationSeconds: durations.at(-1) ?? null,
     };
-  }, [qcScopedClips]);
+  }, [clips, qcScopedClips]);
 
   const humanLabeledClips = useMemo<HumanLabeledClip[]>(
     () =>
@@ -911,6 +937,7 @@ export function LabWorkstation() {
               onSaveReference={markReference}
               activeQcSubset={activeQcSubset}
               onResetQcSubset={resetQcSubset}
+              sourceFileNames={sourceFileNames}
             />
           ) : null}
         </div>

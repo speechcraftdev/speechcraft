@@ -50,17 +50,27 @@ export type SpeechcraftProject = {
   name: string;
 };
 
+export type SpeechcraftSourceRecording = {
+  id: string;
+  display_name: string | null;
+};
+
 export type SpeechcraftDatasetRun = {
   id: string;
   project_id: string;
   stage: string;
   status: string;
-  output_summary?: { clip_count?: number } | null;
+  output_summary?: {
+    clip_count?: number;
+    candidate_review_clips?: number;
+    exported_clip_count?: number;
+  } | null;
 };
 
 export type ClipLabApiClip = {
   clip_id: string;
   path: string | null;
+  source_recording_id: string | null;
   clip_version: number;
   content_hash: string;
   transcript_override: string | null;
@@ -115,6 +125,12 @@ export async function fetchProjects(): Promise<SpeechcraftProject[]> {
 
 export async function fetchDatasetRuns(projectId: string): Promise<SpeechcraftDatasetRun[]> {
   return getJson<SpeechcraftDatasetRun[]>(`/api/projects/${projectId}/dataset-runs`);
+}
+
+export async function fetchProjectSourceRecordings(
+  projectId: string,
+): Promise<SpeechcraftSourceRecording[]> {
+  return getJson<SpeechcraftSourceRecording[]>(`/api/projects/${projectId}/source-recordings`);
 }
 
 export async function fetchClipLabView(runId: string): Promise<ClipLabApiView> {
@@ -220,7 +236,14 @@ export function canonicalExportArtifactPath(exportId: string): string {
 export function pickReviewableRun(
   runs: SpeechcraftDatasetRun[],
 ): SpeechcraftDatasetRun | null {
-  const withClips = runs.find((r) => (r.output_summary?.clip_count ?? 0) > 0);
+  const withClips = runs.find((r) => {
+    const summary = r.output_summary;
+    return (
+      (summary?.clip_count ?? 0) > 0 ||
+      (summary?.candidate_review_clips ?? 0) > 0 ||
+      (summary?.exported_clip_count ?? 0) > 0
+    );
+  });
   return withClips ?? runs[0] ?? null;
 }
 
@@ -356,7 +379,7 @@ export function mapApiClip(
     channels: 1,
     speaker: "—",
     language: "en",
-    sourceRecording: runId,
+    sourceRecording: clip.source_recording_id ?? runId,
     path: clip.path,
     originalStartSeconds: 0,
     originalEndSeconds: clip.current_duration_sec ?? 0,

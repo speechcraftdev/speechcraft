@@ -673,6 +673,7 @@ def _build_clip_view(
     transcript_by_id: dict[str, dict[str, Any]],
     speaker_by_id: dict[str, dict[str, Any]],
     run_id: str | None = None,
+    source_recording_id: str | None = None,
 ) -> dict[str, Any]:
     clip_id = _manifest_clip_id(manifest_row)
     original_transcript = _manifest_transcript(manifest_row)
@@ -706,6 +707,7 @@ def _build_clip_view(
     view = {
         "clip_id": clip_id,
         "path": str(manifest_row.get("audio_path") or "") or None,
+        "source_recording_id": source_recording_id,
         "clip_version": int(clip_entry.get("clip_version") or 0),
         "review_status": review_status,
         "transcript": displayed_transcript,
@@ -734,6 +736,21 @@ def build_clip_lab_view(run_root: Path, *, run_id: str) -> dict[str, Any]:
     active_qc_subset = load_qc_subset(run_root, candidate_manifest_sha256=current_manifest_sha)
     saved_state = load_clip_lab_state(run_root)
     qc_state = _load_optional_qc_indexes(run_root)
+
+    source_recording_by_audio_id: dict[str, str] = {}
+    source_manifest_path = run_root / "artifacts" / "source_audio_manifest.json"
+    if source_manifest_path.is_file():
+        try:
+            source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            source_manifest = {}
+        for source in source_manifest.get("sources", []) if isinstance(source_manifest, dict) else []:
+            if not isinstance(source, dict):
+                continue
+            audio_id = source.get("source_audio_id")
+            recording_id = source.get("source_recording_id")
+            if isinstance(audio_id, str) and isinstance(recording_id, str):
+                source_recording_by_audio_id[audio_id] = recording_id
 
     stale_state = False
     stale_reason: str | None = None
@@ -773,6 +790,9 @@ def build_clip_lab_view(run_root: Path, *, run_id: str) -> dict[str, Any]:
                 transcript_by_id=qc_state.transcript_by_id,
                 speaker_by_id=qc_state.speaker_by_id,
                 run_id=run_id,
+                source_recording_id=source_recording_by_audio_id.get(
+                    str(manifest_row.get("source_audio_id") or "")
+                ),
             )
         )
 
@@ -1002,6 +1022,7 @@ def _serialize_clip_lab_clip(raw: dict[str, Any]) -> Any:
     return DatasetClipLabClipView(
         clip_id=raw["clip_id"],
         path=raw.get("path"),
+        source_recording_id=raw.get("source_recording_id"),
         clip_version=int(raw.get("clip_version") or 0),
         review_status=raw["review_status"],
         transcript=raw["transcript"],

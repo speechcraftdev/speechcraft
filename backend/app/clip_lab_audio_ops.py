@@ -744,7 +744,20 @@ def resolve_revision_media_bytes(
     if revision_key == source_sha:
         native_wav = _native_export_wav_path(run_root, clip_id)
         if native_wav.is_file():
-            return native_wav.read_bytes()
+            native_bytes = native_wav.read_bytes()
+            try:
+                _, native_sample_rate = load_pcm16_mono_wav_bytes(native_bytes)
+            except ClipLabAudioValidationError:
+                # Clip Lab edit coordinates and waveform tooling require mono
+                # PCM16. Keep using the valid candidate preview when a native
+                # export has a channel layout the editor cannot handle.
+                native_sample_rate = None
+            # Clip Lab edit coordinates and waveform metadata use the sample
+            # rate in candidate_review_manifest.json. Native exports can be at
+            # a different rate (for example, a 48 kHz source versus 16 kHz
+            # analysis clips), so only substitute one when those rates agree.
+            if native_sample_rate == _sample_rate_hz(manifest_row):
+                return native_bytes
         return _manifest_wav_path(run_root, manifest_row).read_bytes()
     cache_path = render_cache_path(run_root, clip_id, revision_key)
     if not cache_path.is_file():

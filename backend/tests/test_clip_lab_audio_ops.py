@@ -21,7 +21,9 @@ from app.clip_lab_audio_ops import (
     _mark_render_failed_if_current,
     append_clip_audio_operation,
     audio_view_fields,
+    effective_revision_key,
     load_revision_peaks_payload,
+    resolve_revision_media_bytes,
 )
 from app.clip_lab_state import (
     ClipLabValidationError,
@@ -78,6 +80,72 @@ class ClipLabAudioOpsLifecycleTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+
+    def test_original_clip_lab_audio_uses_manifest_rate_when_native_export_differs(self) -> None:
+        from app.clip_lab_state import _default_clip_entry, load_candidate_manifest
+
+        native_path = self.run_root / "artifacts/native_export_clips" / f"{self.clip_id}.wav"
+        _write_pcm16_mono(native_path, [300] * 180, sample_rate=48000)
+        row = load_candidate_manifest(self.run_root)[0]
+        entry = _default_clip_entry()
+        revision_key = effective_revision_key(row, entry, clip_id=self.clip_id)
+
+        audio = resolve_revision_media_bytes(
+            self.run_root,
+            clip_id=self.clip_id,
+            revision_key=revision_key,
+            manifest_row=row,
+            clip_entry=entry,
+        )
+
+        self.assertEqual(audio, self.source_wav_bytes)
+
+    def test_original_clip_lab_audio_uses_native_export_when_manifest_rate_matches(self) -> None:
+        from app.clip_lab_state import _default_clip_entry, load_candidate_manifest
+
+        native_path = self.run_root / "artifacts/native_export_clips" / f"{self.clip_id}.wav"
+        native_bytes = _write_pcm16_mono(native_path, [300] * 180, sample_rate=48000)
+        row = load_candidate_manifest(self.run_root)[0]
+        row["sample_rate"] = 48000
+        row["duration_samples"] = 180
+        manifest_path = self.run_root / "artifacts/candidate_review_manifest.json"
+        manifest_path.write_text(json.dumps([row]), encoding="utf-8")
+        entry = _default_clip_entry()
+        revision_key = effective_revision_key(row, entry, clip_id=self.clip_id)
+
+        audio = resolve_revision_media_bytes(
+            self.run_root,
+            clip_id=self.clip_id,
+            revision_key=revision_key,
+            manifest_row=row,
+            clip_entry=entry,
+        )
+
+        self.assertEqual(audio, native_bytes)
+
+    def test_original_clip_lab_audio_falls_back_when_native_export_is_stereo(self) -> None:
+        from app.clip_lab_state import _default_clip_entry, load_candidate_manifest
+
+        native_path = self.run_root / "artifacts/native_export_clips" / f"{self.clip_id}.wav"
+        native_path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(native_path), "wb") as handle:
+            handle.setnchannels(2)
+            handle.setsampwidth(2)
+            handle.setframerate(48000)
+            handle.writeframes(np.asarray([[300, 400]] * 180, dtype="<i2").tobytes())
+
+        row = load_candidate_manifest(self.run_root)[0]
+        entry = _default_clip_entry()
+        revision_key = effective_revision_key(row, entry, clip_id=self.clip_id)
+        audio = resolve_revision_media_bytes(
+            self.run_root,
+            clip_id=self.clip_id,
+            revision_key=revision_key,
+            manifest_row=row,
+            clip_entry=entry,
+        )
+
+        self.assertEqual(audio, self.source_wav_bytes)
 
     def _append_delete(self, *, version: int = 0) -> dict:
         return append_clip_audio_operation(

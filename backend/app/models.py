@@ -852,6 +852,7 @@ class DatasetClipLabPipelineFindingView(SQLModel):
 class DatasetClipLabClipView(SQLModel):
     clip_id: str
     path: str | None = None
+    source_recording_id: str | None = None
     clip_version: int
     review_status: Literal["unresolved", "accepted", "rejected"]
     transcript: str
