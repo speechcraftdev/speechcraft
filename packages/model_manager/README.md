@@ -124,14 +124,14 @@ SpeechCraft does not make a second full model copy or request other repository
 files. Hugging Face's Xet chunk cache stays at the path configured by
 `HF_XET_CACHE` (normally `~/.cache/huggingface/xet`). Hugging Face and the user
 own that shared cache; SpeechCraft never deletes it. Capacity checks reserve
-one artifact-sized output and one artifact-sized Xet transfer/cache headroom,
-plus 1 MiB for each location. When both locations share a filesystem, their
-requirements are combined; otherwise both volumes are checked separately.
-Already-used cache bytes count against free space. Hub's chunk cache is disabled
-by default; if a user enables it, the capacity check still accounts for the
-configured cache volume. ENOSPC/write/fsync failures propagate without a success
-report. GitHub transfers use at most three attempts and bounded exponential
-retry delays; the Hugging Face library owns transfer retry/resumption for Hub/Xet.
+temporary output plus 1 MiB. When the Xet chunk cache is explicitly enabled, the
+check also reserves possible configured cache growth, as detailed in the
+Whisper section below. When both paths share a filesystem, requirements are
+combined; otherwise each volume is checked separately. Existing use is reflected
+in free-space readings; cached chunk bytes are credited against configured cache
+growth. ENOSPC/write/fsync failures propagate without a success report. GitHub
+transfers use at most three attempts and bounded exponential retry delays; the
+Hugging Face library owns transfer retry/resumption for Hub/Xet.
 
 In-memory SHA-256 is updated from each received chunk; an uninterrupted transfer
 never re-reads its growing file. Checkpoints are due after 4 MiB or five seconds,
@@ -161,8 +161,8 @@ quarantine directories older than 30 days are removed under their artifact lock;
 recent quarantines, unsafe entries, and quarantines whose lock is active are
 left untouched. This cleanup only walks exact manager-generated quarantine names
 under the model directory, and it never considers published version directories.
-The capacity check accounts for new copies, so repeated failed attempts can
-eventually report insufficient space rather than deleting data. Do not edit
+The capacity check accounts for required new bytes, so repeated failed attempts
+can eventually report insufficient space rather than deleting data. Do not edit
 installed trees in place.
 
 ## Tests
@@ -221,6 +221,55 @@ and the provenance/licensing blockers are resolved.
 See [PROVENANCE.md](PROVENANCE.md) for measured identities and sources. Linux
 packaging/download/recovery tests were executed; native macOS execution remains
 pending Kavin's handoff. No inference readiness is claimed on either platform.
+
+## Whisper Large-v3 variants
+
+`asr` selects one catalog-pinned full Whisper Large-v3 artifact by platform:
+Linux x86-64 and Windows WSL2 use `Systran/faster-whisper-large-v3` in
+CTranslate2 format; macOS ARM64 uses `mlx-community/whisper-large-v3-mlx` in
+MLX format. There is no size/model fallback. WSL2 callers may pass
+`windows-wsl2`; storage under `/mnt/<drive>` is rejected when running inside
+WSL. Keep both the model store and caches on the WSL Linux filesystem.
+
+The catalog pins every required file by size and SHA-256. Installation reserves
+space for bytes not already integrity-verified in resumable staging. The pinned
+`hf-xet` chunk cache defaults to disabled, so it does not require a second
+artifact-sized copy. If `HF_XET_CHUNK_CACHE_SIZE_BYTES` enables it, the capacity
+check reserves possible cache growth up to the smaller of that limit and the
+remaining model bytes, less already allocated chunk-cache data. When the model
+store and Xet cache share a filesystem, required bytes are added. An incomplete
+local file is retained only according to
+Hugging Face's supported local-dir resume metadata; SpeechCraft never appends to
+it itself. Verified model files are published by same-filesystem rename from
+staging, with no second permanent snapshot copy. `HF_XET_CACHE` configures the
+shared Xet cache path, while the explicit model-store root controls persistent
+verified files and temporary local-dir state. The future setup controller can
+set both before launching the helper. SpeechCraft does not delete shared Xet
+cache content.
+
+The pinned `huggingface_hub==0.36.2` API's documented `tqdm_class` callback
+tracks selected-file completion only; it is not passed to the per-file byte
+transfer. Therefore Hub events identify role, requested platform, file counts,
+and known catalog byte total, while transferred bytes/current file remain null
+and transfer progress is marked indeterminate. Verification and publication
+are separate events. See [PROVENANCE.md](PROVENANCE.md) for immutable revisions,
+full file inventories, measured hashes and source references.
+
+Runtime validation remains deferred. Linux uses the worker's pinned
+`faster-whisper==1.2.1`; the Mac candidate is `mlx-whisper==0.4.3` and requires
+Kavin's local M4 Pro validation. MLX acquisition does not create a verified
+CPU fallback. A separate CTranslate2 Mac artifact, if needed, must be decided
+explicitly during runtime integration.
+
+For Linux real-network installation, temporary-store measurement and repeat
+reuse, install the wheel as above and run:
+
+```bash
+/tmp/speechcraft-stage2-env/bin/python -I packages/model_manager/tests/smoke_whisper.py --download-real-whisper --platform linux-x86_64
+```
+
+Do not run large-network smoke tests in ordinary CI. For native macOS steps,
+see [MACOS_WHISPER_HANDOFF.md](MACOS_WHISPER_HANDOFF.md).
 
 ## Next integration milestone
 

@@ -11,6 +11,13 @@ PUBLIC_REPOSITORIES = {
     "csukuangfj/speaker-embedding-models": frozenset({
         "nemo_en_titanet_large.onnx",
     }),
+    "Systran/faster-whisper-large-v3": frozenset({
+        "config.json", "model.bin", "preprocessor_config.json",
+        "tokenizer.json", "vocabulary.json",
+    }),
+    "mlx-community/whisper-large-v3-mlx": frozenset({
+        "config.json", "weights.npz",
+    }),
 }
 
 
@@ -32,7 +39,8 @@ def validate_request(repo_id: str, revision: str, filenames: list[str]) -> None:
 
 
 def acquire_public_snapshot(repo_id: str, revision: str, filenames: list[str],
-                            local_dir: Path, progress, *, test_endpoint: str | None = None) -> None:
+                            local_dir: Path, progress, *, total_bytes: int,
+                            test_endpoint: str | None = None) -> None:
     """Download only named files using the supported Hub snapshot API.
 
     The packaged caller supplies the repository and filenames from the trusted
@@ -63,6 +71,9 @@ def acquire_public_snapshot(repo_id: str, revision: str, filenames: list[str],
         def update(self, n=1):
             result = super().update(n)
             progress({"event": "source_progress", "source": "huggingface",
+                      "state": "downloading", "current_file": None,
+                      "transferred_bytes": None, "total_bytes": total_bytes,
+                      "transfer_indeterminate": True,
                       "files_completed": int(self.n),
                       "files_total": int(self.total) if self.total is not None else None})
             return result

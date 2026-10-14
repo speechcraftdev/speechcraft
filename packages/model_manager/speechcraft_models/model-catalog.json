@@ -66,7 +66,7 @@
       "artifacts": [
         {
           "platform": "linux-x86_64",
-          "format": "CTranslate2 / faster-whisper (large-v3, unquantized upstream export)",
+          "format": "CTranslate2 / faster-whisper (large-v3 FP16 export)",
           "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
           "availability": "verified",
           "inventory_complete": true,
@@ -105,7 +105,7 @@
         },
         {
           "platform": "macos-arm64",
-          "format": "MLX Whisper / mlx-whisper (large-v3, full precision weights.npz)",
+          "format": "MLX Whisper / mlx-whisper (large-v3 standard non-quantized weights.npz)",
           "revision": "49e6aa286ad60c14352c404340ded53710378a11",
           "availability": "verified",
           "inventory_complete": true,

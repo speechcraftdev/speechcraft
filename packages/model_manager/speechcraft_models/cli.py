@@ -11,7 +11,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Install or verify SpeechCraft model files (no inference).')
     parser.add_argument('action', choices=('install', 'status', 'verify'))
     parser.add_argument('role')
-    parser.add_argument('--platform', required=True, choices=('linux-x86_64', 'macos-arm64'))
+    parser.add_argument('--platform', required=True,
+                        choices=('linux-x86_64', 'windows-wsl2', 'macos-arm64'))
     parser.add_argument('--root', required=True, help='Managed model store; for verify, the artifact directory itself')
     args = parser.parse_args(argv)
     try:

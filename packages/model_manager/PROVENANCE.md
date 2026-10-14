@@ -95,7 +95,9 @@ commit `edaa852ec7e145841d8ffdb056a99866b5f0a478`. Its pinned Hub file listing
 contains `.gitattributes`, `README.md`, and the five runtime/download files
 below. The `faster-whisper==1.2.1` loader's model/tokenizer discovery supports
 `config.json`, `model.bin`, `tokenizer.json`, and `preprocessor_config.json`;
-its own download allowlist also includes `vocabulary.*`, so SpeechCraft retains
+the pinned model card specifies FP16 CTranslate2 weights (no smaller model or
+reduced-bit variant). Its own download allowlist also includes `vocabulary.*`,
+so SpeechCraft retains
 `vocabulary.json` as part of the complete selected repository artifact.
 Required total: **3,090,835,702 bytes**.
 
@@ -108,7 +110,10 @@ Required total: **3,090,835,702 bytes**.
 | `vocabulary.json` | 1,068,114 | Downloaded from the pinned revision and locally hashed |
 
 The repository's Hub card declares MIT and the pinned snapshot is public without
-authentication. Source: [pinned repository](https://huggingface.co/Systran/faster-whisper-large-v3/tree/edaa852ec7e145841d8ffdb056a99866b5f0a478).
+authentication. It describes this as a CTranslate2 FP16 conversion of
+`openai/whisper-large-v3`; preserve attribution to OpenAI and the Systran
+conversion repository in the product's third-party notices. Sources:
+[OpenAI model card](https://huggingface.co/openai/whisper-large-v3), [pinned repository](https://huggingface.co/Systran/faster-whisper-large-v3/tree/edaa852ec7e145841d8ffdb056a99866b5f0a478).
 
 The MLX repository `mlx-community/whisper-large-v3-mlx` resolves to immutable
 commit `49e6aa286ad60c14352c404340ded53710378a11`. Its pinned inventory is
@@ -123,10 +128,12 @@ Required total: **3,083,520,685 bytes**.
 | `config.json` | 269 | Downloaded from the pinned revision and locally hashed |
 | `weights.npz` | 3,083,520,416 | Hugging Face Xet/LFS SHA-256 metadata |
 
-The pinned Hub card declares MIT and directs users to MLX Whisper. The current
-candidate runtime package is `mlx-whisper==0.4.3` (Python `>=3.8`); that version
-and file format still need a native M4 Pro load/transcription smoke before Mac
-runtime support is claimed. Sources: [pinned MLX repository](https://huggingface.co/mlx-community/whisper-large-v3-mlx/tree/49e6aa286ad60c14352c404340ded53710378a11), [mlx-whisper model loading guide](https://github.com/ml-explore/mlx-examples/tree/main/whisper), [pinned faster-whisper loader source](https://github.com/SYSTRAN/faster-whisper/blob/v1.2.1/faster_whisper/utils.py).
+The pinned Hub card declares MIT and directs users to MLX Whisper. Preserve
+attribution to OpenAI Whisper and the MLX Community conversion in product
+third-party notices. The current candidate runtime package is
+`mlx-whisper==0.4.3` (Python `>=3.8`); that version and file format still need
+a native M4 Pro load/transcription smoke before Mac runtime support is claimed.
+Sources: [pinned MLX repository](https://huggingface.co/mlx-community/whisper-large-v3-mlx/tree/49e6aa286ad60c14352c404340ded53710378a11), [mlx-whisper model loading guide](https://github.com/ml-explore/mlx-examples/tree/main/whisper), [pinned faster-whisper loader source](https://github.com/SYSTRAN/faster-whisper/blob/v1.2.1/faster_whisper/utils.py).
 
 For both repos, the large weight SHA-256 values come from Hub Xet/LFS object
 metadata at the pinned commit. The catalog hashes for the small JSON files were

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 import fcntl
 import hashlib
 import http.client
@@ -132,6 +133,69 @@ def _strong_etag(value) -> bool:
     return isinstance(value, str) and re.fullmatch(r'"[^"\r\n]+"', value) is not None
 
 
+def _reject_wsl_windows_mount(root: Path, platform: str) -> None:
+    """Keep WSL model storage on its Linux filesystem, never a mounted drive."""
+    if platform != 'windows-wsl2':
+        return
+    try:
+        release = os.uname().release.lower()
+    except AttributeError:
+        return
+    if 'microsoft' not in release:
+        return
+    candidate = root.resolve()
+    best = None
+    try:
+        with open('/proc/self/mountinfo', encoding='utf-8') as mounts:
+            for line in mounts:
+                left, right = line.rstrip().split(' - ', 1)
+                fields = left.split()
+                mountpoint = Path(fields[4].replace('\\040', ' ').replace('\\011', '\t'))
+                try:
+                    candidate.relative_to(mountpoint)
+                except ValueError:
+                    continue
+                if best is None or len(mountpoint.parts) > len(best[0].parts):
+                    best = (mountpoint, right.split()[0])
+    except (OSError, ValueError, IndexError):
+        raise InstallError('cannot confirm WSL model-store filesystem; choose a path under the WSL Linux filesystem')
+    if best and best[1].lower() in {'9p', 'drvfs'}:
+        raise InstallError('WSL model storage must be inside the WSL Linux filesystem, not /mnt/<drive>')
+
+
+def _allocated_bytes_without_symlinks(root: Path) -> int:
+    """Measure a cache subtree without traversing symlinks."""
+    total = 0
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    total += _allocated_bytes_without_symlinks(Path(entry.path))
+                elif stat.S_ISREG(info.st_mode):
+                    total += getattr(info, 'st_blocks', 0) * 512 or info.st_size
+    except FileNotFoundError:
+        return 0
+    except OSError as exc:
+        raise InstallError('cannot inspect configured Hugging Face Xet cache safely') from exc
+    return total
+
+
+def _xet_chunk_cache_bytes(cache: Path) -> int:
+    """Count only Xet download chunk-cache data, not logs or upload shards."""
+    total = 0
+    try:
+        environments = list(os.scandir(cache))
+    except FileNotFoundError:
+        return 0
+    except OSError as exc:
+        raise InstallError('cannot inspect configured Hugging Face Xet cache safely') from exc
+    for environment in environments:
+        if environment.is_dir(follow_symlinks=False):
+            total += _allocated_bytes_without_symlinks(Path(environment.path) / 'chunk_cache')
+    return total
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # The first source is immutable raw GitHub, which needs no redirect.
@@ -153,12 +217,28 @@ class _Installer:
         self.allow_test_http = allow_test_http
         self.retry_delay = retry_delay
         self.test_hf_endpoint = test_hf_endpoint
+        self._event_context = ContextVar(f"speechcraft_model_event_{id(self)}", default={})
         if test_hf_endpoint is not None and not allow_test_http:
             raise ValueError('test Hugging Face endpoint requires the internal test transport flag')
         self.opener = urllib.request.build_opener(_NoRedirect)
 
     def emit(self, event, **fields):
-        self.progress({'event': event, **fields})
+        context = self._event_context.get()
+        default_state = {'installed': 'complete', 'reused': 'complete',
+                         'source_acquiring': 'downloading', 'progress': 'downloading'}.get(
+                             event, event)
+        state = fields.pop('state', default_state)
+        self.progress({'event': event, 'state': state, **context, **fields})
+
+    def emit_source(self, event, *, context=None):
+        event = dict(event)
+        kind = event.pop('event', 'source_progress')
+        default_state = {'source_progress': 'downloading',
+                         'source_file_acquired': 'downloading'}.get(kind, kind)
+        state = event.pop('state', default_state)
+        if context is None:
+            context = self._event_context.get()
+        self.progress({'event': kind, 'state': state, **context, **event})
 
     def resolve(self, role, platform, *, experimental=False):
         artifact = select_artifact(self.catalog, role, platform)
@@ -352,13 +432,35 @@ class _Installer:
                 # Unsafe entries and concurrent filesystem changes are retained.
                 continue
 
-    def _check_huggingface_capacity(self, root, total_bytes):
+    def _check_huggingface_capacity(self, root, total_bytes, staged_path=None, artifact=None):
         """Reserve output and transient Xet headroom on each affected volume."""
         from huggingface_hub import constants
 
-        output_required = total_bytes + RESERVE
-        xet_required = total_bytes + RESERVE
+        staged_verified_bytes = 0
+        try:
+            staged_is_dir = stat.S_ISDIR(staged_path.lstat().st_mode) if staged_path is not None else False
+        except OSError:
+            staged_is_dir = False
+        if staged_is_dir and artifact is not None:
+            staged = verify_artifact(staged_path, artifact)
+            if staged.get('integrity_verified'):
+                staged_verified_bytes = total_bytes
+            else:
+                staged_verified_bytes = sum(
+                    item.get('size_bytes', 0) for item in staged.get('files', [])
+                    if item.get('status') == 'verified'
+                )
+        remaining_bytes = max(0, total_bytes - staged_verified_bytes)
+        output_required = remaining_bytes + RESERVE
+        # hf-xet's chunk cache defaults to disabled. If explicitly enabled,
+        # reserve this artifact's possible cache growth up to its configured
+        # limit, and credit already allocated download chunks.
+        raw_chunk_limit = os.environ.get('HF_XET_CHUNK_CACHE_SIZE_BYTES', '0')
+        if re.fullmatch(r'[0-9]+', raw_chunk_limit) is None:
+            raise InstallError('HF_XET_CHUNK_CACHE_SIZE_BYTES must be a nonnegative byte count')
+        chunk_cache_limit = int(raw_chunk_limit)
         cache = Path(constants.HF_XET_CACHE).expanduser()
+        _reject_wsl_windows_mount(cache, self._event_context.get().get('platform', ''))
         probe = cache
         while not probe.exists():
             if probe.parent == probe:
@@ -366,6 +468,9 @@ class _Installer:
             probe = probe.parent
         if not probe.is_dir():
             raise InstallError('Hugging Face Xet cache location is not a directory')
+        cached_chunks = _xet_chunk_cache_bytes(cache) if chunk_cache_limit else None
+        xet_growth_required = max(0, min(chunk_cache_limit, remaining_bytes) - (cached_chunks or 0))
+        xet_required = xet_growth_required + RESERVE
         xet_free = shutil.disk_usage(probe).free
         root_stat = os.fstat(root)
         xet_stat = os.stat(probe)
@@ -374,6 +479,11 @@ class _Installer:
         same_volume = root_stat.st_dev == xet_stat.st_dev
         root_required = output_required + xet_required if same_volume else output_required
         self.emit('capacity', required_bytes=root_required, available_bytes=root_free,
+                  artifact_total_bytes=total_bytes, staged_verified_bytes=staged_verified_bytes,
+                  estimated_remaining_bytes=remaining_bytes,
+                  xet_chunk_cache_limit_bytes=chunk_cache_limit,
+                  xet_chunk_cache_used_bytes=cached_chunks,
+                  xet_chunk_cache_growth_required_bytes=xet_growth_required,
                   xet_cache_required_bytes=xet_required,
                   xet_cache_available_bytes=xet_free, same_filesystem=same_volume)
         if root_free < root_required:
@@ -413,12 +523,18 @@ class _Installer:
                     if file_result['status'] in ('corrupt', 'partial'):
                         self._unlink_hf_file(source_fd, file_result['path'])
                 self.emit('source_acquiring', source='huggingface', attempt=attempt,
-                          files_total=len(artifact['required_files']))
+                          files_total=len(artifact['required_files']),
+                          total_bytes=sum(item['size_bytes'] for item in artifact['required_files']),
+                          transferred_bytes=None, current_file=None)
                 try:
+                    event_context = self._event_context.get()
                     acquire_public_snapshot(
                         source['repo_id'], artifact['revision'],
                         [item['path'] for item in artifact['required_files']],
-                        source_path, self.progress, test_endpoint=self.test_hf_endpoint)
+                        source_path,
+                        lambda event: self.emit_source(event, context=event_context),
+                        test_endpoint=self.test_hf_endpoint,
+                        total_bytes=sum(item['size_bytes'] for item in artifact['required_files']))
                 except HuggingFaceAcquisitionError as exc:
                     if not exc.transient or attempt == self.attempts:
                         raise InstallError(str(exc)) from exc
@@ -447,15 +563,19 @@ class _Installer:
             os.close(source_fd)
 
     def install(self, role, platform, *, experimental=False):
-        self.emit('resolving', role=role, platform=platform)
+        token = self._event_context.set({'role': role, 'platform': platform})
+        self.emit('resolving')
         try:
             return self._install(role, platform, experimental=experimental)
         except (OSError, urllib.error.URLError, http.client.HTTPException, ManifestError, InstallError) as exc:
             self.emit('failed', error=str(exc))
             raise InstallError(str(exc)) from exc
+        finally:
+            self._event_context.reset(token)
 
     def _install(self, role, platform, *, experimental=False):
         model_id, key, artifact = self.resolve(role, platform, experimental=experimental)
+        _reject_wsl_windows_mount(self.root, platform)
         path = self.root / model_id / key
         with self.store(model_id, True) as (root, model), self.lock(model, key):
             self._cleanup_stages(model, key)
@@ -491,7 +611,8 @@ class _Installer:
                     raise InstallError('existing installation has unsafe or unreadable files')
             total_bytes = sum(f['size_bytes'] for f in artifact['required_files'])
             if artifact.get('source', {}).get('type') == 'huggingface':
-                self._check_huggingface_capacity(root, total_bytes)
+                stage_path = self.root / model_id / stage_name / '.hf-source'
+                self._check_huggingface_capacity(root, total_bytes, stage_path, artifact)
             else:
                 required = 2 * total_bytes + RESERVE
                 fs = os.fstatvfs(root)

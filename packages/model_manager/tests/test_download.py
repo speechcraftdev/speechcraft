@@ -8,15 +8,17 @@ import os
 from pathlib import Path
 import math
 import socket
+import stat
 import tempfile
 import threading
 import time
 import urllib.parse
 from types import SimpleNamespace
 import unittest
+from unittest.mock import mock_open
 from unittest.mock import patch
 
-from speechcraft_models.download import _Installer, InstallError
+from speechcraft_models.download import _Installer, InstallError, _reject_wsl_windows_mount
 from speechcraft_models.manifest import ManifestError, load_catalog, select_artifact
 
 DATA = b'fabricated-model-data-' * 4096
@@ -83,7 +85,7 @@ class FakeHFHandler(BaseHTTPRequestHandler):
         pass
 
     def _file(self):
-        prefix = '/csukuangfj/speaker-embedding-models/resolve/'
+        prefix = f'/{self.server.repo_id}/resolve/'
         path = urllib.parse.unquote(self.path)
         if not path.startswith(prefix):
             return None
@@ -92,10 +94,10 @@ class FakeHFHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.server.auth_headers.append(self.headers.get('Authorization'))
-        if self.path.startswith('/api/models/csukuangfj/speaker-embedding-models/revision/'):
+        if self.path.startswith(f'/api/models/{self.server.repo_id}/revision/'):
             body = json.dumps({
-                '_id': 'csukuangfj/speaker-embedding-models',
-                'id': 'csukuangfj/speaker-embedding-models',
+                '_id': self.server.repo_id,
+                'id': self.server.repo_id,
                 'sha': self.server.revision,
                 'siblings': [{'rfilename': name} for name in self.server.files],
             }).encode()
@@ -205,7 +207,9 @@ class DownloadTests(unittest.TestCase):
         model_id, key, _ = self.installer.resolve('speech_detection', 'linux-x86_64')
         return self.root / model_id / key
 
-    def make_hf_installer(self, files, *, revision='a' * 40, missing_from_repo=(), extra_repo_files=None):
+    def make_hf_installer(self, files, *, revision='a' * 40, missing_from_repo=(),
+                          extra_repo_files=None, role='speaker_purity', platform='linux-x86_64',
+                          repo='csukuangfj/speaker-embedding-models'):
         try:
             from huggingface_hub import constants
             from speechcraft_models import huggingface_source
@@ -213,6 +217,7 @@ class DownloadTests(unittest.TestCase):
             self.skipTest('install the model-manager Hugging Face test dependencies')
         payloads = dict(files)
         server = ThreadingHTTPServer(('127.0.0.1', 0), FakeHFHandler)
+        server.repo_id = repo
         server.revision = revision
         server.files = {name: data for name, data in payloads.items() if name not in missing_from_repo}
         server.files.update(extra_repo_files or {})
@@ -226,7 +231,6 @@ class DownloadTests(unittest.TestCase):
         self.addCleanup(thread.join)
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        repo = 'csukuangfj/speaker-embedding-models'
         allowlist = patch.dict(huggingface_source.PUBLIC_REPOSITORIES,
                                {repo: frozenset(payloads)})
         allowlist.start()
@@ -238,9 +242,10 @@ class DownloadTests(unittest.TestCase):
         self.addCleanup(cache_patch.stop)
 
         catalog = copy.deepcopy(load_catalog())
-        model = next(item for item in catalog['models'] if item['role'] == 'speaker_purity')
-        artifact = model['artifacts'][0]
+        model = next(item for item in catalog['models'] if item['role'] == role)
+        artifact = select_artifact(catalog, role, platform)
         artifact['revision'] = revision
+        artifact['source'] = {'type': 'huggingface', 'repo_id': repo}
         artifact['required_files'] = [
             {'path': name, 'size_bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
             for name, data in payloads.items()
@@ -552,6 +557,49 @@ class DownloadTests(unittest.TestCase):
                 installer.install('speaker_purity', 'linux-x86_64', experimental=True)
         self.assertEqual(server.file_requests, [])
 
+    def test_huggingface_checks_separate_xet_cache_capacity(self):
+        filename = 'nemo_en_titanet_large.onnx'
+        installer, _, _, server, _, _ = self.make_hf_installer({filename: b'model'})
+        from huggingface_hub import constants
+        real_stat = os.stat
+        cache_path = Path(constants.HF_XET_CACHE)
+        def stat_on_other_volume(path, *args, **kwargs):
+            if Path(path) == cache_path:
+                return SimpleNamespace(st_dev=-1, st_mode=stat.S_IFDIR | 0o700)
+            return real_stat(path, *args, **kwargs)
+        root_fd = os.open(self.temp.name, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with patch('speechcraft_models.download.os.fstatvfs',
+                       return_value=SimpleNamespace(f_bavail=10**9, f_frsize=1)):
+                with patch('speechcraft_models.download.os.stat', side_effect=stat_on_other_volume):
+                    with patch('speechcraft_models.download.shutil.disk_usage',
+                               return_value=SimpleNamespace(free=1)):
+                        with self.assertRaisesRegex(InstallError, 'insufficient Hugging Face Xet-cache disk space'):
+                            installer._check_huggingface_capacity(root_fd, 5)
+        finally:
+            os.close(root_fd)
+        self.assertEqual(server.file_requests, [])
+
+    def test_huggingface_capacity_accounts_only_configured_xet_cache_growth(self):
+        filename = 'nemo_en_titanet_large.onnx'
+        installer, _, _, server, _, events = self.make_hf_installer({filename: b'model'})
+        from huggingface_hub import constants
+        chunk_cache = Path(constants.HF_XET_CACHE) / 'fixture-region' / 'chunk_cache'
+        chunk_cache.mkdir(parents=True)
+        (chunk_cache / 'existing-chunk').write_bytes(b'x' * 4096)
+        root_fd = os.open(self.temp.name, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with patch.dict(os.environ, {'HF_XET_CHUNK_CACHE_SIZE_BYTES': '8192'}):
+                installer._check_huggingface_capacity(root_fd, 10000)
+        finally:
+            os.close(root_fd)
+        capacity = next(event for event in events if event['event'] == 'capacity')
+        self.assertEqual(capacity['xet_chunk_cache_limit_bytes'], 8192)
+        self.assertGreaterEqual(capacity['xet_chunk_cache_used_bytes'], 4096)
+        expected_growth = max(0, min(8192, 10000) - capacity['xet_chunk_cache_used_bytes'])
+        self.assertEqual(capacity['xet_chunk_cache_growth_required_bytes'], expected_growth)
+        self.assertEqual(server.file_requests, [])
+
     def test_titanet_artifact_selects_both_supported_platforms_and_blockers_remain(self):
         catalog = load_catalog()
         linux = select_artifact(catalog, 'speaker_purity', 'linux-x86_64')
@@ -562,6 +610,92 @@ class DownloadTests(unittest.TestCase):
         with self.assertRaisesRegex(InstallError, 'release-blocked'):
             _Installer(Path(self.temp.name) / 'blocked', catalog).install(
                 'speaker_purity', 'macos-arm64')
+
+    def test_whisper_platforms_select_distinct_trusted_artifacts_and_wsl_alias(self):
+        catalog = load_catalog()
+        linux = select_artifact(catalog, 'asr', 'linux-x86_64')
+        wsl = select_artifact(catalog, 'asr', 'windows-wsl2')
+        macos = select_artifact(catalog, 'asr', 'macos-arm64')
+        self.assertEqual(linux['format'].split('/')[0], 'CTranslate2 ')
+        self.assertEqual(linux, wsl)
+        self.assertEqual(macos['source']['repo_id'], 'mlx-community/whisper-large-v3-mlx')
+        self.assertNotEqual(macos['source']['repo_id'], linux['source']['repo_id'])
+        with self.assertRaisesRegex(ManifestError, 'unsupported platform'):
+            select_artifact(catalog, 'asr', 'windows-native')
+
+    def test_whisper_huggingface_install_and_truthful_indeterminate_progress(self):
+        repo = 'Systran/faster-whisper-large-v3'
+        files = {
+            'config.json': b'{"fixture":"config"}',
+            'model.bin': b'fabricated CTranslate2 weights',
+            'preprocessor_config.json': b'{"fixture":"preprocessor"}',
+            'tokenizer.json': b'{"fixture":"tokenizer"}',
+            'vocabulary.json': b'{"fixture":"vocabulary"}',
+        }
+        installer, _, artifact, server, _, events = self.make_hf_installer(
+            files, role='asr', repo=repo, platform='windows-wsl2')
+        result = installer.install('asr', 'windows-wsl2')
+        self.assertTrue(result['install_ready'])
+        self.assertEqual({item['path'] for item in result['files']}, set(files))
+        self.assertEqual(server.file_requests, list(files))
+        self.assertTrue(all(header is None for header in server.auth_headers))
+        progress = [event for event in events if event['event'] == 'source_progress']
+        self.assertTrue(progress)
+        for event in progress:
+            self.assertEqual(event['role'], 'asr')
+            self.assertEqual(event['platform'], 'windows-wsl2')
+            self.assertEqual(event['state'], 'downloading')
+            self.assertIsNone(event['transferred_bytes'])
+            self.assertIsNone(event['current_file'])
+            self.assertTrue(event['transfer_indeterminate'])
+            self.assertEqual(event['total_bytes'], sum(map(len, files.values())))
+        self.assertTrue(installer.install('asr', 'windows-wsl2')['reused'])
+        self.assertTrue(artifact['inventory_complete'])
+        self.assertTrue(any(e['event'] == 'installed' and e['state'] == 'complete'
+                            for e in events))
+        self.assertTrue(any(e['event'] == 'reused' and e['state'] == 'complete'
+                            for e in events))
+
+    def test_whisper_mlx_artifact_uses_shared_integrity_pipeline(self):
+        repo = 'mlx-community/whisper-large-v3-mlx'
+        files = {'config.json': b'{"model_type":"whisper"}', 'weights.npz': b'fake full precision MLX weights'}
+        installer, _, _, server, _, events = self.make_hf_installer(
+            files, role='asr', repo=repo, platform='macos-arm64')
+        result = installer.install('asr', 'macos-arm64')
+        self.assertTrue(result['integrity_verified'])
+        self.assertTrue(result['install_ready'])
+        self.assertIsNone(result['runtime_ready'])
+        self.assertEqual(server.file_requests, ['config.json', 'weights.npz'])
+        self.assertTrue(any(e['event'] == 'verifying' for e in events))
+        self.assertTrue(any(e['event'] == 'publishing' for e in events))
+        self.assertFalse(any(e['event'] == 'failed' for e in events))
+
+    def test_wsl_model_store_rejects_windows_drive_mount(self):
+        mountinfo = ('36 25 0:34 / / rw,relatime - ext4 /dev/sda rw\n'
+                     '37 36 0:35 / /mnt/c rw,relatime - 9p drvfs rw\n')
+        with patch('speechcraft_models.download.os.uname',
+                   return_value=SimpleNamespace(release='6.6.1-microsoft-standard-WSL2')):
+            with patch('builtins.open', mock_open(read_data=mountinfo)):
+                with self.assertRaisesRegex(InstallError, 'WSL Linux filesystem'):
+                    _reject_wsl_windows_mount(Path('/mnt/c/Users/test/models'), 'windows-wsl2')
+
+    def test_wsl_xet_cache_rejects_windows_drive_mount(self):
+        from huggingface_hub import constants
+        installer = _Installer(Path(self.temp.name) / 'models', self.catalog)
+        token = installer._event_context.set({'role': 'asr', 'platform': 'windows-wsl2'})
+        mountinfo = ('36 25 0:34 / / rw,relatime - ext4 /dev/sda rw\n'
+                     '37 36 0:35 / /mnt/c rw,relatime - 9p drvfs rw\n')
+        root_fd = os.open(self.temp.name, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with patch('speechcraft_models.download.os.uname',
+                       return_value=SimpleNamespace(release='6.6.1-microsoft-standard-WSL2')):
+                with patch('builtins.open', mock_open(read_data=mountinfo)):
+                    with patch.object(constants, 'HF_XET_CACHE', '/mnt/c/Users/test/hf-xet'):
+                        with self.assertRaisesRegex(InstallError, 'WSL Linux filesystem'):
+                            installer._check_huggingface_capacity(root_fd, 10)
+        finally:
+            installer._event_context.reset(token)
+            os.close(root_fd)
 
     def test_invalid_file_paths_and_symlink_escapes(self):
         for path in ('../outside', '/outside', 'a/../../b', 'a\\b'):
