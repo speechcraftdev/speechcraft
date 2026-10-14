@@ -1,11 +1,12 @@
 # SpeechCraft model preparation — Stage 2
 
 `speechcraft_models` is an internal Python 3.11+ helper, distributed as
-`speechcraft-model-manager` with **zero runtime dependencies**. It packages
-the catalog and JSON Schema and installs the approved public Silero ONNX
-artifact. Linux x86_64 and macOS arm64 share the same model bytes. No ML imports
-or inference occur. There is no `speechcraft-models` executable; the eventual
-`speechcraft` app launcher remains reserved for the application.
+`speechcraft-model-manager`. Its only runtime dependencies are pinned
+`huggingface-hub==0.36.2` and `hf-xet==1.5.0`; it does not install ML runtimes.
+It packages the catalog and JSON Schema, installs verified Silero ONNX, and
+contains a public Hugging Face adapter for pinned catalog entries. There is no
+`speechcraft-models` executable; the eventual `speechcraft` app launcher remains
+reserved for the application.
 
 ## Build, install, download
 
@@ -14,7 +15,7 @@ From the repository root (requires `uv` for these developer build commands):
 ```bash
 uv build --wheel --out-dir /tmp/speechcraft-stage2-dist packages/model_manager
 uv venv --python 3.12 /tmp/speechcraft-stage2-env
-uv pip install --python /tmp/speechcraft-stage2-env/bin/python --no-deps --no-index /tmp/speechcraft-stage2-dist/speechcraft_model_manager-0.1.0-py3-none-any.whl
+uv pip install --python /tmp/speechcraft-stage2-env/bin/python /tmp/speechcraft-stage2-dist/speechcraft_model_manager-0.1.0-py3-none-any.whl
 ```
 
 For developer testing only, invoke the internal CLI as a Python module. After
@@ -48,10 +49,14 @@ verification = verify_artifact(directory, artifact)
 The callback receives JSON-serializable dicts synchronously. It should return
 quickly; callback exceptions abort the call and leave recoverable staging data.
 Events are `resolving`, `waiting_for_lock`, `capacity`, `downloading`, `progress`,
-`retrying`, `file_verified`, `verifying`, `publishing`, `installed`, `reused`, and
-`failed`. Byte events include `path`, `downloaded_bytes`, `total_bytes`, and
-`attempt`; byte counts can reset on restart. `capacity` reports required and
-available bytes. `failed`/`retrying` include `error`; completion includes `root`.
+`retrying`, `file_verified`, `verifying`, `publishing`, `installed`, `reused`,
+and `failed`, plus Hugging Face `source_acquiring`, `source_progress`, and
+`source_file_acquired`. GitHub transfer events report byte counts; the pinned
+Hub API exposes trustworthy selected-file completion counts but no byte callback
+through `snapshot_download`, so Hub progress reports files completed/total and
+does not invent a percentage. Events never contain download URLs or request
+headers. Byte counts can reset on restart. `capacity` reports required and
+available bytes. `failed`/`retrying` include sanitized errors; completion includes `root`.
 `InstallError` means no success is claimed. Status may race with a concurrent
 installer and should be refreshed after completion.
 
@@ -60,7 +65,12 @@ The existing verifier's `present`, `complete`, `integrity_verified`, and
 Installation results add `reused`. File readiness does not establish inference
 readiness. Catalog licensing/access status, inventory completeness, immutable
 revision, exact positive sizes, hashes, approved HTTPS sources, and release
-blockers are checked before transfer. Other model roles remain blocked.
+blockers are checked before transfer. Hugging Face acquisitions must match the
+catalog repository, filename allowlist, and a full 40-character commit. No Hub
+token is read or persisted. TitaNet can only be fetched with the explicit
+Python `experimental=True` option while its provenance/licensing blockers remain;
+its report has `integrity_verified: true`, `install_ready: false`, and
+`runtime_ready: null`. Normal installation refuses it.
 
 ## Storage and recovery
 
@@ -76,6 +86,7 @@ written. Tests use disposable temporary directories and never use model caches.
   .stage-<artifact-key>/            # one predictable owner per artifact/lock
     0.part, 0.resume.json, ...        # checkpointed sequential transfers
     payload-<random>/                # fresh publication copy per attempt
+    .hf-source/                       # pinned Hub local_dir retained across retries
   .quarantine-<artifact-key>-<uuid>/  # retained invalid same-version installation
 ```
 
@@ -99,13 +110,28 @@ transfer files reject hardlinks before truncation. Writes and directory traversa
 use descriptors with `O_NOFOLLOW`. Parent aliases of the explicitly chosen root
 (e.g. `/tmp` on macOS) are allowed. The store assumes a local filesystem and one
 user; advisory locking is not a security boundary against malicious same-user
-processes that ignore locks. NFS/Windows are outside this milestone.
+processes that ignore locks. NFS and native Windows are outside this milestone.
+On Windows 11 use Ubuntu WSL2 and keep the model store on the WSL Linux
+filesystem, rather than a Windows mounted drive. macOS uses the same POSIX
+implementation; native Apple Silicon acquisition testing is still pending.
 
-Capacity checks conservatively reserve two full copies plus 1 MiB, without
-crediting partial data. ENOSPC/write/fsync failures propagate without a success
-report. Transfers use one stream, 15-second socket timeouts, at most three
-attempts per file, and bounded exponential retry delays. Only transient HTTP
-408/429/500/502/503/504 and transport failures retry; redirects are refused.
+GitHub artifacts reserve two full copies plus 1 MiB, without crediting partial
+data. Hugging Face artifacts use `snapshot_download(local_dir=...)` into the
+stable `.hf-source` staging directory. The Hub library's `.cache/huggingface`
+metadata stays there during retries, then is removed after verification. The
+verified files are renamed into the published directory on the same filesystem;
+SpeechCraft does not make a second full model copy or request other repository
+files. Hugging Face's Xet chunk cache stays at the path configured by
+`HF_XET_CACHE` (normally `~/.cache/huggingface/xet`). Hugging Face and the user
+own that shared cache; SpeechCraft never deletes it. Capacity checks reserve
+one artifact-sized output and one artifact-sized Xet transfer/cache headroom,
+plus 1 MiB for each location. When both locations share a filesystem, their
+requirements are combined; otherwise both volumes are checked separately.
+Already-used cache bytes count against free space. Hub's chunk cache is disabled
+by default; if a user enables it, the capacity check still accounts for the
+configured cache volume. ENOSPC/write/fsync failures propagate without a success
+report. GitHub transfers use at most three attempts and bounded exponential
+retry delays; the Hugging Face library owns transfer retry/resumption for Hub/Xet.
 
 In-memory SHA-256 is updated from each received chunk; an uninterrupted transfer
 never re-reads its growing file. Checkpoints are due after 4 MiB or five seconds,
@@ -123,8 +149,9 @@ ranges/416 restart on the next bounded attempt. Missing validators or mismatched
 checkpoints also restart. A full-sized partial needs a full hash, regardless of
 its checkpoint. Whole-file integrity failures clear the affected transfer.
 
-Only listed files are copied into a fresh payload. The complete payload is
-verified and fsynced before its directory is renamed within the same filesystem.
+Only catalog-listed files are requested from the Hub or copied into a GitHub
+payload. The complete payload is verified and fsynced before its directory is
+renamed within the same filesystem.
 A crash before publication leaves no final installation; a crash after publication
 leaves bytes that the next call verifies before reuse. Abandoned payloads are
 removed on the next install under the stage lock; recoverable partials remain
@@ -140,19 +167,21 @@ installed trees in place.
 
 ## Tests
 
-Default tests are entirely offline; HTTP integration uses tiny loopback fixtures:
+Default tests are offline; GitHub and Hugging Face integration use tiny loopback
+fixtures and never fetch model weights:
 
 ```bash
 PYTHONPATH="$PWD/packages/model_manager" python -m unittest discover -s packages/model_manager/tests -v
 packages/model_manager/scripts/test_installed_package.sh
 PYTHONPATH="$PWD/workers/dataset" /tmp/speechcraft-stage2-env/bin/python -m unittest discover -s workers/dataset/tests -p test_model_manifest.py -v
-uv lock --check --offline --project workers/dataset
+uv lock --check --project workers/dataset
 ```
 
-The package smoke script builds a wheel, installs it alone into a clean Python
-3.12 environment, copies the tests outside the checkout, removes `PYTHONPATH`,
-and runs offline verification, CLI checks and the full fake-server suite there.
-Build tools may require network access; test execution never downloads models.
+The package smoke script builds a wheel, installs it into a clean Python 3.12
+environment with only the two pinned Hub dependencies, copies tests outside the
+checkout, removes `PYTHONPATH`, and runs offline verification, CLI checks and
+the full fake-server suite there. Dependency installation may require network
+access; the tests themselves do not download real models.
 
 Real download smoke is explicitly opt-in and uses a temporary model store. It
 uses the internal module interface, never a separate installed executable:
@@ -161,9 +190,37 @@ uses the internal module interface, never a separate installed executable:
 /tmp/speechcraft-stage2-env/bin/python -I packages/model_manager/tests/smoke_real_silero.py --download-real-silero
 ```
 
+TitaNet's real public Hub download is also opt-in. The script is developer-only:
+it uses `experimental=True`, verifies the exact file, confirms repeat reuse, and
+keeps the result's `install_ready` false because catalog release blockers remain.
+Run from an installed package environment:
+
+```bash
+/tmp/speechcraft-stage2-env/bin/python -I packages/model_manager/tests/smoke_titanet.py --download-real-titanet --platform linux-x86_64
+```
+
+### macOS handoff for Kavin (Apple Silicon M4 Pro)
+
+Run these checks on the M4 Pro; Linux results do not establish native macOS
+support. They install the lightweight package only and put model files in a
+temporary directory:
+
+```bash
+uname -m
+uv venv --python 3.12 /tmp/speechcraft-model-manager-macos
+uv pip install --python /tmp/speechcraft-model-manager-macos/bin/python packages/model_manager
+/tmp/speechcraft-model-manager-macos/bin/python -I packages/model_manager/tests/smoke_titanet.py --download-real-titanet --platform macos-arm64
+```
+
+The smoke should report verified file integrity, `install_ready: false`,
+`runtime_ready: null`, and reuse on the second call. Record the macOS version,
+Python version, test result, and any filesystem or Xet-cache issue. Do not clear
+the catalog's macOS release blocker until Kavin has run this on Apple Silicon
+and the provenance/licensing blockers are resolved.
+
 See [PROVENANCE.md](PROVENANCE.md) for measured identities and sources. Linux
 packaging/download/recovery tests were executed; native macOS execution remains
-a future CI check. No inference readiness is claimed on either platform.
+pending Kavin's handoff. No inference readiness is claimed on either platform.
 
 ## Next integration milestone
 

@@ -11,12 +11,13 @@ import socket
 import tempfile
 import threading
 import time
+import urllib.parse
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from speechcraft_models.download import _Installer, InstallError
-from speechcraft_models.manifest import ManifestError, load_catalog
+from speechcraft_models.manifest import ManifestError, load_catalog, select_artifact
 
 DATA = b'fabricated-model-data-' * 4096
 CONFIG = b'{}'
@@ -77,6 +78,79 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
 
+class FakeHFHandler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _file(self):
+        prefix = '/csukuangfj/speaker-embedding-models/resolve/'
+        path = urllib.parse.unquote(self.path)
+        if not path.startswith(prefix):
+            return None
+        tail = path[len(prefix):].split('/', 1)
+        return tail[1] if len(tail) == 2 and tail[0] == self.server.revision else None
+
+    def do_GET(self):
+        self.server.auth_headers.append(self.headers.get('Authorization'))
+        if self.path.startswith('/api/models/csukuangfj/speaker-embedding-models/revision/'):
+            body = json.dumps({
+                '_id': 'csukuangfj/speaker-embedding-models',
+                'id': 'csukuangfj/speaker-embedding-models',
+                'sha': self.server.revision,
+                'siblings': [{'rfilename': name} for name in self.server.files],
+            }).encode()
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        name = self._file()
+        data = self.server.files.get(name)
+        if data is None:
+            self.send_error(404)
+            return
+        self.server.file_requests.append(name)
+        start = 0
+        requested = self.headers.get('Range')
+        if requested:
+            start = int(requested.split('=')[1].split('-')[0])
+            self.send_response(206)
+            self.send_header('Content-Range', f'bytes {start}-{len(data)-1}/{len(data)}')
+        else:
+            self.send_response(200)
+        self.send_header('ETag', '"' + hashlib.sha256(data).hexdigest() + '"')
+        self.send_header('X-Repo-Commit', self.server.revision)
+        self.send_header('Content-Length', str(len(data) - start))
+        self.end_headers()
+        if name == self.server.drop_file and not self.server.dropped:
+            self.server.dropped = True
+            self.wfile.write(data[start:start + max(1, len(data) // 2)])
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_RDWR)
+            self.connection.close()
+            self.close_connection = True
+            return
+        body = self.server.corrupt_data.get(name, data)
+        try:
+            self.wfile.write(body[start:])
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def do_HEAD(self):
+        self.server.auth_headers.append(self.headers.get('Authorization'))
+        name = self._file()
+        data = self.server.files.get(name)
+        if data is None:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header('ETag', '"' + hashlib.sha256(data).hexdigest() + '"')
+        self.send_header('X-Repo-Commit', self.server.revision)
+        self.send_header('X-Linked-Size', str(len(data)))
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+
+
 def process_install(root, catalog, queue, crash=False):
     if crash:
         from speechcraft_models import download
@@ -107,6 +181,7 @@ class DownloadTests(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.catalog = load_catalog()
+        self.hf_counter = 0
         self.model = next(m for m in self.catalog['models'] if m['role'] == 'speech_detection')
         self.artifact = self.model['artifacts'][0]
         self.artifact['required_files'] = [
@@ -129,6 +204,54 @@ class DownloadTests(unittest.TestCase):
     def final(self):
         model_id, key, _ = self.installer.resolve('speech_detection', 'linux-x86_64')
         return self.root / model_id / key
+
+    def make_hf_installer(self, files, *, revision='a' * 40, missing_from_repo=(), extra_repo_files=None):
+        try:
+            from huggingface_hub import constants
+            from speechcraft_models import huggingface_source
+        except ImportError:
+            self.skipTest('install the model-manager Hugging Face test dependencies')
+        payloads = dict(files)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), FakeHFHandler)
+        server.revision = revision
+        server.files = {name: data for name, data in payloads.items() if name not in missing_from_repo}
+        server.files.update(extra_repo_files or {})
+        server.file_requests = []
+        server.auth_headers = []
+        server.corrupt_data = {}
+        server.drop_file = None
+        server.dropped = False
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        repo = 'csukuangfj/speaker-embedding-models'
+        allowlist = patch.dict(huggingface_source.PUBLIC_REPOSITORIES,
+                               {repo: frozenset(payloads)})
+        allowlist.start()
+        self.addCleanup(allowlist.stop)
+        cache = Path(self.temp.name) / 'hf-xet-cache'
+        cache.mkdir(exist_ok=True)
+        cache_patch = patch.object(constants, 'HF_XET_CACHE', str(cache))
+        cache_patch.start()
+        self.addCleanup(cache_patch.stop)
+
+        catalog = copy.deepcopy(load_catalog())
+        model = next(item for item in catalog['models'] if item['role'] == 'speaker_purity')
+        artifact = model['artifacts'][0]
+        artifact['revision'] = revision
+        artifact['required_files'] = [
+            {'path': name, 'size_bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+            for name, data in payloads.items()
+        ]
+        events = []
+        root = Path(self.temp.name) / f'hf-models-{self.hf_counter}'
+        self.hf_counter += 1
+        installer = _Installer(root, catalog, allow_test_http=True,
+                               test_hf_endpoint=f'http://127.0.0.1:{server.server_port}',
+                               retry_delay=0, attempts=2, progress=events.append)
+        return installer, model, artifact, server, root, events
 
     def test_clean_install_reuse_and_status(self):
         self.assertEqual(self.installer.check('speech_detection', 'linux-x86_64')['status'], 'missing')
@@ -296,8 +419,12 @@ class DownloadTests(unittest.TestCase):
                 cases.append((f'{field}={value!r}', json.dumps(state)))
         missing = dict(valid)
         del missing['sha256']
-        cases.extend((('missing hash', json.dumps(missing)), ('malformed json', '{'),
-                      ('oversized', 'x' * 17000)))
+        cases.append(('missing hash', json.dumps(missing)))
+        for field in ('url', 'etag', 'size', 'sha256'):
+            state = dict(valid)
+            del state[field]
+            cases.append((f'missing {field}', json.dumps(state)))
+        cases.extend((('malformed json', '{'), ('oversized', 'x' * 17000)))
         for index, (label, encoded) in enumerate(cases):
             with self.subTest(checkpoint=label):
                 self.root = Path(self.temp.name) / f'case-{index}'
@@ -318,12 +445,14 @@ class DownloadTests(unittest.TestCase):
         model_path = self.root / model_id
         stale_key, active_key, recent_key = 'a' * 64, 'b' * 64, 'c' * 64
         old_name = f'.quarantine-{stale_key}-' + '1' * 32
+        current_name = f'.quarantine-{current_key}-' + '5' * 32
         active_name = f'.quarantine-{active_key}-' + '2' * 32
         recent_name = f'.quarantine-{recent_key}-' + '3' * 32
-        for name in (old_name, active_name, recent_name):
+        for name in (old_name, current_name, active_name, recent_name):
             (model_path / name).mkdir(mode=0o700)
         old_time = time.time() - 31 * 86400
         os.utime(model_path / old_name, (old_time, old_time))
+        os.utime(model_path / current_name, (old_time, old_time))
         os.utime(model_path / active_name, (old_time, old_time))
         outside = Path(self.temp.name) / 'outside-quarantine'
         outside.mkdir()
@@ -336,6 +465,7 @@ class DownloadTests(unittest.TestCase):
         try:
             self.installer._cleanup_quarantines(model_fd, current_key)
             self.assertFalse((model_path / old_name).exists())
+            self.assertFalse((model_path / current_name).exists())
             self.assertTrue((model_path / active_name).exists())
             self.assertTrue((model_path / recent_name).exists())
             self.assertTrue(unsafe.is_symlink())
@@ -343,6 +473,95 @@ class DownloadTests(unittest.TestCase):
         finally:
             os.close(lock_fd)
             os.close(model_fd)
+
+    def test_huggingface_install_uses_pinned_allowlist_and_reuses_verified_files(self):
+        filename = 'nemo_en_titanet_large.onnx'
+        data = b'fabricated-titanet-model'
+        installer, _, _, server, _, events = self.make_hf_installer(
+            {filename: data}, extra_repo_files={'unlisted/other-model.onnx': b'not requested'})
+        with patch.dict(os.environ, {'HF_TOKEN': 'must-not-be-used'}):
+            result = installer.install('speaker_purity', 'linux-x86_64', experimental=True)
+        self.assertTrue(result['integrity_verified'])
+        self.assertFalse(result['install_ready'])
+        self.assertIsNone(result['runtime_ready'])
+        self.assertEqual((Path(result['root']) / filename).read_bytes(), data)
+        self.assertEqual(set(path.name for path in Path(result['root']).iterdir()), {filename})
+        self.assertEqual(server.file_requests, [filename])
+        self.assertTrue(all(value is None for value in server.auth_headers))
+        source_progress = [event for event in events if event['event'] == 'source_progress']
+        self.assertEqual(source_progress[-1]['files_completed'], 1)
+        self.assertEqual(source_progress[-1]['files_total'], 1)
+        count = len(server.file_requests)
+        self.assertTrue(installer.install('speaker_purity', 'linux-x86_64', experimental=True)['reused'])
+        self.assertEqual(len(server.file_requests), count)
+        self.assertNotIn('must-not-be-used', json.dumps(events))
+        self.assertNotIn('http://', json.dumps(events))
+
+    def test_huggingface_requires_full_revision_and_exact_repository_allowlist(self):
+        filename = 'nemo_en_titanet_large.onnx'
+        installer, _, artifact, server, _, _ = self.make_hf_installer({filename: b'x'})
+        artifact['revision'] = 'main'
+        with self.assertRaises((InstallError, ManifestError)):
+            installer.install('speaker_purity', 'linux-x86_64', experimental=True)
+        artifact['revision'] = 'a' * 40
+        artifact['source']['repo_id'] = 'user/untrusted-model'
+        with self.assertRaises(InstallError):
+            installer.install('speaker_purity', 'linux-x86_64', experimental=True)
+        self.assertEqual(server.file_requests, [])
+
+    def test_huggingface_missing_file_and_corrupt_content_never_publish(self):
+        filename = 'nemo_en_titanet_large.onnx'
+        data = b'correct-model-file'
+        installer, _, _, server, missing_root, _ = self.make_hf_installer(
+            {filename: data}, missing_from_repo={filename})
+        with self.assertRaises(InstallError):
+            installer.install('speaker_purity', 'linux-x86_64', experimental=True)
+        self.assertFalse(list(missing_root.glob('**/nemo_en_titanet_large.onnx')))
+
+        installer, _, _, server, corrupt_root, _ = self.make_hf_installer({filename: data})
+        server.corrupt_data[filename] = b'x' * len(data)
+        with self.assertRaisesRegex(InstallError, 'SHA-256'):
+            installer.install('speaker_purity', 'linux-x86_64', experimental=True)
+        self.assertFalse(list(corrupt_root.glob('**/nemo_en_titanet_large.onnx')))
+        server.corrupt_data.clear()
+        self.assertTrue(installer.install('speaker_purity', 'linux-x86_64', experimental=True)['integrity_verified'])
+
+    def test_huggingface_multifile_completeness_and_interrupted_retry(self):
+        filename = 'nemo_en_titanet_large.onnx'
+        second = 'config/model.json'
+        files = {filename: b'weights', second: b'{"fixture":true}'}
+        installer, _, _, server, _, _ = self.make_hf_installer(files)
+        server.drop_file = filename
+        report = installer.install('speaker_purity', 'linux-x86_64', experimental=True)
+        self.assertTrue(report['integrity_verified'])
+        self.assertEqual((Path(report['root']) / second).read_bytes(), files[second])
+        self.assertGreaterEqual(server.file_requests.count(filename), 2)
+        self.assertCountEqual(server.file_requests, [filename, filename, second])
+
+        installer, _, _, _, missing_root, _ = self.make_hf_installer(files, missing_from_repo={second})
+        with self.assertRaises(InstallError):
+            installer.install('speaker_purity', 'linux-x86_64', experimental=True)
+        self.assertFalse(list(missing_root.glob('titanet-large-speaker-purity/*/nemo_en_titanet_large.onnx')))
+
+    def test_huggingface_insufficient_disk_fails_before_acquisition(self):
+        filename = 'nemo_en_titanet_large.onnx'
+        installer, _, _, server, _, _ = self.make_hf_installer({filename: b'model'})
+        low = SimpleNamespace(f_bavail=1, f_frsize=1)
+        with patch('speechcraft_models.download.os.fstatvfs', return_value=low):
+            with self.assertRaisesRegex(InstallError, 'insufficient model-store disk space'):
+                installer.install('speaker_purity', 'linux-x86_64', experimental=True)
+        self.assertEqual(server.file_requests, [])
+
+    def test_titanet_artifact_selects_both_supported_platforms_and_blockers_remain(self):
+        catalog = load_catalog()
+        linux = select_artifact(catalog, 'speaker_purity', 'linux-x86_64')
+        macos = select_artifact(catalog, 'speaker_purity', 'macos-arm64')
+        self.assertEqual(linux['revision'], macos['revision'])
+        self.assertEqual(linux['source']['repo_id'], macos['source']['repo_id'])
+        self.assertEqual(linux['required_files'], macos['required_files'])
+        with self.assertRaisesRegex(InstallError, 'release-blocked'):
+            _Installer(Path(self.temp.name) / 'blocked', catalog).install(
+                'speaker_purity', 'macos-arm64')
 
     def test_invalid_file_paths_and_symlink_escapes(self):
         for path in ('../outside', '/outside', 'a/../../b', 'a\\b'):

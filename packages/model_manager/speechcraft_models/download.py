@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import time
 import urllib.error
@@ -16,7 +17,10 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from .manifest import ManifestError, load_catalog, select_artifact, verify_directory_fd
+from .manifest import (ManifestError, load_catalog, select_artifact,
+                       verify_artifact, verify_directory_fd)
+from .huggingface_source import (HuggingFaceAcquisitionError, PUBLIC_REPOSITORIES,
+                                 acquire_public_snapshot, validate_request)
 
 CHUNK = 64 * 1024
 CHECKPOINT_BYTES = 4 * 1024 * 1024
@@ -103,6 +107,27 @@ def _remove_tree(parent: int, name: str) -> None:
     os.fsync(parent)
 
 
+def _sync_tree(directory: int) -> None:
+    """Flush a staged regular-file tree without following links."""
+    for name in os.listdir(directory):
+        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode):
+            child = _directory(directory, name)
+            try:
+                _sync_tree(child)
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(info.st_mode):
+            fd = _file(directory, name, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        else:
+            raise InstallError(f"unsafe staged entry: {name}")
+    os.fsync(directory)
+
+
 def _strong_etag(value) -> bool:
     return isinstance(value, str) and re.fullmatch(r'"[^"\r\n]+"', value) is not None
 
@@ -117,7 +142,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class _Installer:
     """Internal trusted-catalog seam for tests; public API never accepts URLs/catalogs."""
     def __init__(self, root, catalog, *, progress=None, attempts=3, timeout=15,
-                 lock_timeout=60, allow_test_http=False, retry_delay=0.25):
+                 lock_timeout=60, allow_test_http=False, retry_delay=0.25,
+                 test_hf_endpoint=None):
         self.root = Path(root).expanduser().absolute()
         self.catalog = catalog
         self.progress = progress or (lambda event: None)
@@ -126,33 +152,51 @@ class _Installer:
         self.lock_timeout = lock_timeout
         self.allow_test_http = allow_test_http
         self.retry_delay = retry_delay
+        self.test_hf_endpoint = test_hf_endpoint
+        if test_hf_endpoint is not None and not allow_test_http:
+            raise ValueError('test Hugging Face endpoint requires the internal test transport flag')
         self.opener = urllib.request.build_opener(_NoRedirect)
 
     def emit(self, event, **fields):
         self.progress({'event': event, **fields})
 
-    def resolve(self, role, platform):
+    def resolve(self, role, platform, *, experimental=False):
         artifact = select_artifact(self.catalog, role, platform)
         model = next(m for m in self.catalog['models'] if m['role'] == role)
+        experimental_titanet = (experimental and role == 'speaker_purity'
+                                and model['id'] == 'titanet-large-speaker-purity'
+                                and artifact.get('source', {}).get('repo_id')
+                                == 'csukuangfj/speaker-embedding-models')
         if (artifact['availability'] != 'verified' or not artifact['inventory_complete']
-                or not artifact['required_files'] or artifact.get('release_blockers')):
+                or not artifact['required_files']
+                or artifact.get('release_blockers') and not experimental_titanet):
             raise InstallError('artifact is unresolved or release-blocked')
-        if model['license'].get('status') != 'verified':
+        if model['license'].get('status') != 'verified' and not experimental_titanet:
             raise InstallError('model licensing is unresolved')
         if not re.fullmatch(r'[a-zA-Z0-9_-]+', model['id']):
             raise InstallError('unsafe model id')
         if not re.fullmatch(r'[a-f0-9]{40}|[a-f0-9]{64}', artifact['revision']):
             raise InstallError('artifact needs an immutable commit or content revision')
-        for file in artifact['required_files']:
-            if 'sha256' not in file or type(file.get('size_bytes')) is not int or file['size_bytes'] <= 0:
-                raise InstallError('every download needs exact positive size and SHA-256')
-            url = urllib.parse.urlsplit(file.get('url', ''))
-            local_test = self.allow_test_http and url.scheme == 'http' and url.hostname == '127.0.0.1'
-            if (not local_test and (url.scheme != 'https' or url.hostname != 'raw.githubusercontent.com')) or url.username or url.password or url.fragment:
-                raise InstallError('source is not an approved immutable download URL')
-        # Include the whole artifact: revisions with changed inventories never overwrite one another.
+        source = artifact.get('source')
+        if source is not None:
+            try:
+                validate_request(source['repo_id'], artifact['revision'],
+                                 [item['path'] for item in artifact['required_files']])
+            except HuggingFaceAcquisitionError as exc:
+                raise InstallError(str(exc)) from exc
+        else:
+            for file in artifact['required_files']:
+                self._validate_http_file(file)
         key = hashlib.sha256(json.dumps(artifact, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         return model['id'], key, artifact
+
+    def _validate_http_file(self, file):
+        if 'sha256' not in file or type(file.get('size_bytes')) is not int or file['size_bytes'] <= 0:
+            raise InstallError('every download needs exact positive size and SHA-256')
+        url = urllib.parse.urlsplit(file.get('url', ''))
+        local_test = self.allow_test_http and url.scheme == 'http' and url.hostname == '127.0.0.1'
+        if (not local_test and (url.scheme != 'https' or url.hostname != 'raw.githubusercontent.com')) or url.username or url.password or url.fragment:
+            raise InstallError('source is not an approved immutable download URL')
 
     @contextmanager
     def store(self, model_id, create):
@@ -174,8 +218,8 @@ class _Installer:
         finally:
             os.close(root)
 
-    def check(self, role, platform):
-        model_id, key, artifact = self.resolve(role, platform)
+    def check(self, role, platform, *, experimental=False):
+        model_id, key, artifact = self.resolve(role, platform, experimental=experimental)
         path = self.root / model_id / key
         try:
             with self.store(model_id, False) as (_, model):
@@ -308,16 +352,110 @@ class _Installer:
                 # Unsafe entries and concurrent filesystem changes are retained.
                 continue
 
-    def install(self, role, platform):
+    def _check_huggingface_capacity(self, root, total_bytes):
+        """Reserve output and transient Xet headroom on each affected volume."""
+        from huggingface_hub import constants
+
+        output_required = total_bytes + RESERVE
+        xet_required = total_bytes + RESERVE
+        cache = Path(constants.HF_XET_CACHE).expanduser()
+        probe = cache
+        while not probe.exists():
+            if probe.parent == probe:
+                raise InstallError('cannot locate Hugging Face Xet cache filesystem')
+            probe = probe.parent
+        if not probe.is_dir():
+            raise InstallError('Hugging Face Xet cache location is not a directory')
+        xet_free = shutil.disk_usage(probe).free
+        root_stat = os.fstat(root)
+        xet_stat = os.stat(probe)
+        root_statvfs = os.fstatvfs(root)
+        root_free = root_statvfs.f_bavail * root_statvfs.f_frsize
+        same_volume = root_stat.st_dev == xet_stat.st_dev
+        root_required = output_required + xet_required if same_volume else output_required
+        self.emit('capacity', required_bytes=root_required, available_bytes=root_free,
+                  xet_cache_required_bytes=xet_required,
+                  xet_cache_available_bytes=xet_free, same_filesystem=same_volume)
+        if root_free < root_required:
+            raise InstallError(f'insufficient model-store disk space: need {root_required}, available {root_free}')
+        if not same_volume and xet_free < xet_required:
+            raise InstallError(f'insufficient Hugging Face Xet-cache disk space: need {xet_required}, available {xet_free}')
+
+    def _unlink_hf_file(self, source_fd, relative_path):
+        parts = relative_path.split('/')
+        directory = os.dup(source_fd)
+        try:
+            for part in parts[:-1]:
+                child = _directory(directory, part)
+                os.close(directory)
+                directory = child
+            try:
+                fd = _file(directory, parts[-1], os.O_RDONLY)
+            except FileNotFoundError:
+                return
+            else:
+                os.close(fd)
+            os.unlink(parts[-1], dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    def _acquire_huggingface(self, stage, source_path, artifact):
+        source = artifact['source']
+        source_name = '.hf-source'
+        source_fd = _directory(stage, source_name, True)
+        try:
+            for attempt in range(1, self.attempts + 1):
+                current = verify_directory_fd(source_fd, artifact, str(source_path))
+                if current['status'] in ('error',):
+                    raise InstallError('unsafe or unreadable Hugging Face staging files')
+                for file_result in current['files']:
+                    if file_result['status'] in ('corrupt', 'partial'):
+                        self._unlink_hf_file(source_fd, file_result['path'])
+                self.emit('source_acquiring', source='huggingface', attempt=attempt,
+                          files_total=len(artifact['required_files']))
+                try:
+                    acquire_public_snapshot(
+                        source['repo_id'], artifact['revision'],
+                        [item['path'] for item in artifact['required_files']],
+                        source_path, self.progress, test_endpoint=self.test_hf_endpoint)
+                except HuggingFaceAcquisitionError as exc:
+                    if not exc.transient or attempt == self.attempts:
+                        raise InstallError(str(exc)) from exc
+                    self.emit('retrying', source='huggingface', attempt=attempt, error=str(exc))
+                    time.sleep(min(2, self.retry_delay * 2 ** (attempt - 1)))
+                    continue
+                report = verify_directory_fd(source_fd, artifact, str(source_path))
+                if report['integrity_verified']:
+                    for file in artifact['required_files']:
+                        self.emit('source_file_acquired', source='huggingface',
+                                  path=file['path'], size_bytes=file['size_bytes'])
+                    return
+                if report['status'] in ('error', 'unsafe'):
+                    raise InstallError('unsafe or unreadable Hugging Face download result')
+                if any(item['status'] in ('corrupt', 'partial') for item in report['files']):
+                    for item in report['files']:
+                        if item['status'] in ('corrupt', 'partial'):
+                            self._unlink_hf_file(source_fd, item['path'])
+                    if attempt < self.attempts:
+                        self.emit('retrying', source='huggingface', attempt=attempt,
+                                  error='downloaded file failed trusted size or SHA-256 verification')
+                        continue
+                    raise InstallError('Hugging Face files failed trusted size or SHA-256 verification')
+                raise InstallError('Hugging Face snapshot is missing required catalog files')
+        finally:
+            os.close(source_fd)
+
+    def install(self, role, platform, *, experimental=False):
         self.emit('resolving', role=role, platform=platform)
         try:
-            return self._install(role, platform)
+            return self._install(role, platform, experimental=experimental)
         except (OSError, urllib.error.URLError, http.client.HTTPException, ManifestError, InstallError) as exc:
             self.emit('failed', error=str(exc))
             raise InstallError(str(exc)) from exc
 
-    def _install(self, role, platform):
-        model_id, key, artifact = self.resolve(role, platform)
+    def _install(self, role, platform, *, experimental=False):
+        model_id, key, artifact = self.resolve(role, platform, experimental=experimental)
         path = self.root / model_id / key
         with self.store(model_id, True) as (root, model), self.lock(model, key):
             self._cleanup_stages(model, key)
@@ -342,7 +480,7 @@ class _Installer:
                     report = verify_directory_fd(final, artifact, str(path))
                 finally:
                     os.close(final)
-                if report['install_ready']:
+                if report['install_ready'] or (experimental and report['integrity_verified']):
                     try:
                         _remove_tree(model, stage_name)
                     except FileNotFoundError:
@@ -351,29 +489,45 @@ class _Installer:
                     return {**report, 'reused': True}
                 if report['status'] == 'error':
                     raise InstallError('existing installation has unsafe or unreadable files')
-            # Reserve transfer plus publication copies, even for resumption; conservative and
-            # leaves the previous installation untouched during transfer.
-            required = 2 * sum(f['size_bytes'] for f in artifact['required_files']) + RESERVE
-            fs = os.fstatvfs(root)
-            free = fs.f_bavail * fs.f_frsize
-            self.emit('capacity', required_bytes=required, available_bytes=free)
-            if free < required:
-                raise InstallError(f'insufficient disk space: need {required}, available {free}')
+            total_bytes = sum(f['size_bytes'] for f in artifact['required_files'])
+            if artifact.get('source', {}).get('type') == 'huggingface':
+                self._check_huggingface_capacity(root, total_bytes)
+            else:
+                required = 2 * total_bytes + RESERVE
+                fs = os.fstatvfs(root)
+                free = fs.f_bavail * fs.f_frsize
+                self.emit('capacity', required_bytes=required, available_bytes=free)
+                if free < required:
+                    raise InstallError(f'insufficient disk space: need {required}, available {free}')
             stage = _directory(model, stage_name, True)
             payload = None
             published = False
             try:
-                payload_name = 'payload-' + uuid.uuid4().hex
-                os.mkdir(payload_name, mode=0o700, dir_fd=stage)
-                payload = _directory(stage, payload_name)
-                for index, file in enumerate(artifact['required_files']):
-                    self.download_file(stage, index, file)
-                    self.materialize(stage, payload, index, file)
+                if artifact.get('source', {}).get('type') == 'huggingface':
+                    payload_name = '.hf-source'
+                    source_dir = self.root / model_id / stage_name / payload_name
+                    self._acquire_huggingface(stage, source_dir, artifact)
+                    payload = _directory(stage, payload_name)
+                    try:
+                        _remove_tree(payload, '.cache')
+                    except FileNotFoundError:
+                        pass
+                else:
+                    payload_name = 'payload-' + uuid.uuid4().hex
+                    os.mkdir(payload_name, mode=0o700, dir_fd=stage)
+                    payload = _directory(stage, payload_name)
+                    for index, file in enumerate(artifact['required_files']):
+                        self.download_file(stage, index, file)
+                        self.materialize(stage, payload, index, file)
                 self.emit('verifying')
                 report = verify_directory_fd(payload, artifact, str(path))
-                if not report['install_ready']:
+                if (not report['integrity_verified']
+                        or not report['install_ready'] and not experimental):
                     raise InstallError('staged artifact failed verification')
-                os.fsync(payload)
+                if artifact.get('source', {}).get('type') == 'huggingface':
+                    _sync_tree(payload)
+                else:
+                    os.fsync(payload)
                 self.emit('publishing', root=str(path))
                 # Never delete a prior tree. Invalid same-version trees are retained
                 # for diagnosis; older valid versions have different keys.
@@ -388,7 +542,8 @@ class _Installer:
                 os.rename(payload_name, key, src_dir_fd=stage, dst_dir_fd=model)
                 os.fsync(model)
                 published = True
-                self.emit('installed', root=str(path), runtime_ready=None)
+                self.emit('installed', root=str(path), install_ready=report['install_ready'],
+                          runtime_ready=None)
                 return {**report, 'reused': False}
             finally:
                 if payload is not None:
@@ -580,11 +735,16 @@ class _Installer:
             os.close(fd)
 
 
-def install_model(root, role, platform, *, progress=None):
-    """Install from the shipped catalog. No caller-provided source URLs."""
-    return _Installer(root, load_catalog(), progress=progress).install(role, platform)
+def install_model(root, role, platform, *, progress=None, experimental=False):
+    """Install from the shipped catalog; experimental bypass is TitaNet-only.
+
+    Experimental TitaNet acquisition can verify file bytes while keeping
+    ``install_ready`` false until its release blockers are resolved.
+    """
+    return _Installer(root, load_catalog(), progress=progress).install(
+        role, platform, experimental=experimental)
 
 
-def check_installation(root, role, platform):
+def check_installation(root, role, platform, *, experimental=False):
     """Read-only status of a catalog installation; does not fetch or load models."""
-    return _Installer(root, load_catalog()).check(role, platform)
+    return _Installer(root, load_catalog()).check(role, platform, experimental=experimental)

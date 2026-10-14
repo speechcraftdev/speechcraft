@@ -1,7 +1,6 @@
 """Run from a copied directory with only the built wheel installed."""
 import hashlib
 from importlib import metadata, resources, util
-import shutil
 import json
 from pathlib import Path
 import subprocess
@@ -10,10 +9,12 @@ import tempfile
 
 from speechcraft_models import load_catalog, select_artifact, verify_artifact
 
-assert metadata.requires('speechcraft-model-manager') is None
+requirements = metadata.requires('speechcraft-model-manager') or []
+assert any(item.startswith('huggingface-hub==0.36.2') for item in requirements)
+assert any(item.startswith('hf-xet==1.5.0') for item in requirements)
 assert util.find_spec('torch') is None
 assert util.find_spec('speechcraft_dataset') is None
-assert shutil.which('speechcraft-models') is None
+assert not metadata.distribution('speechcraft-model-manager').entry_points
 assert str(Path(sys.prefix).resolve()) in str(resources.files('speechcraft_models'))
 json.loads(resources.files('speechcraft_models').joinpath('model-manifest.schema.json').read_text())
 catalog = load_catalog()

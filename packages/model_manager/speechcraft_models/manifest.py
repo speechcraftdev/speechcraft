@@ -87,6 +87,12 @@ def _unique(items: list[dict], key: str, location: str) -> None:
 
 def _artifact_semantics(artifact: dict) -> None:
     files = artifact["required_files"]
+    source = artifact.get("source")
+    if source is not None:
+        if (source["type"] != "huggingface"
+                or re.fullmatch(r"[0-9a-f]{40}", artifact["revision"]) is None
+                or any("url" in item for item in files)):
+            raise ManifestError("Hugging Face artifacts need a full commit revision and catalog paths, not URLs")
     _unique(files, "path", "artifact.required_files")
     for item in files:
         path = item["path"]
