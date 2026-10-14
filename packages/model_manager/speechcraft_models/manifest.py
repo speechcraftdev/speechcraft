@@ -17,7 +17,8 @@ import stat
 from typing import Any
 
 SCHEMA_PATH = Path(__file__).with_name("model-manifest.schema.json")
-SUPPORTED_PLATFORMS = {"linux-x86_64", "macos-arm64"}
+SUPPORTED_PLATFORMS = {"linux-x86_64", "macos-arm64", "windows-wsl2"}
+PLATFORM_ALIASES = {"windows-wsl2": "linux-x86_64"}
 
 
 class ManifestError(ValueError):
@@ -153,13 +154,14 @@ def select_artifact(manifest: dict, role: str, platform: str) -> dict:
     validate_manifest(manifest)
     if platform not in SUPPORTED_PLATFORMS:
         raise ManifestError(f"unsupported platform: {platform}")
+    artifact_platform = PLATFORM_ALIASES.get(platform, platform)
     model = next((item for item in manifest["models"] if item["role"] == role), None)
     if model:
-        exact = next((a for a in model["artifacts"] if a["platform"] == platform), None)
+        exact = next((a for a in model["artifacts"] if a["platform"] == artifact_platform), None)
         if exact is not None:
             return exact
         shared = next((a for a in model["artifacts"] if a["platform"] == "all-supported"
-                       and platform in a["supported_platforms"]), None)
+                       and artifact_platform in a["supported_platforms"]), None)
         if shared is not None:
             return shared
     raise ManifestError(f"no {role} artifact for {platform}")
@@ -274,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check model files against a trusted manifest (offline).")
     parser.add_argument("manifest", type=Path)
     parser.add_argument("role")
-    parser.add_argument("platform", help="linux-x86_64 or macos-arm64")
+    parser.add_argument("platform", help="linux-x86_64, windows-wsl2, or macos-arm64")
     parser.add_argument("directory", type=Path)
     args = parser.parse_args(argv)
     try:

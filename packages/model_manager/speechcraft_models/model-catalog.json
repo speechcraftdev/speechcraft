@@ -55,60 +55,85 @@
       "license": {
         "identifier": "MIT",
         "status": "verified",
-        "source": "https://huggingface.co/Systran/faster-whisper-large-v3"
+        "source": "https://huggingface.co/Systran/faster-whisper-large-v3 (model card license metadata); https://huggingface.co/mlx-community/whisper-large-v3-mlx (model card license metadata)"
       },
       "access": {
         "requirements": [
-          "Public model; no gated access found"
+          "Public repositories; no account or token required"
         ],
-        "source": "https://huggingface.co/Systran/faster-whisper-large-v3"
+        "source": "https://huggingface.co/Systran/faster-whisper-large-v3 and https://huggingface.co/mlx-community/whisper-large-v3-mlx"
       },
       "artifacts": [
         {
           "platform": "linux-x86_64",
-          "format": "CTranslate2 / faster-whisper",
+          "format": "CTranslate2 / faster-whisper (large-v3, unquantized upstream export)",
           "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
           "availability": "verified",
           "inventory_complete": true,
-          "release_blockers": [
-            "Trusted content hashes for every required file remain unresolved."
-          ],
+          "source": {
+            "type": "huggingface",
+            "repo_id": "Systran/faster-whisper-large-v3"
+          },
           "required_files": [
             {
-              "path": "config.json"
+              "path": "config.json",
+              "size_bytes": 2394,
+              "sha256": "a9306624f5ec14270a014b647e5c316b6e03a662c369758d1b90697a7b0655b9"
             },
             {
-              "path": "model.bin"
+              "path": "model.bin",
+              "size_bytes": 3087284237,
+              "sha256": "69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1"
             },
             {
-              "path": "preprocessor_config.json"
+              "path": "preprocessor_config.json",
+              "size_bytes": 340,
+              "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711"
             },
             {
-              "path": "tokenizer.json"
+              "path": "tokenizer.json",
+              "size_bytes": 2480617,
+              "sha256": "6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca"
             },
             {
-              "path": "vocabulary.json"
+              "path": "vocabulary.json",
+              "size_bytes": 1068114,
+              "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1"
             }
-          ]
+          ],
+          "release_blockers": []
         },
         {
           "platform": "macos-arm64",
-          "format": "MLX",
-          "revision": "UNRESOLVED",
-          "availability": "unresolved",
-          "inventory_complete": false,
-          "required_files": [],
-          "release_blockers": [
-            "No MLX ASR model identity, immutable revision, file set, license/access record, or runtime-validation evidence found in this repository."
-          ]
+          "format": "MLX Whisper / mlx-whisper (large-v3, full precision weights.npz)",
+          "revision": "49e6aa286ad60c14352c404340ded53710378a11",
+          "availability": "verified",
+          "inventory_complete": true,
+          "source": {
+            "type": "huggingface",
+            "repo_id": "mlx-community/whisper-large-v3-mlx"
+          },
+          "required_files": [
+            {
+              "path": "config.json",
+              "size_bytes": 269,
+              "sha256": "34982ce6ae286095000f82ae9583b3431639e8b092bf60c961f203745e6500e3"
+            },
+            {
+              "path": "weights.npz",
+              "size_bytes": 3083520416,
+              "sha256": "05ff791ce3630fae47e7c51004e9666204d786246ec07cac6110af768099b40d"
+            }
+          ],
+          "release_blockers": []
         }
       ],
       "runtime_validation": {
         "status": "deferred",
         "contract": [
-          "Construct faster-whisper WhisperModel from the local artifact",
-          "Transcribe a small fixed audio fixture and validate result shape",
-          "MLX artifact requires a separate platform-specific contract"
+          "Linux/WSL2: load local directory with the pinned faster-whisper runtime and transcribe a fixed multilingual fixture; validate result shape and deterministic artifact path.",
+          "macOS ARM64: load local directory with mlx-whisper on Apple Silicon and transcribe the same fixture; validate result shape, output quality, and TC behavior.",
+          "Do not infer Mac GPU availability or CPU fallback from file verification. Decide and provision a separate CTranslate2 CPU artifact only in the runtime integration milestone."
         ]
       }
     },

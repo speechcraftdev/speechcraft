@@ -82,3 +82,61 @@ The same pinned ONNX bytes are catalogued for Linux x86-64 and macOS ARM64.
 Linux acquisition/file-integrity was exercised. macOS has not been tested; see
 the Kavin handoff in `README.md`. Neither platform has inference readiness from
 this downloader milestone.
+
+## Whisper Large-v3 source records (2026-10-14)
+
+The `asr` role has separate catalog variants; there is no fallback between the
+formats. Windows WSL2 resolves to the Linux CTranslate2 artifact and is required
+to keep its store on the WSL Linux filesystem. Apple Silicon selects the full
+MLX `whisper-large-v3-mlx` repository.
+
+The Linux repository `Systran/faster-whisper-large-v3` resolves to immutable
+commit `edaa852ec7e145841d8ffdb056a99866b5f0a478`. Its pinned Hub file listing
+contains `.gitattributes`, `README.md`, and the five runtime/download files
+below. The `faster-whisper==1.2.1` loader's model/tokenizer discovery supports
+`config.json`, `model.bin`, `tokenizer.json`, and `preprocessor_config.json`;
+its own download allowlist also includes `vocabulary.*`, so SpeechCraft retains
+`vocabulary.json` as part of the complete selected repository artifact.
+Required total: **3,090,835,702 bytes**.
+
+| Relative path | Bytes | SHA-256 source |
+| --- | ---: | --- |
+| `config.json` | 2,394 | Downloaded from the pinned revision and locally hashed |
+| `model.bin` | 3,087,284,237 | Hugging Face Xet/LFS SHA-256 metadata; confirmed by real install smoke |
+| `preprocessor_config.json` | 340 | Downloaded from the pinned revision and locally hashed |
+| `tokenizer.json` | 2,480,617 | Downloaded from the pinned revision and locally hashed |
+| `vocabulary.json` | 1,068,114 | Downloaded from the pinned revision and locally hashed |
+
+The repository's Hub card declares MIT and the pinned snapshot is public without
+authentication. Source: [pinned repository](https://huggingface.co/Systran/faster-whisper-large-v3/tree/edaa852ec7e145841d8ffdb056a99866b5f0a478).
+
+The MLX repository `mlx-community/whisper-large-v3-mlx` resolves to immutable
+commit `49e6aa286ad60c14352c404340ded53710378a11`. Its pinned inventory is
+`.gitattributes`, `README.md`, `config.json`, and `weights.npz`; `mlx-whisper`
+loads the latter two from a local MLX Whisper model directory and bundles the
+multilingual tokenizer assets in its runtime package. The repository is the
+non-quantized `whisper-large-v3-mlx` variant (not a `-4bit`/`-8bit` repository).
+Required total: **3,083,520,685 bytes**.
+
+| Relative path | Bytes | SHA-256 source |
+| --- | ---: | --- |
+| `config.json` | 269 | Downloaded from the pinned revision and locally hashed |
+| `weights.npz` | 3,083,520,416 | Hugging Face Xet/LFS SHA-256 metadata |
+
+The pinned Hub card declares MIT and directs users to MLX Whisper. The current
+candidate runtime package is `mlx-whisper==0.4.3` (Python `>=3.8`); that version
+and file format still need a native M4 Pro load/transcription smoke before Mac
+runtime support is claimed. Sources: [pinned MLX repository](https://huggingface.co/mlx-community/whisper-large-v3-mlx/tree/49e6aa286ad60c14352c404340ded53710378a11), [mlx-whisper model loading guide](https://github.com/ml-explore/mlx-examples/tree/main/whisper), [pinned faster-whisper loader source](https://github.com/SYSTRAN/faster-whisper/blob/v1.2.1/faster_whisper/utils.py).
+
+For both repos, the large weight SHA-256 values come from Hub Xet/LFS object
+metadata at the pinned commit. The catalog hashes for the small JSON files were
+computed by downloading those exact immutable files and hashing the bytes
+locally. The Linux real-network install smoke independently hashes the 3.09 GB
+weight during acquisition. The MLX 3.08 GB weight's local transfer/hash remains
+for Kavin's Mac handoff because this Linux host cannot test or smoke the Mac
+download. The catalog keeps the verified Hub SHA-256 metadata for it.
+
+Neither artifact establishes inference readiness. Linux/WSL2 runtime testing is
+deferred to the setup/runtime integration milestone. The separate MLX artifact
+does not provide a CPU fallback; whether to provision another large CTranslate2
+artifact for Mac CPU use remains a runtime-integration decision.
