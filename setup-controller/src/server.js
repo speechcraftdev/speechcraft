@@ -6,7 +6,7 @@ import { ControllerError, SetupController } from './controller.js';
 import { defaultDataDirectory } from './paths.js';
 import { StateStore, StateStoreError } from './state-store.js';
 import { SimulatedTasks } from './simulated-tasks.js';
-import { BootstrapTasks } from './bootstrap.js';
+import { BootstrapTasks, reconcileOwnedProcess } from './bootstrap.js';
 import { hostEnvironment, validateManagedStorageTargets } from './platform.js';
 
 const BODY_LIMIT = 16 * 1024;
@@ -132,6 +132,9 @@ export async function createSetupController({
     const executor = tasks || (mode === 'bootstrap'
       ? new BootstrapTasks({ dataDirectory: store.directory, ...bootstrapOptions })
       : new SimulatedTasks(simulated));
+    // Ownership reconciliation is mode-independent: a simulated restart must
+    // not bypass a writer left by an interrupted real bootstrap.
+    await reconcileOwnedProcess(store);
     await executor.recoverInterrupted?.(store);
     controller = new SetupController(store, { tasks: executor, mode });
     const server = http.createServer((request, response) => {

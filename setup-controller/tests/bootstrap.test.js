@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import test from 'node:test';
-import { BootstrapError, BootstrapTasks, extractUvArchive, runOwnedProcess } from '../src/bootstrap.js';
+import { BootstrapError, BootstrapTasks, extractUvArchive, reconcileOwnedProcess, runOwnedProcess } from '../src/bootstrap.js';
 import { SetupController } from '../src/controller.js';
 import { StateStore } from '../src/state-store.js';
 
@@ -171,4 +171,58 @@ test('an owned bootstrap subprocess that ignores SIGTERM is killed and reaped be
   await assert.rejects(promise, (error) => error instanceof BootstrapError && error.code === 'BOOTSTRAP_CANCELLED');
   assert.ok(Date.now() - started >= 50);
   assert.ok(Date.now() - started < 2_000);
+});
+
+test('an exited leader with a SIGTERM-ignoring descendant retains uncertain ownership', { skip: process.platform === 'win32' }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-owned-descendant-'));
+  const pidFile = path.join(root, 'descendant.pid');
+  const readyFile = path.join(root, 'descendant.ready');
+  const store = StateStore.open(root);
+  const attemptId = '00000000-0000-4000-8000-000000000002';
+  store.commit((state) => { state.job = { schema_version: 2, id: '00000000-0000-4000-8000-000000000001',
+    attempt_id: attemptId, mode: 'bootstrap', state: 'running', stage: 'install_python',
+    task_id: 'bootstrap:install_python', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    started_at: new Date().toISOString(), completed_at: null, attempt_count: 1, revision: 0,
+    progress: null, bootstrap_status: null, error: null }; }, 'test_bootstrap_running');
+  const abort = new AbortController();
+  const updates = [];
+  const childScript = `
+    (async () => {
+    const fs = require('node:fs');
+    const { spawn } = require('node:child_process');
+    const child = spawn(process.execPath, ['-e', "const fs=require('node:fs'); process.on('SIGTERM', () => {}); fs.writeFileSync(process.argv[1], 'ready'); setInterval(() => {}, 1000);", ${JSON.stringify(readyFile)}], { stdio: 'ignore' });
+    const deadline = Date.now() + 2000;
+    while (!fs.existsSync(${JSON.stringify(readyFile)}) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+    setInterval(() => {}, 1000);
+    })();
+  `;
+  const operation = runOwnedProcess(process.execPath, ['-e', childScript], {
+    signal: abort.signal, cwd: root, env: process.env, graceMs: 100,
+    onChildProcess: (record) => {
+      updates.push(record);
+      if (record?.clear) store.commit((state) => { state.job.child_process = null; }, 'test_owner_cleared');
+      else if (record) store.commit((state) => { state.job.child_process = { ...record, attempt_id: attemptId }; }, 'test_owner_updated');
+    },
+  });
+  try {
+    const deadline = Date.now() + 3_000;
+    while (!fs.existsSync(pidFile) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(fs.existsSync(pidFile), true, 'descendant should be running before cancellation');
+    abort.abort();
+    await assert.rejects(operation, (error) => error.code === 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN');
+    assert.ok(updates.some((item) => item?.termination_status === 'termination_uncertain'));
+    assert.equal(updates.some((item) => item?.clear), false, 'ownership must not be cleared on uncertain termination');
+    assert.equal(store.snapshot().job.child_process.termination_status, 'termination_uncertain');
+    await assert.rejects(reconcileOwnedProcess(store), (error) => error.code === 'BOOTSTRAP_PROCESS_IDENTITY_UNKNOWN');
+    assert.equal(store.snapshot().job.child_process.termination_status, 'termination_uncertain',
+      'failed restart reconciliation must preserve ownership metadata');
+  } finally {
+    if (fs.existsSync(pidFile)) {
+      const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+      try { process.kill(pid, 'SIGKILL'); } catch {}
+    }
+    store.releaseOwnership();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

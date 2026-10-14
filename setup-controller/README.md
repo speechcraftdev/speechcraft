@@ -61,11 +61,32 @@ SIGINT/SIGTERM waits for owned work to acknowledge cancellation, closes
 event streams, and releases ownership. Jobs do not continue while the controller
 process is stopped.
 
-Each predefined bootstrap subprocess belongs to one persisted attempt.
-Cancellation terminates its process group, escalates after a bounded grace
-period, waits for exit/reap, and only then persists terminal `cancelled` or
-permits retry. On restart, the controller verifies process identity and stops
-surviving owned groups before revalidating artifacts.
+Each predefined bootstrap subprocess belongs to one persisted attempt. Before
+spawn, the controller durably records a launch intent; after spawn it records
+the PID, process-group ID, OS process identity, and a random launch nonce.
+Cancellation sends `SIGTERM` to that owned group, then escalates only while the
+original group leader identity is still present. The record is cleared only
+after the entire recorded process group is confirmed absent. If the leader has
+exited while group members remain, identity is ambiguous, or persistence of
+the result fails, ownership remains recorded as `termination_uncertain` and
+retry is blocked. Startup performs this reconciliation regardless of whether
+the new controller is configured for simulation or bootstrap. A retry must
+also use the executor mode recorded on that job.
+
+This ownership boundary covers the process group created for the controller's
+predefined `uv` operations. POSIX does not provide a portable way for an
+unprivileged process to prove that a descendant deliberately detached into a
+new session has stopped. These trusted commands are expected not to daemonize;
+if an owned group remains after the leader exits, SpeechCraft fails closed and
+requires manual inspection. A future bootstrap command that can daemonize
+must add OS-level containment before it is run as an owned installation task.
+On macOS, identity checks additionally require the per-launch nonce to remain
+visible in `ps`; if this cannot be established, recovery fails closed. Linux
+was exercised locally; macOS and WSL2 recovery behavior still requires host
+validation. Older Linux ownership records remain verifiable using boot ID and
+start ticks plus a fresh process-group check. Older macOS records without a
+launch nonce cannot be safely signaled and require manual inspection rather
+than automatic recovery.
 
 ## Start locally
 

@@ -126,22 +126,36 @@ export function extractUvArchive(archiveBytes, artifact) {
   return uv;
 }
 
-function processIdentity(pid) {
+function processIdentity(pid, nonce = null) {
   if (process.platform === 'linux') {
     try {
       const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
       const end = stat.lastIndexOf(')');
-      const startTicks = stat.slice(end + 2).trim().split(/\s+/)[19];
+      const fields = stat.slice(end + 2).trim().split(/\s+/);
+      const processGroup = Number(fields[2]);
+      const startTicks = fields[19];
       const bootId = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
-      return startTicks && bootId ? `linux:${bootId}:${startTicks}` : null;
+      return startTicks && bootId && processGroup === pid ? `linux:${bootId}:${startTicks}:${processGroup}` : null;
     } catch { return null; }
   }
   if (process.platform === 'darwin') {
+    // Darwin's `lstart` has one-second resolution. A launch nonce in the
+    // owned process environment prevents a reused PID from being mistaken
+    // for the process SpeechCraft started.
+    if (!nonce) return null;
     try {
+      const details = execFileSync('/bin/ps', ['eww', '-p', String(pid)], {
+        encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (!details.includes(`SPEECHCRAFT_OWNED_PROCESS_NONCE=${nonce}`)) return null;
+      const processGroup = execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(pid)], {
+        encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (processGroup !== String(pid)) return null;
       const started = execFileSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], {
         encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'],
       }).trim();
-      return started ? `darwin:${started}` : null;
+      return started ? `darwin:${started}:${processGroup}:${nonce}` : null;
     } catch { return null; }
   }
   return null;
@@ -149,11 +163,17 @@ function processIdentity(pid) {
 
 function signalProcessGroup(pid, signal) {
   try { process.kill(-pid, signal); return true; }
-  catch (error) {
-    if (error.code !== 'ESRCH') throw error;
-    try { process.kill(pid, signal); return true; }
-    catch (childError) { if (childError.code === 'ESRCH') return false; throw childError; }
-  }
+  catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+}
+
+function matchesProcessIdentity(record, currentIdentity) {
+  if (!currentIdentity || typeof record?.identity !== 'string') return false;
+  if (currentIdentity === record.identity) return true;
+  // Records created before process-group IDs were included remain verifiable
+  // on Linux: the live identity still proves boot ID/start ticks and the
+  // current /proc check independently confirms pgrp === pid.
+  return process.platform === 'linux' && /^linux:[^:]+:\d+$/.test(record.identity)
+    && currentIdentity.startsWith(`${record.identity}:`);
 }
 
 function waitForProcessGroupExit(pid, timeoutMs) {
@@ -171,21 +191,27 @@ function waitForProcessGroupExit(pid, timeoutMs) {
 
 export async function terminateRecoveredProcess(record, { graceMs = CHILD_TERMINATE_GRACE_MS } = {}) {
   if (!record || !Number.isSafeInteger(record.pid) || record.pid < 2
-      || typeof record.identity !== 'string' || typeof record.attempt_id !== 'string') {
+      || typeof record.identity !== 'string' || typeof record.attempt_id !== 'string'
+      || (process.platform === 'darwin' && typeof record.nonce !== 'string')) {
     throw new BootstrapError('BOOTSTRAP_PROCESS_IDENTITY_UNKNOWN', 'An interrupted bootstrap process has incomplete ownership metadata; inspect it before retrying.');
   }
-  const currentIdentity = processIdentity(record.pid);
+  const currentIdentity = processIdentity(record.pid, record.nonce);
   if (currentIdentity === null) {
     try { process.kill(-record.pid, 0); }
     catch (error) { if (error.code === 'ESRCH') return { stopped: true, alreadyExited: true }; }
     throw new BootstrapError('BOOTSTRAP_PROCESS_IDENTITY_UNKNOWN', 'The interrupted bootstrap process exited but its process group may still contain writers; inspect it before retrying.');
   }
-  if (currentIdentity !== record.identity) {
+  if (!matchesProcessIdentity(record, currentIdentity)) {
     throw new BootstrapError('BOOTSTRAP_PROCESS_IDENTITY_CHANGED', 'A bootstrap process ID was reused before recovery could confirm its owner; stop and inspect the managed installation before retrying.');
   }
   try { signalProcessGroup(record.pid, 'SIGTERM'); }
   catch { throw new BootstrapError('BOOTSTRAP_PROCESS_STOP_FAILED', 'Could not signal the interrupted bootstrap process group safely.'); }
   if (await waitForProcessGroupExit(record.pid, graceMs)) return { stopped: true, alreadyExited: false };
+  // Once the leader exits, the numeric process-group ID may eventually be
+  // reused. Escalation is safe only while the original leader identity lives.
+  if (!matchesProcessIdentity(record, processIdentity(record.pid, record.nonce))) {
+    throw new BootstrapError('BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN', 'The bootstrap leader exited but its process group still has members; ownership is retained and retry is blocked. Inspect the recorded process group before continuing.');
+  }
   try { signalProcessGroup(record.pid, 'SIGKILL'); }
   catch { throw new BootstrapError('BOOTSTRAP_PROCESS_STOP_FAILED', 'Could not force-stop the interrupted bootstrap process group.'); }
   if (!await waitForProcessGroupExit(record.pid, graceMs)) {
@@ -194,13 +220,41 @@ export async function terminateRecoveredProcess(record, { graceMs = CHILD_TERMIN
   return { stopped: true, alreadyExited: false };
 }
 
+export async function reconcileOwnedProcess(store) {
+  const record = store.snapshot().job?.child_process;
+  if (!record) return { status: 'none' };
+  try {
+    await terminateRecoveredProcess(record);
+    store.commit((state) => {
+      if (state.job?.attempt_id !== record.attempt_id) return;
+      state.job.child_process = null;
+      state.job.termination_status = 'termination_confirmed';
+    }, 'bootstrap_process_termination_confirmed');
+    return { status: 'termination_confirmed' };
+  } catch (error) {
+    store.commit((state) => {
+      if (state.job?.attempt_id !== record.attempt_id) return;
+      state.job.child_process = { ...record, termination_status: 'termination_uncertain',
+        diagnostic: error.message.slice(0, 320) };
+      state.job.termination_status = 'termination_uncertain';
+      if (['interrupted', 'failed', 'cancelled'].includes(state.job.state)) {
+        state.job.error = { code: error.code || 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN',
+          message: error.message.slice(0, 320) };
+      }
+    }, 'bootstrap_process_termination_uncertain');
+    throw error;
+  }
+}
+
 export function runOwnedProcess(executable, args, { signal, cwd, env, onChildProcess,
   graceMs = CHILD_TERMINATE_GRACE_MS, maxOutputBytes = OUTPUT_CAPTURE_LIMIT } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new BootstrapError('BOOTSTRAP_CANCELLED', 'Bootstrap was cancelled.')); return; }
+    const launchNonce = randomUUID();
     let child;
     try {
-      child = spawn(executable, args, { cwd, env, shell: false, detached: process.platform !== 'win32',
+      child = spawn(executable, args, { cwd,
+        env: { ...(env || process.env), SPEECHCRAFT_OWNED_PROCESS_NONCE: launchNonce }, shell: false, detached: process.platform !== 'win32',
         windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) {
       reject(new BootstrapError('BOOTSTRAP_PROCESS_START_FAILED', 'Could not start a trusted bootstrap operation.', { cause: error }));
@@ -220,13 +274,35 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, onChildPro
     let childRecord = null;
     let spawnError = null;
     let killTimer = null;
+    let uncertainTimer = null;
     let cancelled = false;
     let settled = false;
+    let ownershipWriteFailed = false;
+    let ownershipUpdate = Promise.resolve();
     const stop = () => {
+      if (cancelled) return;
       cancelled = true;
       try { signalProcessGroup(child.pid, 'SIGTERM'); } catch {}
       killTimer = setTimeout(() => {
-        try { signalProcessGroup(child.pid, 'SIGKILL'); } catch {}
+        if (childRecord && matchesProcessIdentity(childRecord, processIdentity(child.pid, childRecord.nonce))) {
+          try { signalProcessGroup(child.pid, 'SIGKILL'); } catch {}
+        }
+        uncertainTimer = setTimeout(async () => {
+          if (settled) return;
+          // If ChildProcess has not delivered `close`, we do not have a
+          // complete termination/reap acknowledgement, even if a group probe
+          // happens to look empty. Keep ownership and fail closed.
+          settled = true;
+          signal?.removeEventListener('abort', onAbort);
+          try {
+            if (childRecord) await onChildProcess?.({ ...childRecord,
+              termination_status: 'termination_uncertain',
+              diagnostic: 'Process-group termination could not be confirmed after SIGKILL.' });
+          } catch { ownershipWriteFailed = true; }
+          reject(new BootstrapError('BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN',
+            'The bootstrap process group did not stop conclusively after termination escalation; ownership is retained and retry is blocked.'));
+        }, graceMs);
+        uncertainTimer.unref?.();
       }, graceMs);
       killTimer.unref?.();
     };
@@ -234,33 +310,48 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, onChildPro
     signal?.addEventListener('abort', onAbort, { once: true });
     child.once('error', (error) => { spawnError = error; });
     child.once('spawn', () => {
-      childRecord = { pid: child.pid, identity: processIdentity(child.pid), attempt_id: null };
-      void Promise.resolve(onChildProcess?.(childRecord)).catch(() => stop());
+      childRecord = { pid: child.pid, process_group_id: child.pid, identity: processIdentity(child.pid, launchNonce),
+        nonce: launchNonce, attempt_id: null, termination_status: 'active' };
+      ownershipUpdate = Promise.resolve(onChildProcess?.(childRecord))
+        .catch(() => { ownershipWriteFailed = true; stop(); });
     });
     child.once('close', async (code, childSignal) => {
       if (settled) return;
       settled = true;
       signal?.removeEventListener('abort', onAbort);
+      await ownershipUpdate;
       let processGroupSafe = true;
       if (!spawnError && childRecord) {
         processGroupSafe = await waitForProcessGroupExit(child.pid, cancelled ? graceMs : 100);
-        if (!processGroupSafe) {
+        if (!processGroupSafe && matchesProcessIdentity(childRecord, processIdentity(child.pid, childRecord.nonce))) {
           try { signalProcessGroup(child.pid, 'SIGKILL'); } catch {}
           processGroupSafe = await waitForProcessGroupExit(child.pid, graceMs);
         }
       }
       if (killTimer) clearTimeout(killTimer);
-      try { await onChildProcess?.(null); } catch {}
+      if (uncertainTimer) clearTimeout(uncertainTimer);
+      if (processGroupSafe) {
+        try { await onChildProcess?.({ ...childRecord, termination_status: 'termination_confirmed', clear: true }); }
+        catch { ownershipWriteFailed = true; }
+      } else if (childRecord) {
+        try { await onChildProcess?.({ ...childRecord, termination_status: 'termination_uncertain',
+          diagnostic: 'Process group exit could not be confirmed; retry is blocked.' }); }
+        catch { ownershipWriteFailed = true; }
+      } else if (spawnError) {
+        try { await onChildProcess?.({ clear: true, termination_status: 'termination_confirmed' }); } catch {}
+      }
       if (cancelled || signal?.aborted) {
         if (!processGroupSafe) {
-          reject(new BootstrapError('BOOTSTRAP_PROCESS_STOP_TIMEOUT', 'The bootstrap process tree did not stop; retry is blocked to protect managed files.'));
+          reject(new BootstrapError('BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN', 'The bootstrap process group did not stop conclusively; ownership is retained and retry is blocked to protect managed files.'));
           return;
         }
         reject(new BootstrapError('BOOTSTRAP_CANCELLED', 'Bootstrap was cancelled after its owned process stopped.'));
       } else if (spawnError) {
         reject(new BootstrapError('BOOTSTRAP_PROCESS_START_FAILED', 'Could not start a trusted bootstrap operation.', { cause: spawnError }));
       } else if (!processGroupSafe) {
-        reject(new BootstrapError('BOOTSTRAP_PROCESS_TREE_UNSAFE', 'A trusted bootstrap command left child processes running; installation is blocked.'));
+        reject(new BootstrapError('BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN', 'A trusted bootstrap command left possible child writers; ownership is retained and installation is blocked.'));
+      } else if (ownershipWriteFailed) {
+        reject(new BootstrapError('BOOTSTRAP_OWNERSHIP_PERSIST_FAILED', 'Could not persist subprocess ownership state; inspect managed bootstrap state before retrying.'));
       } else {
         resolve({ code, signal: childSignal,
           stdout: Buffer.concat(collected.stdout).toString('utf8'),
@@ -421,11 +512,6 @@ export class BootstrapTasks {
 
   async recoverInterrupted(store) {
     const job = store.snapshot().job;
-    const record = job?.child_process;
-    if (record) {
-      await terminateRecoveredProcess(record);
-      store.commit((state) => { if (state.job?.attempt_id === record.attempt_id) state.job.child_process = null; }, 'bootstrap_child_recovered');
-    }
     if (job?.mode !== 'bootstrap') return;
     const status = this.initialBootstrapStatus();
     const attemptId = job.attempt_id;
@@ -548,8 +634,14 @@ export class BootstrapTasks {
   async runProcess(executable, args, context, { cwd = this.dataDirectory, env = this.makeEnvironment(this.paths) } = {}) {
     const childCallback = (record) => {
       if (!context.onChildProcess) return;
-      context.onChildProcess(record ? { ...record, attempt_id: context.attemptId } : null);
+      if (record?.clear) return context.onChildProcess(null, 'termination_confirmed');
+      return context.onChildProcess(record ? { ...record, attempt_id: context.attemptId } : null,
+        record?.termination_status || 'active');
     };
+    // Persist a launch intent before spawning. A crash between spawn and the
+    // subsequent PID write therefore fails closed instead of losing ownership.
+    await context.onChildProcess?.({ attempt_id: context.attemptId, state: 'starting', pid: null,
+      identity: null, termination_status: 'active', created_at: new Date().toISOString() }, 'active');
     const result = await this.processRunner(executable, args, { signal: context.signal, cwd, env,
       onChildProcess: childCallback });
     if (result.code !== 0) {

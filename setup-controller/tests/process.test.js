@@ -8,6 +8,8 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { afterEach, test } from 'node:test';
 import { StateStore, StateStoreError } from '../src/state-store.js';
+import { runOwnedProcess } from '../src/bootstrap.js';
+import { createSetupController } from '../src/server.js';
 
 const serverEntry = fileURLToPath(new URL('../src/server.js', import.meta.url));
 const children = new Set();
@@ -97,6 +99,73 @@ test('real controller crash is reconciled as interrupted after restart', async (
   children.delete(second.child);
   fs.rmSync(directory, { recursive: true, force: true });
 });
+
+for (const stage of ['install_python', 'install_model_manager']) {
+  test(`controller killed during ${stage} is reconciled before a simulated restart`, { skip: process.platform === 'win32' }, async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), `speechcraft-crash-${stage}-`));
+    const sentinel = path.join(directory, 'previously-verified-runtime.txt');
+    fs.writeFileSync(sentinel, 'verified installation remains intact');
+    const workerCode = `
+      import fs from 'node:fs';
+      import { StateStore } from ${JSON.stringify(new URL('../src/state-store.js', import.meta.url).href)};
+      import { runOwnedProcess } from ${JSON.stringify(new URL('../src/bootstrap.js', import.meta.url).href)};
+      const directory = process.argv[1], stage = process.argv[2];
+      const store = StateStore.open(directory);
+      const attemptId = '00000000-0000-4000-8000-000000000002';
+      store.commit((state) => { state.job = { schema_version: 2, id: '00000000-0000-4000-8000-000000000001',
+        attempt_id: attemptId, mode: 'bootstrap', state: 'running', stage, task_id: 'bootstrap:' + stage,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), started_at: new Date().toISOString(),
+        completed_at: null, attempt_count: 1, revision: 0, progress: null, bootstrap_status: null, error: null }; }, 'stage_started');
+      const writeFile = directory + '/active-writer.log';
+      await store.commit((state) => { state.job.child_process = { attempt_id: attemptId, state: 'starting',
+        pid: null, identity: null, termination_status: 'active' }; }, 'writer_starting');
+      const writer = String.raw\`const fs = require('node:fs'); const file = process.argv[1];
+        setInterval(() => fs.appendFileSync(file, '.'), 10);\`;
+      const operation = runOwnedProcess(process.execPath, ['-e', writer, writeFile], { cwd: directory, env: process.env,
+        onChildProcess: (record) => store.commit((state) => { state.job.child_process = record
+          ? { ...record, attempt_id: attemptId } : null; }, record ? 'writer_active' : 'writer_stopped') });
+      const deadline = Date.now() + 3000;
+      while (!fs.existsSync(writeFile) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+      process.stdout.write('writer-ready\\n');
+      await operation;
+    `;
+    const controllerProcess = spawn(process.execPath, ['--input-type=module', '-e', workerCode, directory, stage], {
+      cwd: path.dirname(path.dirname(serverEntry)), env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    children.add(controllerProcess);
+    let output = '';
+    controllerProcess.stdout.setEncoding('utf8').on('data', (chunk) => { output += chunk; });
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!output.includes('writer-ready') && Date.now() < deadline && controllerProcess.exitCode === null) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      assert.match(output, /writer-ready/);
+      controllerProcess.kill('SIGKILL');
+      await once(controllerProcess, 'exit');
+      children.delete(controllerProcess);
+
+      const app = await createSetupController({ dataDirectory: directory, mode: 'simulated', port: 0 });
+      try {
+        const recovered = app.store.snapshot().job;
+        assert.equal(recovered.state, 'interrupted');
+        assert.equal(recovered.stage, stage);
+        assert.equal(recovered.mode, 'bootstrap');
+        assert.equal(recovered.child_process, null);
+        assert.equal(recovered.termination_status, 'termination_confirmed');
+        assert.throws(() => app.controller.retry(), { code: 'EXECUTOR_MODE_MISMATCH' });
+        const writerSize = fs.statSync(path.join(directory, 'active-writer.log')).size;
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        assert.equal(fs.statSync(path.join(directory, 'active-writer.log')).size, writerSize,
+          'the prior writer must be stopped before the new controller accepts work');
+        assert.equal(fs.readFileSync(sentinel, 'utf8'), 'verified installation remains intact');
+      } finally { await app.close(); }
+    } finally {
+      if (controllerProcess.exitCode === null && controllerProcess.signalCode === null) controllerProcess.kill('SIGKILL');
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
 
 test('a process killed immediately after acquiring the lock is safely detected and replaced', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-lock-owner-crash-'));

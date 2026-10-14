@@ -97,6 +97,10 @@ export class SetupController {
       if (current.state === 'running' || current.state === 'waiting_for_user' || current.state === 'cancelling') {
         return { job: current, idempotent: true };
       }
+      if (current.child_process) {
+        throw new ControllerError(409, 'PROCESS_RECONCILIATION_REQUIRED',
+          'A bootstrap subprocess may still own installation files. Restart the controller to reconcile it before starting setup.');
+      }
       if (current.state !== 'completed') {
         throw new ControllerError(409, 'JOB_EXISTS', 'A setup job already exists. Use retry when its state permits.');
       }
@@ -128,6 +132,15 @@ export class SetupController {
     const current = this.store.snapshot().job;
     if (!current || !['failed', 'cancelled', 'interrupted'].includes(current.state)) {
       throw new ControllerError(409, 'RETRY_NOT_ALLOWED', 'Retry is allowed only for failed, cancelled, or interrupted jobs.');
+    }
+    if (current.child_process) {
+      throw new ControllerError(409, 'PROCESS_RECONCILIATION_REQUIRED',
+        'A bootstrap subprocess may still own installation files. Restart the controller to reconcile it before retrying.');
+    }
+    const recordedMode = current.mode || 'simulated';
+    if (recordedMode !== this.mode) {
+      throw new ControllerError(409, 'EXECUTOR_MODE_MISMATCH',
+        `This job belongs to ${recordedMode} setup and cannot be retried in ${this.mode} mode.`);
     }
     assertTransition(current.state, 'running');
     const stage = this.stages[0];
@@ -193,11 +206,20 @@ export class SetupController {
   finishCancelled(jobId, attemptId) {
     const latest = this.store.snapshot().job;
     if (latest?.id !== jobId || latest.attempt_id !== attemptId || latest.state !== 'cancelling') return;
-    assertTransition('cancelling', 'cancelled');
+    const uncertain = Boolean(latest.child_process);
+    const targetState = uncertain ? 'interrupted' : 'cancelled';
+    assertTransition('cancelling', targetState);
     this.store.commit((state) => {
-      state.job.state = 'cancelled';
+      state.job.state = targetState;
       state.job.completed_at = new Date().toISOString();
-    }, 'job_cancelled');
+      if (uncertain) {
+        state.job.termination_status = 'termination_uncertain';
+        state.job.error = { code: 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN',
+          message: 'Cancellation could not confirm that all owned bootstrap writers stopped. Retry is blocked until controller recovery confirms termination.' };
+      } else {
+        state.job.termination_status = 'termination_confirmed';
+      }
+    }, uncertain ? 'job_termination_uncertain' : 'job_cancelled');
   }
 
   async run(jobId, attemptId, signal) {
@@ -228,7 +250,11 @@ export class SetupController {
           onChildProcess: (record) => {
             const latest = this.store.snapshot().job;
             if (latest?.id !== jobId || latest.attempt_id !== attemptId) return;
-            this.store.commit((state) => { state.job.child_process = record; }, record ? 'child_process_started' : 'child_process_stopped');
+            this.store.commit((state) => {
+              state.job.child_process = record;
+              if (!record) state.job.termination_status = 'termination_confirmed';
+              else if (record.termination_status === 'termination_uncertain') state.job.termination_status = 'termination_uncertain';
+            }, record ? 'child_process_started' : 'child_process_stopped');
           },
           onProgress: (progress) => {
             const latest = this.store.snapshot().job;
@@ -257,9 +283,11 @@ export class SetupController {
       if (current?.id !== jobId || current.attempt_id !== attemptId) return;
       if (current.state === 'cancelling') { this.finishCancelled(jobId, attemptId); return; }
       if (current.state !== 'running') return;
+      const interrupted = Boolean(current.child_process);
       this.store.commit((state) => {
-        state.job.state = 'failed';
+        state.job.state = interrupted ? 'interrupted' : 'failed';
         state.job.completed_at = new Date().toISOString();
+        if (interrupted) state.job.termination_status = 'termination_uncertain';
         state.job.error = {
           code: /^[A-Z0-9_]+$/.test(error?.code || '') ? error.code : 'SETUP_TASK_FAILED',
           message: /^[A-Z0-9_]+$/.test(error?.code || '') && error.code === 'SIMULATED_STAGE_FAILURE'

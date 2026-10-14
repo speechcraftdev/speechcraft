@@ -207,6 +207,56 @@ test('multiple retries serialize and failure can be retried immediately', async 
   assert.equal(f.app.controller.status().job.state, 'completed');
 });
 
+test('uncertain subprocess ownership is durable and blocks retry until reconciliation', async () => {
+  let runCount = 0;
+  const f = await fixture({ mode: 'bootstrap', tasks: {
+    stages: ['install_python'], taskId: (stage) => `bootstrap:${stage}`,
+    initialProgress: (_stage, message) => ({ phase: 'queued', current: null, total: null, percent: null, message }),
+    async run(_stage, { attemptId, onChildProcess }) {
+      runCount += 1;
+      if (runCount === 1) {
+        onChildProcess({ pid: 999999, process_group_id: 999999, identity: 'fixture', nonce: 'fixture',
+          attempt_id: attemptId, termination_status: 'termination_uncertain',
+          diagnostic: 'termination could not be confirmed' });
+        throw Object.assign(new Error('unsafe stop'), { code: 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN' });
+      }
+    },
+  } });
+  f.app.controller.start();
+  await f.app.controller.waitForIdle();
+  const failed = f.app.store.snapshot().job;
+  assert.equal(failed.state, 'interrupted');
+  assert.equal(failed.termination_status, 'termination_uncertain');
+  assert.equal(failed.child_process.termination_status, 'termination_uncertain');
+  assert.throws(() => f.app.controller.retry(), { code: 'PROCESS_RECONCILIATION_REQUIRED' });
+
+  // Test the post-reconciliation path: the owner record may only be cleared by
+  // the reconciler after it has established that the process group is gone.
+  f.app.store.commit((state) => {
+    state.job.child_process = null;
+    state.job.termination_status = 'termination_confirmed';
+  }, 'test_reconciliation_confirmed');
+  f.app.controller.retry();
+  await f.app.controller.waitForIdle();
+  assert.equal(f.app.controller.status().job.state, 'completed');
+});
+
+test('a simulated controller cannot retry a persisted real bootstrap job', async () => {
+  const f = await fixture();
+  f.app.store.commit((state) => {
+    state.job = {
+      schema_version: 2, id: '00000000-0000-4000-8000-000000000001',
+      attempt_id: '00000000-0000-4000-8000-000000000002', state: 'interrupted',
+      stage: 'install_python', task_id: 'bootstrap:install_python', mode: 'bootstrap',
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      started_at: new Date().toISOString(), completed_at: new Date().toISOString(),
+      attempt_count: 1, revision: 0, progress: null, bootstrap_status: null,
+      error: { code: 'CONTROLLER_RESTARTED', message: 'interrupted' },
+    };
+  }, 'test_interrupted_bootstrap');
+  assert.throws(() => f.app.controller.retry(), { code: 'EXECUTOR_MODE_MISMATCH' });
+});
+
 test('cancellation terminal state follows executor acknowledgement and shutdown waits for it', async () => {
   let entered;
   const atStage = new Promise((resolve) => { entered = resolve; });
