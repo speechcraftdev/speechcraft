@@ -7,7 +7,12 @@ outside user project data. The intended root is an OS user data directory
 Linux). Resolve the platform location in the installer; do not bake an absolute
 path into the catalog.
 
-Store each installed artifact under `<root>/<model-id>/<immutable-revision>/`.
+Stage 2 implementation and commands are documented in
+[the lightweight package](../../packages/model_manager/README.md). Its schema
+and catalog are packaged resources; the JSON paths here are compatibility symlinks.
+
+Store each installed artifact under `<root>/<model-id>/<artifact-key>/`, where
+the key hashes the complete immutable artifact record, including its revision.
 Keep downloader temporary files and completion metadata beside that revision,
 and publish the revision directory only after every declared file passes its
 integrity checks. Projects may refer to model IDs/revisions but should not copy
@@ -25,7 +30,7 @@ alone does not establish that catalog metadata is trusted or release-ready.
 known. `availability: verified` describes resolved release metadata, not a local
 installation. Unknown inventories, unresolved availability, explicit release
 blockers, and missing SHA-256 values each prevent install readiness. The initial
-catalog still has blockers for every role; no artifact is currently installable.
+catalog now permits the pinned Silero ONNX artifact; other roles remain blocked.
 
 The verifier reports separate facts:
 
@@ -57,8 +62,9 @@ and publish immutable directories; a successful report cannot prevent later edit
 Platform selection accepts `linux-x86_64` and `macos-arm64`. An exact platform
 entry wins, even if unresolved. Otherwise, an `all-supported` entry may be used
 only if its explicit `supported_platforms` includes the requested platform.
-Unsupported platforms and missing matches are errors. Shared Silero coverage is
-planned metadata, and its unresolved status still blocks installation.
+Unsupported platforms and missing matches are errors. Shared Silero coverage
+selects the same pinned bytes on both platforms; inference validation remains
+deferred.
 
 For a direct check from `workers/dataset`:
 
@@ -72,13 +78,13 @@ or unresolved file/release check, and `2` for malformed manifests, bad selection
 or command-line usage. Tests use only fabricated files and the standard library;
 they require neither network access nor an ML environment.
 
-## Next downloader PR
+## Next controller integration
 
 - Resolve the explicit release blockers in the catalog before presenting those
   artifacts as installable, including immutable revisions, complete file
   inventories, licenses/access terms and hashes from authoritative sources.
-- Fetch into a temporary directory, support resumable multi-file artifacts,
-  verify each file, then atomically publish a completed revision.
+- Use the Stage 2 lightweight downloader for staging, resumption, verification,
+  locking and atomic publication; add controller cancellation and explicit cleanup.
 - Expose progress and actionable access/network/disk errors to the future UI;
   never begin model inference until installation verification succeeds.
 - Add runtime validation separately: this PR defines contracts only and does
@@ -92,7 +98,8 @@ they require neither network access nor an ML environment.
   or full artifact inventory is recorded.
 - Silero: worker depends on `silero-vad==6.2.1`; standard VAD loads the package
   model and the frozen VR slicer requests its ONNX variant. Standalone model
-  bytes are not currently catalog-pinned.
+  bytes are now pinned and independently downloadable by Stage 2; production
+  loading continues to use the existing package resource.
 - Speaker purity: production still uses NeMo TitaNet. The sherpa-onnx TitaNet
   export exists in an experiment only; source identity and redistribution status
   remain release blockers. The frozen VR slicer is not changed by this catalog.

@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "id": "pyannote-community-1",
+      "role": "diarization",
+      "name": "pyannote/speaker-diarization-community-1",
+      "license": { "identifier": "CC-BY-4.0", "status": "verified", "source": "https://huggingface.co/pyannote/speaker-diarization-community-1" },
+      "access": { "requirements": ["Hugging Face account", "Accept model conditions and contact-information sharing terms"], "source": "https://huggingface.co/pyannote/speaker-diarization-community-1" },
+      "artifacts": [{
+        "platform": "linux-x86_64",
+        "format": "pyannote pipeline snapshot (PyTorch)",
+        "revision": "UNRESOLVED: installed local snapshot has no recorded immutable revision",
+        "availability": "unresolved",
+        "inventory_complete": false,
+        "required_files": [
+          { "path": "embedding/pytorch_model.bin", "min_size_bytes": 26646242 },
+          { "path": "segmentation/pytorch_model.bin", "min_size_bytes": 5906507 }
+        ],
+        "release_blockers": ["Pin snapshot commit and verify complete pipeline file list and hashes; current application guard only checks these two minimum-size weights."]
+      }],
+      "runtime_validation": { "status": "deferred", "contract": ["Load local directory with pyannote.audio Pipeline.from_pretrained in offline mode", "Run a tiny known audio fixture and validate non-empty, well-formed speaker turns", "Confirm supported device and dependency combination"] }
+    },
+    {
+      "id": "whisper-large-v3",
+      "role": "asr",
+      "name": "Systran/faster-whisper-large-v3",
+      "license": { "identifier": "MIT", "status": "verified", "source": "https://huggingface.co/Systran/faster-whisper-large-v3" },
+      "access": { "requirements": ["Public model; no gated access found"], "source": "https://huggingface.co/Systran/faster-whisper-large-v3" },
+      "artifacts": [
+        {
+          "platform": "linux-x86_64",
+          "format": "CTranslate2 / faster-whisper",
+          "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
+          "availability": "verified",
+          "inventory_complete": true,
+          "release_blockers": ["Trusted content hashes for every required file remain unresolved."],
+          "required_files": [
+            { "path": "config.json" }, { "path": "model.bin" },
+            { "path": "preprocessor_config.json" }, { "path": "tokenizer.json" },
+            { "path": "vocabulary.json" }
+          ]
+        },
+        {
+          "platform": "macos-arm64",
+          "format": "MLX",
+          "revision": "UNRESOLVED",
+          "availability": "unresolved",
+          "inventory_complete": false,
+          "required_files": [],
+          "release_blockers": ["No MLX ASR model identity, immutable revision, file set, license/access record, or runtime-validation evidence found in this repository."]
+        }
+      ],
+      "runtime_validation": { "status": "deferred", "contract": ["Construct faster-whisper WhisperModel from the local artifact", "Transcribe a small fixed audio fixture and validate result shape", "MLX artifact requires a separate platform-specific contract"] }
+    },
+    {
+      "id": "silero-vad",
+      "role": "speech_detection",
+      "name": "Silero VAD 6.2.1 ONNX (opset 16)",
+      "license": {
+        "identifier": "MIT",
+        "status": "verified",
+        "source": "https://raw.githubusercontent.com/snakers4/silero-vad/7e30209a3e901f9842f81b225f3e93d8199902b1/LICENSE"
+      },
+      "access": {
+        "requirements": [
+          "Public package/model; no gated access known"
+        ],
+        "source": "https://github.com/snakers4/silero-vad"
+      },
+      "artifacts": [
+        {
+          "platform": "all-supported",
+          "supported_platforms": [
+            "linux-x86_64",
+            "macos-arm64"
+          ],
+          "format": "ONNX (opset 16)",
+          "revision": "7e30209a3e901f9842f81b225f3e93d8199902b1",
+          "availability": "verified",
+          "inventory_complete": true,
+          "required_files": [
+            {
+              "path": "silero_vad.onnx",
+              "size_bytes": 2327524,
+              "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+              "url": "https://raw.githubusercontent.com/snakers4/silero-vad/7e30209a3e901f9842f81b225f3e93d8199902b1/src/silero_vad/data/silero_vad.onnx"
+            },
+            {
+              "path": "LICENSE",
+              "size_bytes": 1075,
+              "sha256": "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b",
+              "url": "https://raw.githubusercontent.com/snakers4/silero-vad/7e30209a3e901f9842f81b225f3e93d8199902b1/LICENSE"
+            }
+          ],
+          "release_blockers": []
+        }
+      ],
+      "runtime_validation": {
+        "status": "deferred",
+        "contract": [
+          "Create ONNX session using supported CPU runtime",
+          "Process correctly shaped silent and speech chunks and validate finite probabilities and state shapes"
+        ]
+      }
+    },
+    {
+      "id": "titanet-large-speaker-purity",
+      "role": "speaker_purity",
+      "name": "TitaNet-Large ONNX candidate (sherpa-onnx)",
+      "license": { "identifier": "UNRESOLVED", "status": "unresolved", "source": "https://huggingface.co/csukuangfj/speaker-embedding-models" },
+      "access": { "requirements": ["Public repository observed; redistribution terms must be confirmed"], "source": "https://huggingface.co/csukuangfj/speaker-embedding-models" },
+      "artifacts": [{
+        "platform": "linux-x86_64",
+        "format": "ONNX / sherpa-onnx",
+        "revision": "0743f30 (repository commit containing export; source-checkpoint identity unresolved)",
+        "availability": "unresolved",
+        "inventory_complete": false,
+        "required_files": [{ "path": "nemo_en_titanet_large.onnx", "size_bytes": 101405493, "sha256": "d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77" }],
+        "release_blockers": ["Experiment report documents incomplete checkpoint provenance and no production migration; validate redistribution license and platform/runtime support before release."]
+      }],
+      "runtime_validation": { "status": "deferred", "contract": ["Load ONNX with pinned sherpa-onnx runtime", "Validate finite 192-dimensional embeddings for fixed audio and repeatability", "Product-level parity and threshold migration must be approved separately"] }
+    }
+  ]
+}
