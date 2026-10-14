@@ -39,7 +39,10 @@ async function runPlan() {
     if (sessionResponse.status !== 201) throw new Error(`Session establishment failed (${sessionResponse.status}).`);
     const session = await sessionResponse.json();
     const cookie = sessionResponse.headers.get('set-cookie').split(';', 1)[0];
-    const response = await fetch(`${origin}/setup-api/start`, { method: 'POST', headers: {
+    const prior = await fetch(`${origin}/setup-api/status`, { headers: { cookie, origin } }).then((value) => value.json());
+    const operation = prior.job?.state && ['failed', 'cancelled', 'interrupted'].includes(prior.job.state)
+      ? 'retry' : 'start';
+    const response = await fetch(`${origin}/setup-api/${operation}`, { method: 'POST', headers: {
       origin, cookie, 'x-speechcraft-csrf': session.csrf_token, 'content-type': 'application/json' }, body: '{}' });
     if (![200, 202].includes(response.status)) throw new Error(`Start rejected (${response.status}): ${await response.text()}`);
     const started = Date.now();

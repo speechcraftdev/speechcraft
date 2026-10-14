@@ -51,7 +51,16 @@ export class RuntimeTasks extends BootstrapTasks {
       workerPython: path.join(this.dataDirectory, 'environments', 'worker', 'unavailable', 'bin', 'python'),
       onStatus: (status, record) => this.updateServiceStatus(status, record),
     });
-    await this.service.start(context.signal);
+    try {
+      await this.service.start(context.signal);
+    } catch (error) {
+      const code = /^BACKEND_[A-Z0-9_]+$/.test(error?.code || '') ? error.code : 'BACKEND_START_FAILED';
+      const message = /^BACKEND_[A-Z0-9_]+$/.test(error?.code || '') && typeof error.message === 'string'
+        ? error.message.slice(0, 320)
+        : 'The managed backend could not start or pass its loopback health check. Inspect the backend environment and retry.';
+      this.setComponent(context, 'backend_service', { state: 'failed', failure_code: code, message });
+      throw Object.assign(new Error(message), { name: 'BootstrapError', code });
+    }
   }
 
   async verifyServices(context) {
@@ -66,6 +75,7 @@ export class RuntimeTasks extends BootstrapTasks {
   }
 
   async run(stage, context) {
+    context.componentStatus = context.bootstrapStatus || this.initialBootstrapStatus();
     if (stage === 'start_services') return this.startServices(context);
     if (stage === 'verify_services') return this.verifyServices(context);
     return super.run(stage, context);

@@ -9,15 +9,25 @@ import { StateStore } from '../src/state-store.js';
 test('backend service is a managed process group, requires health, and stops cleanly', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-managed-backend-'));
   const data = path.join(root, 'data');
-  const runtimes = path.join(data, 'runtimes', 'fixture');
-  const bin = path.join(runtimes, 'bin');
+  const runtimeBin = path.join(data, 'runtimes', 'fixture', 'bin');
+  const bin = path.join(data, 'environments', 'backend', 'bin');
   const appRoot = path.join(root, 'release');
+  fs.mkdirSync(runtimeBin, { recursive: true });
   fs.mkdirSync(bin, { recursive: true });
   fs.mkdirSync(path.join(appRoot, 'backend'), { recursive: true });
   const executable = path.join(bin, 'python');
-  fs.writeFileSync(executable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); if (!m) process.exit(3); http.createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({status:'ok'}));}).listen(Number(m[1]),'127.0.0.1');\n`);
-  fs.chmodSync(executable, 0o755);
+  const runtimeExecutable = path.join(runtimeBin, 'python-real');
+  fs.writeFileSync(runtimeExecutable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); if (!m) process.exit(3); http.createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({status:'ok'}));}).listen(Number(m[1]),'127.0.0.1');\n`);
+  fs.chmodSync(runtimeExecutable, 0o755);
+  fs.symlinkSync(runtimeExecutable, executable);
   const store = StateStore.open(path.join(root, 'state'));
+  const escapedInterpreter = path.join(bin, 'escaped-python');
+  fs.symlinkSync('/usr/bin/env', escapedInterpreter);
+  const unsafeService = new BackendService({ store, dataDirectory: data, applicationRoot: appRoot,
+    environment: { profile: 'linux-x86_64' }, pythonPath: escapedInterpreter,
+    environmentVars: { PATH: process.env.PATH }, attemptId: 'c44d552a-8e3d-4af9-98d6-e603ce9dd2e1' });
+  await assert.rejects(unsafeService.start(new AbortController().signal), { code: 'BACKEND_ENVIRONMENT_INVALID' });
+  assert.equal(store.snapshot().service_process, null, 'an escaped interpreter must be rejected before launch intent');
   const serviceStatuses = [];
   const service = new BackendService({ store, dataDirectory: data, applicationRoot: appRoot,
     environment: { profile: 'linux-x86_64' }, pythonPath: executable, environmentVars: { PATH: process.env.PATH },
@@ -50,12 +60,15 @@ test('backend service is a managed process group, requires health, and stops cle
 test('recovery stops an owned backend after controller restart', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-backend-recovery-'));
   const data = path.join(root, 'data');
-  const bin = path.join(data, 'runtimes', 'fixture', 'bin');
+  const runtimeBin = path.join(data, 'runtimes', 'fixture', 'bin');
+  const bin = path.join(data, 'environments', 'backend', 'bin');
   const appRoot = path.join(root, 'release');
-  fs.mkdirSync(bin, { recursive: true }); fs.mkdirSync(path.join(appRoot, 'backend'), { recursive: true });
+  fs.mkdirSync(runtimeBin, { recursive: true }); fs.mkdirSync(bin, { recursive: true }); fs.mkdirSync(path.join(appRoot, 'backend'), { recursive: true });
   const executable = path.join(bin, 'python');
-  fs.writeFileSync(executable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); http.createServer((q,r)=>r.end('{"status":"ok"}')).listen(Number(m[1]),'127.0.0.1');\n`);
-  fs.chmodSync(executable, 0o755);
+  const runtimeExecutable = path.join(runtimeBin, 'python-real');
+  fs.writeFileSync(runtimeExecutable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); http.createServer((q,r)=>r.end('{"status":"ok"}')).listen(Number(m[1]),'127.0.0.1');\n`);
+  fs.chmodSync(runtimeExecutable, 0o755);
+  fs.symlinkSync(runtimeExecutable, executable);
   const store = StateStore.open(path.join(root, 'state'));
   const service = new BackendService({ store, dataDirectory: data, applicationRoot: appRoot,
     environment: { profile: 'linux-x86_64' }, pythonPath: executable, environmentVars: { PATH: process.env.PATH },

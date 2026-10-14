@@ -40,7 +40,7 @@ function sleep(ms, signal) {
 
 export class BackendService {
   constructor({ store, dataDirectory, applicationRoot, environment, pythonPath, environmentVars, attemptId, workerPython = null, workerRoot = null,
-    onStatus = () => {} }) {
+    onStatus = () => {}, onOutput = () => {} }) {
     this.store = store;
     this.dataDirectory = dataDirectory;
     this.applicationRoot = applicationRoot;
@@ -51,6 +51,7 @@ export class BackendService {
     this.workerPython = workerPython;
     this.workerRoot = workerRoot;
     this.onStatus = onStatus;
+    this.onOutput = onOutput;
     this.child = null;
     this.record = null;
     this.port = null;
@@ -64,13 +65,24 @@ export class BackendService {
     if (this.record) await this.stop();
     const backendRoot = path.join(this.applicationRoot, 'backend');
     let executable;
-    try { executable = fs.realpathSync(this.pythonPath); }
+    let managedRuntimeRoot;
+    let managedEnvironmentRoot;
+    let requestedExecutable;
+    try {
+      requestedExecutable = path.resolve(this.pythonPath);
+      executable = fs.realpathSync(requestedExecutable);
+      managedRuntimeRoot = fs.realpathSync(path.join(this.dataDirectory, 'runtimes'));
+      managedEnvironmentRoot = fs.realpathSync(path.join(this.dataDirectory, 'environments'));
+    }
     catch { throw Object.assign(new Error('The verified managed backend interpreter is unavailable.'), { code: 'BACKEND_ENVIRONMENT_INVALID' }); }
-    const managedRuntimeRoot = fs.realpathSync(path.join(this.dataDirectory, 'runtimes'));
-    const relativeExecutable = path.relative(managedRuntimeRoot, executable);
-    const info = fs.lstatSync(executable);
-    if (!info.isFile() || info.isSymbolicLink() || relativeExecutable === '..'
-        || relativeExecutable.startsWith(`..${path.sep}`) || path.isAbsolute(relativeExecutable)
+    const lexicalRelative = path.relative(managedEnvironmentRoot, requestedExecutable);
+    const runtimeRelative = path.relative(managedRuntimeRoot, executable);
+    const environmentRelative = path.relative(managedEnvironmentRoot, executable);
+    const info = fs.statSync(requestedExecutable);
+    if (!info.isFile() || lexicalRelative === '..' || lexicalRelative.startsWith(`..${path.sep}`)
+        || path.isAbsolute(lexicalRelative)
+        || (runtimeRelative === '..' || runtimeRelative.startsWith(`..${path.sep}`) || path.isAbsolute(runtimeRelative))
+          && (environmentRelative === '..' || environmentRelative.startsWith(`..${path.sep}`) || path.isAbsolute(environmentRelative))
         || (info.mode & 0o111) === 0) throw Object.assign(new Error('The backend interpreter did not resolve to a SpeechCraft-managed runtime.'), { code: 'BACKEND_ENVIRONMENT_INVALID' });
     const appData = path.join(this.dataDirectory, 'application-data');
     const projectData = path.join(appData, 'projects');
@@ -90,10 +102,14 @@ export class BackendService {
       SPEECHCRAFT_DATASET_WORKER_PYTHON: this.workerPython || '',
       SPEECHCRAFT_OWNED_PROCESS_NONCE: nonce };
     const script = `import sys,uvicorn; sys.path.insert(0,${JSON.stringify(backendRoot)}); uvicorn.run('app.main:app',host='127.0.0.1',port=${port},log_level='warning')`;
-    const child = spawn(executable, ['-I', '-c', script], { cwd: backendRoot, env, shell: false,
-      detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] });
+    // Keep the venv path as argv[0]: CPython uses it to locate sys.prefix.
+    // `executable` above is only the resolved target used for containment.
+    const child = spawn(requestedExecutable, ['-I', '-c', script], { cwd: backendRoot, env, shell: false,
+      detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     this.child = child;
     this.port = port;
+    child.stdout.on('data', (chunk) => this.onOutput('stdout', chunk));
+    child.stderr.on('data', (chunk) => this.onOutput('stderr', chunk));
     await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('spawn', resolve);
