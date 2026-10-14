@@ -1,0 +1,230 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import http from 'node:http';
+import { afterEach, test } from 'node:test';
+import { assertTransition } from '../src/controller.js';
+import { StateStore, StateStoreError } from '../src/state-store.js';
+import { openEvents, readUntilEvent, temporaryController } from './helpers.js';
+
+const active = new Set();
+afterEach(async () => {
+  for (const fixture of active) {
+    try { await fixture.app.close(); } catch {}
+    fs.rmSync(fixture.directory, { recursive: true, force: true });
+  }
+  active.clear();
+});
+
+async function fixture(options) {
+  const value = await temporaryController(options);
+  active.add(value);
+  return value;
+}
+
+test('state transitions reject illegal jumps', () => {
+  assertTransition('idle', 'running');
+  assertTransition('interrupted', 'running');
+  assert.throws(() => assertTransition('completed', 'running'), { code: 'INVALID_STATE_TRANSITION' });
+});
+
+test('health is narrow and setup status requires authenticated session', async () => {
+  const f = await fixture();
+  assert.deepEqual(await (await fetch(`${f.base}/setup-api/health`)).json(), {
+    status: 'ok', controller_status: 'running',
+  });
+  assert.equal((await fetch(`${f.base}/setup-api/status`)).status, 401);
+  const status = await f.request('/setup-api/status');
+  assert.equal(status.status, 200);
+  const body = await status.json();
+  assert.equal(body.job.state, 'idle');
+  assert.equal(body.job.schema_version, 1);
+  assert.equal(body.production_ready, false);
+  const refreshed = await f.request('/setup-api/session');
+  assert.equal(refreshed.status, 200);
+  assert.equal((await refreshed.json()).csrf_token, f.auth.csrf_token);
+  assert.match(f.setCookie, /HttpOnly/);
+  assert.match(f.setCookie, /SameSite=Strict/);
+});
+
+test('two concurrent starts return the same active job and only start once', async () => {
+  let entered;
+  const atStage = new Promise((resolve) => { entered = resolve; });
+  let release;
+  const hold = new Promise((resolve) => { release = resolve; });
+  const f = await fixture({ simulated: { stepDelayMs: 0, stageGate: async (stage) => {
+    if (stage === 'inspect_system') { entered(); await hold; }
+  } } });
+  const responses = await Promise.all([
+    f.request('/setup-api/start', { method: 'POST', body: {} }),
+    f.request('/setup-api/start', { method: 'POST', body: {} }),
+  ]);
+  assert.deepEqual(responses.map((response) => response.status).sort(), [200, 202]);
+  const results = await Promise.all(responses.map((response) => response.json()));
+  assert.equal(results[0].job.id, results[1].job.id);
+  assert.equal(f.app.store.snapshot().events.filter((event) => event.type === 'job_started').length, 1);
+  await atStage;
+  release();
+  await f.app.controller.waitForIdle();
+  assert.equal(f.app.controller.status().job.state, 'completed');
+});
+
+test('browser disconnect, reconnect, replay and multiple clients do not own the job', async () => {
+  let entered;
+  const atStage = new Promise((resolve) => { entered = resolve; });
+  let release;
+  const hold = new Promise((resolve) => { release = resolve; });
+  const f = await fixture({ simulated: { stepDelayMs: 0, stageGate: async (stage) => {
+    if (stage === 'bootstrap_runtime') { entered(); await hold; }
+  } } });
+  const first = await openEvents(f.base, f.cookie, { origin: f.origin });
+  const firstSnapshot = await first.nextEvent();
+  assert.equal(firstSnapshot.event, 'snapshot');
+  const second = await openEvents(f.base, f.cookie, { origin: f.origin });
+  assert.equal((await second.nextEvent()).event, 'snapshot');
+  await f.request('/setup-api/start', { method: 'POST', body: {} });
+  await atStage;
+  first.close();
+  const reconnect = await openEvents(f.base, f.cookie, {
+    origin: f.origin, lastEventId: firstSnapshot.id,
+  });
+  const events = [];
+  for (let i = 0; i < 20; i += 1) {
+    const event = await reconnect.nextEvent();
+    events.push(event);
+    if (event.event === 'snapshot') break;
+  }
+  const latestSnapshot = events.at(-1);
+  assert.equal(latestSnapshot.event, 'snapshot');
+  assert.equal(latestSnapshot.data.job.state, 'running');
+  assert.ok(events.some((event) => event.event === 'stage_started'));
+  release();
+  const completedOnSecond = await readUntilEvent(second,
+    (event) => event.data?.job?.state === 'completed');
+  assert.equal(completedOnSecond.event, 'job_completed');
+  await f.app.controller.waitForIdle();
+  second.close();
+  reconnect.close();
+});
+
+test('simulated stage failure is durable and explicit retry completes without readiness claim', async () => {
+  let failOnce = true;
+  const f = await fixture({ simulated: { stepDelayMs: 0,
+    failureInjector: (stage, attempt) => {
+      if (stage === 'install_dependencies' && attempt === 1 && failOnce) {
+        failOnce = false;
+        return true;
+      }
+      return false;
+    } } });
+  await f.request('/setup-api/start', { method: 'POST', body: {} });
+  await f.app.controller.waitForIdle();
+  let status = await f.request('/setup-api/status').then((response) => response.json());
+  assert.equal(status.job.state, 'failed');
+  assert.equal(status.job.error.code, 'SIMULATED_STAGE_FAILURE');
+  assert.equal(status.production_ready, false);
+  const retry = await f.request('/setup-api/retry', { method: 'POST', body: {} });
+  assert.equal(retry.status, 202);
+  await f.app.controller.waitForIdle();
+  status = await f.request('/setup-api/status').then((response) => response.json());
+  assert.equal(status.job.state, 'completed');
+  assert.equal(status.job.attempt_count, 2);
+  assert.equal(status.production_ready, false);
+  assert.equal(status.simulated, true);
+});
+
+test('cancellation is persistent, observable, idempotent, and prevents duplicate work', async () => {
+  let entered;
+  const atStage = new Promise((resolve) => { entered = resolve; });
+  const f = await fixture({ simulated: { stepDelayMs: 0, stageGate: async (stage) => {
+    if (stage === 'inspect_system') { entered(); await new Promise(() => {}); }
+  } } });
+  await f.request('/setup-api/start', { method: 'POST', body: {} });
+  await atStage;
+  const cancelled = await f.request('/setup-api/cancel', { method: 'POST', body: {} });
+  assert.equal(cancelled.status, 202);
+  assert.equal((await cancelled.json()).job.state, 'cancelled');
+  const again = await f.request('/setup-api/cancel', { method: 'POST', body: {} });
+  assert.equal(again.status, 200);
+  assert.equal((await again.json()).idempotent, true);
+  await f.app.controller.waitForIdle();
+  const status = await f.request('/setup-api/status').then((response) => response.json());
+  assert.equal(status.job.state, 'cancelled');
+  assert.equal(f.app.store.snapshot().events.filter((event) => event.type === 'job_started').length, 1);
+});
+
+test('graceful controller shutdown persists cancellation and releases ownership', async () => {
+  let entered;
+  const atStage = new Promise((resolve) => { entered = resolve; });
+  const f = await fixture({ simulated: { stepDelayMs: 0, stageGate: async (stage) => {
+    if (stage === 'inspect_system') { entered(); await new Promise(() => {}); }
+  } } });
+  await f.request('/setup-api/start', { method: 'POST', body: {} });
+  await atStage;
+  await f.app.close();
+  assert.equal(f.app.store.snapshot().job.state, 'cancelled');
+  assert.equal(f.app.store.snapshot().job.error.code, 'CONTROLLER_SHUTDOWN');
+  const reopened = StateStore.open(f.directory);
+  assert.equal(reopened.snapshot().job.state, 'cancelled');
+  reopened.releaseOwnership();
+});
+
+test('CSRF, origin, host, methods, query credentials, and caller execution fields are rejected', async () => {
+  const f = await fixture();
+  assert.equal((await f.request('/setup-api/start', { method: 'POST', body: {}, csrf: 'bad' })).status, 403);
+  assert.equal((await f.request('/setup-api/start', { method: 'POST', body: {}, originValue: 'http://evil.invalid' })).status, 403);
+  assert.equal((await f.request('/setup-api/status?token=secret')).status, 400);
+  const badHost = await new Promise((resolve, reject) => {
+    const request = http.request({ hostname: '127.0.0.1', port: f.app.port,
+      path: '/setup-api/status', headers: { host: 'evil.invalid', cookie: f.cookie } }, (response) => resolve(response));
+    request.once('error', reject);
+    request.end();
+  });
+  assert.equal(badHost.statusCode, 400);
+  assert.equal((await f.request('/setup-api/start', { method: 'PUT' })).status, 405);
+  assert.equal((await f.request('/setup-api/start', { method: 'POST', body: '{' })).status, 400);
+  const tooLarge = await f.request('/setup-api/start', {
+    method: 'POST', body: JSON.stringify({ value: 'x'.repeat(17 * 1024) }),
+  });
+  assert.equal(tooLarge.status, 413);
+  const injected = await f.request('/setup-api/start', {
+    method: 'POST', body: { command: 'touch /tmp/should-not-exist', path: '/tmp' },
+  });
+  assert.equal(injected.status, 400);
+  assert.equal(f.app.store.snapshot().job, null);
+  assert.equal(injected.headers.get('access-control-allow-origin'), null);
+});
+
+test('secure cookie mode is explicit for a trusted HTTPS reverse proxy', async () => {
+  const f = await fixture({ secureCookies: true });
+  assert.match(f.setCookie, /; Secure/);
+});
+
+test('SSE older than retained history receives only an authoritative current snapshot', async () => {
+  const f = await fixture();
+  for (let index = 0; index < 270; index += 1) {
+    f.app.store.commit(() => {}, 'fixture_progress');
+  }
+  const stream = await openEvents(f.base, f.cookie, { origin: f.origin, lastEventId: 0 });
+  const snapshot = await stream.nextEvent();
+  assert.equal(snapshot.event, 'snapshot');
+  assert.equal(snapshot.id, f.app.store.snapshot().revision);
+  assert.equal(snapshot.data.state_revision, snapshot.id);
+  assert.equal(snapshot.data.production_ready, false);
+  stream.close();
+});
+
+test('corrupt persistent state is rejected without silently replacing the file', async () => {
+  const f = await fixture();
+  await f.request('/setup-api/start', { method: 'POST', body: {} });
+  await f.app.controller.waitForIdle();
+  await f.app.close();
+  active.delete(f);
+  const stateFile = `${f.directory}/state.json`;
+  fs.writeFileSync(stateFile, '{invalid', { mode: 0o600 });
+  assert.throws(() => StateStore.open(f.directory), (error) =>
+    error instanceof StateStoreError && error.code === 'STATE_CORRUPT');
+  assert.equal(fs.readFileSync(stateFile, 'utf8'), '{invalid');
+  fs.writeFileSync(stateFile, JSON.stringify({ schema_version: 99, revision: 0, job: null, events: [] }), { mode: 0o600 });
+  assert.throws(() => StateStore.open(f.directory), (error) =>
+    error instanceof StateStoreError && error.code === 'STATE_INVALID');
+});
