@@ -13,6 +13,7 @@ import {
   mappingFromState,
   moveCursor,
   panView,
+  playbackStartSample,
   preserveViewAfterDurationChange,
   resizeGrabbedEndpoint,
   rippleDelete,
@@ -238,6 +239,7 @@ describe("delete", () => {
     const suffix = rippleDelete(dragSelect(createTimelineState(n, 16000), 15, 20));
     expect(suffix.ok && suffix.state.durationSamples).toBe(n - 5);
     expect(suffix.ok && suffix.state.cursorSample).toBe(15);
+    expect(suffix.ok && playbackStartSample(suffix.state)).toBe(0);
 
     const one = rippleDelete(dragSelect(createTimelineState(n, 16000), 3, 4));
     expect(one.ok && one.state.durationSamples).toBe(n - 1);

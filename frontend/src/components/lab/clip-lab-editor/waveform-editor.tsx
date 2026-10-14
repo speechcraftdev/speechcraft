@@ -22,6 +22,7 @@ import {
   mappingFromState,
   moveCursor,
   panView,
+  playbackStartSample,
   resizeGrabbedEndpoint,
   rippleDelete,
   sampleFromX,
@@ -359,7 +360,12 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
         void playRange(selectionStart(state.selection), selectionEnd(state.selection));
         return;
       }
-      void playRange(state.cursorSample, state.durationSamples);
+      const startSample = playbackStartSample(state);
+      if (startSample !== state.cursorSample) {
+        stateRef.current = { ...state, cursorSample: startSample };
+        paintOverlay();
+      }
+      void playRange(startSample, state.durationSamples);
     };
 
     const playFromStart = () => {

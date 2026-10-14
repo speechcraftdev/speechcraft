@@ -124,6 +124,12 @@ export function clampSampleToClip(sample: number, durationSamples: number): numb
   return clampInt(Math.round(sample), 0, durationSamples);
 }
 
+export function playbackStartSample(state: TimelineState): number {
+  return state.durationSamples > 0 && state.cursorSample >= state.durationSamples
+    ? 0
+    : clampSampleToClip(state.cursorSample, state.durationSamples);
+}
+
 export function selectionFromAnchorFocus(
   anchorSample: number,
   focusSample: number,
