@@ -129,10 +129,13 @@ A crash before publication leaves no final installation; a crash after publicati
 leaves bytes that the next call verifies before reuse. Abandoned payloads are
 removed on the next install under the stage lock; recoverable partials remain
 within the seven-day retention window. Invalid same-version trees
-are retained in quarantine before replacement. Abandoned staging data expires
-after seven days; quarantines have no automatic expiry and need explicit future
-cleanup. The capacity check accounts for new copies, so repeated failed attempts
-can eventually report insufficient space rather than deleting data. Do not edit
+are retained in quarantine before replacement for diagnosis. Current-user-owned
+quarantine directories older than 30 days are removed under their artifact lock;
+recent quarantines, unsafe entries, and quarantines whose lock is active are
+left untouched. This cleanup only walks exact manager-generated quarantine names
+under the model directory, and it never considers published version directories.
+The capacity check accounts for new copies, so repeated failed attempts can
+eventually report insufficient space rather than deleting data. Do not edit
 installed trees in place.
 
 ## Tests

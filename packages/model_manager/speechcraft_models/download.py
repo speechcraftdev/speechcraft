@@ -22,6 +22,7 @@ CHUNK = 64 * 1024
 CHECKPOINT_BYTES = 4 * 1024 * 1024
 CHECKPOINT_SECONDS = 5.0
 STAGE_RETENTION_SECONDS = 7 * 24 * 60 * 60
+QUARANTINE_RETENTION_SECONDS = 30 * 24 * 60 * 60
 RESERVE = 1024 * 1024
 
 
@@ -266,13 +267,45 @@ class _Installer:
                         self._clean_stage_payloads(stage)
                     finally:
                         os.close(stage)
-                    # Partial files are left intact as resume candidates and
-                    # validated before reuse. All inactive attempts expire after
-                    # a week so abandoned artifact revisions cannot accumulate.
+                    # Partial files are retained as resume candidates and
+                    # validated before use. Inactive attempts expire after a week.
                     if now - info.st_mtime >= STAGE_RETENTION_SECONDS:
                         _remove_tree(model, name)
             except (OSError, InstallError):
-                # An unexpected entry or concurrent filesystem change is retained.
+                # Unexpected entries and concurrent filesystem changes are retained.
+                continue
+
+    def _cleanup_quarantines(self, model, artifact_key):
+        """Expire old quarantine trees only while holding their artifact lock."""
+        now = time.time()
+        for name in os.listdir(model):
+            match = re.fullmatch(r'\.quarantine-([a-f0-9]{64})-([a-f0-9]{32})', name)
+            if not match:
+                continue
+            key = match.group(1)
+            if key == artifact_key:
+                # The caller owns this artifact lock, so stale diagnostic trees
+                # for this artifact are also safe to expire.
+                try:
+                    info = os.stat(name, dir_fd=model, follow_symlinks=False)
+                    if (stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+                            and not info.st_mode & 0o077
+                            and now - info.st_mtime >= QUARANTINE_RETENTION_SECONDS):
+                        _remove_tree(model, name)
+                except OSError:
+                    pass
+                continue
+            try:
+                info = os.stat(name, dir_fd=model, follow_symlinks=False)
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                        or info.st_mode & 0o077
+                        or now - info.st_mtime < QUARANTINE_RETENTION_SECONDS):
+                    continue
+                with self._try_lock(model, key) as inactive:
+                    if inactive:
+                        _remove_tree(model, name)
+            except (OSError, InstallError):
+                # Unsafe entries and concurrent filesystem changes are retained.
                 continue
 
     def install(self, role, platform):
@@ -288,6 +321,7 @@ class _Installer:
         path = self.root / model_id / key
         with self.store(model_id, True) as (root, model), self.lock(model, key):
             self._cleanup_stages(model, key)
+            self._cleanup_quarantines(model, key)
             stage_name = '.stage-' + key
             try:
                 stage = _directory(model, stage_name)
@@ -412,9 +446,15 @@ class _Installer:
             etag = state.get('etag')
             # Reconstruct the incremental digest in one sequential pass. Resume
             # only when durable metadata exactly accounts for every existing byte.
-            resumable = (0 < size <= file['size_bytes'] and state.get('size') == size
-                         and state.get('url') == file['url'] and _strong_etag(etag)
-                         and re.fullmatch(r'[0-9a-f]{64}', state.get('sha256', '')))
+            checkpoint_hash = state.get('sha256')
+            checkpoint_size = state.get('size')
+            checkpoint_url = state.get('url')
+            resumable = (0 < size <= file['size_bytes']
+                         and type(checkpoint_size) is int and checkpoint_size == size
+                         and isinstance(checkpoint_url, str) and checkpoint_url == file['url']
+                         and _strong_etag(etag)
+                         and isinstance(checkpoint_hash, str)
+                         and re.fullmatch(r'[0-9a-f]{64}', checkpoint_hash) is not None)
             hasher = _sha256()
             if resumable:
                 os.lseek(fd, 0, os.SEEK_SET)
@@ -423,7 +463,7 @@ class _Installer:
                     if not chunk:
                         break
                     hasher.update(chunk)
-                if hasher.hexdigest() != state['sha256']:
+                if hasher.hexdigest() != checkpoint_hash:
                     resumable = False
                 elif size == file['size_bytes']:
                     if hasher.hexdigest() == file['sha256']:

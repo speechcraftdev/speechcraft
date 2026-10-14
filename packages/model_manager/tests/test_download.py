@@ -280,6 +280,70 @@ class DownloadTests(unittest.TestCase):
         self.assertTrue(self.install()['install_ready'])
         self.assertTrue(list(self.final().parent.glob('.quarantine-*')))
 
+    def test_malformed_checkpoint_fields_restart_without_range(self):
+        valid = {'url': self.artifact['required_files'][0]['url'], 'etag': '"fixture-v1"',
+                 'size': 1000, 'sha256': hashlib.sha256(DATA[:1000]).hexdigest()}
+        cases = []
+        for field, values in {
+            'sha256': [None, 5, [], 'bad'],
+            'size': [None, True, [], 1001],
+            'etag': [None, 5, [], 'W/"weak"'],
+            'url': [None, 5, []],
+        }.items():
+            for value in values:
+                state = dict(valid)
+                state[field] = value
+                cases.append((f'{field}={value!r}', json.dumps(state)))
+        missing = dict(valid)
+        del missing['sha256']
+        cases.extend((('missing hash', json.dumps(missing)), ('malformed json', '{'),
+                      ('oversized', 'x' * 17000)))
+        for index, (label, encoded) in enumerate(cases):
+            with self.subTest(checkpoint=label):
+                self.root = Path(self.temp.name) / f'case-{index}'
+                self.installer = self.new_installer()
+                stage = self.stage()
+                stage.mkdir(parents=True, mode=0o700)
+                (stage / '0.part').write_bytes(DATA[:1000])
+                (stage / '0.resume.json').write_text(encoded)
+                self.server.requests.clear()
+                self.server.modes = ['ok']
+                self.assertTrue(self.install()['install_ready'])
+                self.assertIsNone(self.server.requests[0][1])
+
+    def test_quarantine_cleanup_is_bounded_safe_and_lock_aware(self):
+        self.assertTrue(self.install()['install_ready'])
+        self.assertEqual(self.installer.check('speech_detection', 'linux-x86_64')['status'], 'verified')
+        model_id, current_key, _ = self.installer.resolve('speech_detection', 'linux-x86_64')
+        model_path = self.root / model_id
+        stale_key, active_key, recent_key = 'a' * 64, 'b' * 64, 'c' * 64
+        old_name = f'.quarantine-{stale_key}-' + '1' * 32
+        active_name = f'.quarantine-{active_key}-' + '2' * 32
+        recent_name = f'.quarantine-{recent_key}-' + '3' * 32
+        for name in (old_name, active_name, recent_name):
+            (model_path / name).mkdir(mode=0o700)
+        old_time = time.time() - 31 * 86400
+        os.utime(model_path / old_name, (old_time, old_time))
+        os.utime(model_path / active_name, (old_time, old_time))
+        outside = Path(self.temp.name) / 'outside-quarantine'
+        outside.mkdir()
+        unsafe = model_path / (f'.quarantine-{"d" * 64}-' + '4' * 32)
+        unsafe.symlink_to(outside, target_is_directory=True)
+        model_fd = os.open(model_path, os.O_RDONLY | os.O_DIRECTORY)
+        lock_fd = os.open('.lock-' + active_key, os.O_CREAT | os.O_RDWR, 0o600, dir_fd=model_fd)
+        import fcntl
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            self.installer._cleanup_quarantines(model_fd, current_key)
+            self.assertFalse((model_path / old_name).exists())
+            self.assertTrue((model_path / active_name).exists())
+            self.assertTrue((model_path / recent_name).exists())
+            self.assertTrue(unsafe.is_symlink())
+            self.assertTrue(self.installer.check('speech_detection', 'linux-x86_64')['install_ready'])
+        finally:
+            os.close(lock_fd)
+            os.close(model_fd)
+
     def test_invalid_file_paths_and_symlink_escapes(self):
         for path in ('../outside', '/outside', 'a/../../b', 'a\\b'):
             self.artifact['required_files'][0]['path'] = path
