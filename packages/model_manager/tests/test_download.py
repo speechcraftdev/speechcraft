@@ -6,6 +6,7 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import math
 import socket
 import tempfile
 import threading
@@ -41,6 +42,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         data = CONFIG if self.path == '/config' else DATA
+        data = server.payloads.get(self.path, data)
         start = int(range_header.split('=')[1].split('-')[0]) if range_header else 0
         resume = bool(range_header) and mode != 'ignore_range'
         if not resume:
@@ -76,6 +78,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def process_install(root, catalog, queue, crash=False):
+    if crash:
+        from speechcraft_models import download
+        download.CHECKPOINT_BYTES = 512
     def progress(event):
         if crash and event['event'] == 'progress':
             os._exit(37)
@@ -94,6 +99,7 @@ class DownloadTests(unittest.TestCase):
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.server.modes = []
         self.server.requests = []
+        self.server.payloads = {}
         self.server.base = f'http://127.0.0.1:{self.server.server_port}'
         thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         thread.start()
@@ -139,12 +145,14 @@ class DownloadTests(unittest.TestCase):
 
     def test_interruption_resumes_with_strong_validator(self):
         self.server.modes = ['drop', 'ok']
-        self.assertTrue(self.install()['install_ready'])
+        with patch('speechcraft_models.download.CHECKPOINT_BYTES', 512):
+            self.assertTrue(self.install()['install_ready'])
         self.assertEqual(self.server.requests[1][1:], ('bytes=1000-', '"fixture-v1"'))
 
     def test_server_ignoring_range_restarts(self):
         self.server.modes = ['drop', 'ignore_range']
-        self.assertTrue(self.install()['install_ready'])
+        with patch('speechcraft_models.download.CHECKPOINT_BYTES', 512):
+            self.assertTrue(self.install()['install_ready'])
         self.assertEqual((self.final() / 'nested/model.onnx').read_bytes(), DATA)
 
     def test_invalid_ranges_restart_without_appending(self):
@@ -154,7 +162,8 @@ class DownloadTests(unittest.TestCase):
                 self.installer = self.new_installer()
                 self.server.requests.clear()
                 self.server.modes = ['drop', mode, 'ok']
-                self.assertTrue(self.install()['install_ready'])
+                with patch('speechcraft_models.download.CHECKPOINT_BYTES', 512):
+                    self.assertTrue(self.install()['install_ready'])
                 self.assertIsNone(self.server.requests[2][1])
 
     def test_no_validator_restarts_file(self):
@@ -183,8 +192,9 @@ class DownloadTests(unittest.TestCase):
 
     def test_corrupt_partial_is_not_resumed_by_size(self):
         self.server.modes = ['drop']
-        with self.assertRaises(InstallError):
-            self.new_installer(attempts=1).install('speech_detection', 'linux-x86_64')
+        with patch('speechcraft_models.download.CHECKPOINT_BYTES', 512):
+            with self.assertRaises(InstallError):
+                self.new_installer(attempts=1).install('speech_detection', 'linux-x86_64')
         partial = self.stage() / '0.part'
         self.assertEqual(partial.stat().st_size, 1000)
         partial.write_bytes(b'x' * 1000)
@@ -369,7 +379,106 @@ class DownloadTests(unittest.TestCase):
         (stage / 'payload-abandoned/unknown').write_bytes(b'stale')
         self.install()
         self.assertFalse((self.final() / 'unknown').exists())
-        self.assertTrue((stage / 'payload-abandoned/unknown').exists())
+        self.assertFalse(stage.exists())
+
+    def test_large_transfer_hashes_linearly_and_checkpoints_by_interval(self):
+        data = bytes(range(256)) * (64 * 1024)
+        self.server.payloads['/model'] = data
+        self.artifact['required_files'][0].update(size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+        class CountHash:
+            def __init__(self):
+                self.inner = hashlib.sha256()
+            def update(self, chunk):
+                counters['hashed'] += len(chunk)
+                self.inner.update(chunk)
+            def hexdigest(self):
+                return self.inner.hexdigest()
+            def copy(self):
+                other = CountHash()
+                other.inner = self.inner.copy()
+                return other
+        counters = {'hashed': 0, 'checkpoints': 0}
+        from speechcraft_models import download
+        real_checkpoint, real_fsync = download._checkpoint, os.fsync
+        def checkpoint(*args, **kwargs):
+            counters['checkpoints'] += 1
+            return real_checkpoint(*args, **kwargs)
+        with patch('speechcraft_models.download._sha256', CountHash), \
+             patch('speechcraft_models.download._checkpoint', side_effect=checkpoint), \
+             patch('speechcraft_models.download.os.fsync', wraps=real_fsync) as sync:
+            result = self.install()
+        chunks = math.ceil((len(data) + len(CONFIG)) / 65536)
+        self.assertTrue(result['install_ready'])
+        self.assertLessEqual(counters['hashed'], len(data) + len(CONFIG))
+        self.assertLessEqual(counters['checkpoints'], math.ceil(len(data) / (4 * 1024 * 1024)) + 2)
+        self.assertLess(sync.call_count, chunks // 8)
+
+    def test_cleanup_preserves_recoverable_partials_and_expires_stale_stages(self):
+        old_model, old_key, _ = self.installer.resolve('speech_detection', 'linux-x86_64')
+        recoverable = self.root / old_model / ('.stage-' + old_key)
+        recoverable.mkdir(parents=True, mode=0o700)
+        state_data = DATA[:1000]
+        (recoverable / '0.part').write_bytes(state_data)
+        (recoverable / '0.resume.json').write_text(json.dumps({
+            'url': self.artifact['required_files'][0]['url'], 'etag': '"fixture-v1"',
+            'size': 1000, 'sha256': hashlib.sha256(state_data).hexdigest()}))
+        stale = self.root / old_model / ('.stage-' + 'a' * 64)
+        stale.mkdir(mode=0o700)
+        os.utime(stale, (time.time() - 8 * 86400, time.time() - 8 * 86400))
+        # A second platform artifact triggers per-model cleanup while the old
+        # artifact remains in the trusted catalog for partial-state validation.
+        new_artifact = copy.deepcopy(self.artifact)
+        new_artifact.update(platform='macos-arm64', revision='c' * 40)
+        new_artifact.pop('supported_platforms')
+        self.model['artifacts'].append(new_artifact)
+        self.installer = self.new_installer()
+        self.assertTrue(self.installer.install('speech_detection', 'macos-arm64')['install_ready'])
+        self.assertTrue(recoverable.exists())
+        self.assertFalse(stale.exists())
+        self.assertTrue((recoverable / '0.part').exists())
+
+    def test_cleanup_respects_active_other_artifact_lock(self):
+        self.install()
+        model_id, key, _ = self.installer.resolve('speech_detection', 'linux-x86_64')
+        other = 'd' * 64
+        stage = self.root / model_id / ('.stage-' + other)
+        stage.mkdir(mode=0o700)
+        (stage / 'payload-old').mkdir()
+        model_fd = os.open(self.root / model_id, os.O_RDONLY | os.O_DIRECTORY)
+        lock_fd = os.open('.lock-' + other, os.O_CREAT | os.O_RDWR, 0o600, dir_fd=model_fd)
+        import fcntl
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            self.installer._cleanup_stages(model_fd, key)
+            self.assertTrue((stage / 'payload-old').exists())
+        finally:
+            os.close(lock_fd)
+            os.close(model_fd)
+        model_fd = os.open(self.root / model_id, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            self.installer._cleanup_stages(model_fd, key)
+        finally:
+            os.close(model_fd)
+        self.assertFalse((stage / 'payload-old').exists())
+
+    def test_cleanup_unlinks_symlink_without_touching_target(self):
+        outside = Path(self.temp.name) / 'outside'
+        outside.mkdir()
+        target = outside / 'keep'
+        target.write_text('safe')
+        model_id, key, _ = self.installer.resolve('speech_detection', 'linux-x86_64')
+        (self.root / model_id).mkdir(parents=True, mode=0o700)
+        stage = self.root / model_id / ('.stage-' + 'e' * 64)
+        stage.mkdir(mode=0o700)
+        (stage / 'payload-old').mkdir(mode=0o700)
+        (stage / 'payload-old/escape').symlink_to(outside, target_is_directory=True)
+        old = time.time() - 8 * 86400
+        os.utime(stage, (old, old))
+        model_fd = os.open(self.root / model_id, os.O_RDONLY | os.O_DIRECTORY)
+        self.installer._cleanup_stages(model_fd, key)
+        os.close(model_fd)
+        self.assertEqual(target.read_text(), 'safe')
+        self.assertFalse((stage / 'payload-old').exists())
 
 
 if __name__ == '__main__':

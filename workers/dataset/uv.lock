@@ -2398,7 +2398,7 @@ dependencies = [
     { name = "scipy" },
     { name = "silero-vad" },
     { name = "soundfile" },
-    { name = "speechcraft-models" },
+    { name = "speechcraft-model-manager" },
     { name = "torch" },
     { name = "torchaudio" },
     { name = "transformers" },
@@ -2420,14 +2420,14 @@ requires-dist = [
     { name = "scipy", specifier = "==1.17.1" },
     { name = "silero-vad", specifier = "==6.2.1" },
     { name = "soundfile", specifier = "==0.13.1" },
-    { name = "speechcraft-models", directory = "../../packages/model_manager" },
+    { name = "speechcraft-model-manager", directory = "../../packages/model_manager" },
     { name = "torch", specifier = "==2.11.0+cu128", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchaudio", specifier = "==2.11.0+cu128", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", specifier = "==4.57.6" },
 ]
 
 [[package]]
-name = "speechcraft-models"
+name = "speechcraft-model-manager"
 version = "0.1.0"
 source = { directory = "../../packages/model_manager" }
 

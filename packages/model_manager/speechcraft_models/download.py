@@ -19,6 +19,9 @@ import uuid
 from .manifest import ManifestError, load_catalog, select_artifact, verify_directory_fd
 
 CHUNK = 64 * 1024
+CHECKPOINT_BYTES = 4 * 1024 * 1024
+CHECKPOINT_SECONDS = 5.0
+STAGE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 RESERVE = 1024 * 1024
 
 
@@ -56,6 +59,10 @@ def _digest(fd: int) -> str:
     return h.hexdigest()
 
 
+def _sha256():
+    return hashlib.sha256()
+
+
 def _write(fd: int, data: bytes) -> None:
     view = memoryview(data)
     while view:
@@ -76,6 +83,27 @@ def _checkpoint(directory: int, name: str, state: dict) -> None:
         os.close(fd)
     os.replace(temp, name, src_dir_fd=directory, dst_dir_fd=directory)
     os.fsync(directory)
+
+
+def _remove_tree(parent: int, name: str) -> None:
+    """Remove one generated entry without following symlinks or leaving its parent."""
+    info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if not stat.S_ISDIR(info.st_mode):
+        os.unlink(name, dir_fd=parent)
+        return
+    child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    try:
+        for entry in os.listdir(child):
+            _remove_tree(child, entry)
+        os.fsync(child)
+    finally:
+        os.close(child)
+    os.rmdir(name, dir_fd=parent)
+    os.fsync(parent)
+
+
+def _strong_etag(value) -> bool:
+    return isinstance(value, str) and re.fullmatch(r'"[^"\r\n]+"', value) is not None
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -181,6 +209,72 @@ class _Installer:
             # Never unlink lock files: replacing their inode would split the lock.
             os.close(fd)
 
+    @contextmanager
+    def _try_lock(self, model, key):
+        """Yield whether another process is inactive; never wait during cleanup."""
+        try:
+            fd = _file(model, '.lock-' + key, os.O_RDWR | os.O_CREAT)
+        except OSError:
+            yield False
+            return
+        acquired = False
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except BlockingIOError:
+                pass
+            yield acquired
+        finally:
+            os.close(fd)
+
+    def _clean_stage_payloads(self, stage):
+        for name in os.listdir(stage):
+            if name.startswith('payload-') or name.startswith('.checkpoint-'):
+                _remove_tree(stage, name)
+
+    def _cleanup_stages(self, model, artifact_key):
+        """Clean only owned stage entries, respecting each artifact's live lock."""
+        now = time.time()
+        for name in os.listdir(model):
+            match = re.fullmatch(r'\.stage-([a-f0-9]{64})', name)
+            if not match:
+                continue
+            key = match.group(1)
+            if key == artifact_key:
+                # The caller owns this key's lock. An expired same-key attempt
+                # is no longer eligible for resume and can be removed safely.
+                try:
+                    info = os.stat(name, dir_fd=model, follow_symlinks=False)
+                    if (stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+                            and not info.st_mode & 0o077
+                            and now - info.st_mtime >= STAGE_RETENTION_SECONDS):
+                        _remove_tree(model, name)
+                except OSError:
+                    pass
+                continue
+            try:
+                info = os.stat(name, dir_fd=model, follow_symlinks=False)
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                        or info.st_mode & 0o077):
+                    continue
+                with self._try_lock(model, key) as inactive:
+                    if not inactive:
+                        continue
+                    stage = _directory(model, name)
+                    try:
+                        self._clean_stage_payloads(stage)
+                    finally:
+                        os.close(stage)
+                    # Partial files are left intact as resume candidates and
+                    # validated before reuse. All inactive attempts expire after
+                    # a week so abandoned artifact revisions cannot accumulate.
+                    if now - info.st_mtime >= STAGE_RETENTION_SECONDS:
+                        _remove_tree(model, name)
+            except (OSError, InstallError):
+                # An unexpected entry or concurrent filesystem change is retained.
+                continue
+
     def install(self, role, platform):
         self.emit('resolving', role=role, platform=platform)
         try:
@@ -193,6 +287,17 @@ class _Installer:
         model_id, key, artifact = self.resolve(role, platform)
         path = self.root / model_id / key
         with self.store(model_id, True) as (root, model), self.lock(model, key):
+            self._cleanup_stages(model, key)
+            stage_name = '.stage-' + key
+            try:
+                stage = _directory(model, stage_name)
+            except FileNotFoundError:
+                stage = None
+            if stage is not None:
+                try:
+                    self._clean_stage_payloads(stage)
+                finally:
+                    os.close(stage)
             final = None
             try:
                 final = _directory(model, key)
@@ -204,6 +309,10 @@ class _Installer:
                 finally:
                     os.close(final)
                 if report['install_ready']:
+                    try:
+                        _remove_tree(model, stage_name)
+                    except FileNotFoundError:
+                        pass
                     self.emit('reused', root=str(path))
                     return {**report, 'reused': True}
                 if report['status'] == 'error':
@@ -216,9 +325,9 @@ class _Installer:
             self.emit('capacity', required_bytes=required, available_bytes=free)
             if free < required:
                 raise InstallError(f'insufficient disk space: need {required}, available {free}')
-            stage_name = '.stage-' + key
             stage = _directory(model, stage_name, True)
             payload = None
+            published = False
             try:
                 payload_name = 'payload-' + uuid.uuid4().hex
                 os.mkdir(payload_name, mode=0o700, dir_fd=stage)
@@ -244,14 +353,18 @@ class _Installer:
                     os.fsync(model)
                 os.rename(payload_name, key, src_dir_fd=stage, dst_dir_fd=model)
                 os.fsync(model)
-                # Leftover staging/checkpoint files are harmless and may be reclaimed
-                # by a later explicit garbage collector; no recursive cleanup here.
+                published = True
                 self.emit('installed', root=str(path), runtime_ready=None)
                 return {**report, 'reused': False}
             finally:
                 if payload is not None:
                     os.close(payload)
                 os.close(stage)
+                if published:
+                    try:
+                        _remove_tree(model, stage_name)
+                    except OSError as exc:
+                        self.emit('cleanup_deferred', path=stage_name, error=str(exc))
 
     def materialize(self, stage, payload, index, file):
         """Copy only manifest-listed, verified transfer files into the final tree."""
@@ -283,31 +396,51 @@ class _Installer:
         fd = _file(stage, f'{index}.part', os.O_RDWR | os.O_CREAT)
         state_name = f'{index}.resume.json'
         try:
-            for attempt in range(1, self.attempts + 1):
-                # Full-sized bytes still need a full digest, including after a crash.
-                size = os.fstat(fd).st_size
-                digest = _digest(fd)
-                if size == file['size_bytes'] and digest == file['sha256']:
-                    self.emit('file_verified', path=file['path'], reused=True)
-                    return
-                state = {}
+            size = os.fstat(fd).st_size
+            state = {}
+            try:
+                state_fd = _file(stage, state_name, os.O_RDONLY)
                 try:
-                    state_fd = _file(stage, state_name, os.O_RDONLY)
-                    try:
-                        state = json.loads(os.read(state_fd, 16384))
-                    finally:
-                        os.close(state_fd)
-                except (FileNotFoundError, ValueError):
-                    pass
-                if not isinstance(state, dict):
-                    state = {}
-                etag = state.get('etag')
-                resumable = (0 < size < file['size_bytes'] and state.get('size') == size
-                             and state.get('sha256') == digest and state.get('url') == file['url']
-                             and isinstance(etag, str) and re.fullmatch(r'"[^"\r\n]+"', etag))
-                if not resumable:
-                    size = 0
-                    os.ftruncate(fd, 0)
+                    if os.fstat(state_fd).st_size <= 16 * 1024:
+                        state = json.loads(os.read(state_fd, 16 * 1024))
+                finally:
+                    os.close(state_fd)
+            except (FileNotFoundError, ValueError):
+                pass
+            if not isinstance(state, dict):
+                state = {}
+            etag = state.get('etag')
+            # Reconstruct the incremental digest in one sequential pass. Resume
+            # only when durable metadata exactly accounts for every existing byte.
+            resumable = (0 < size <= file['size_bytes'] and state.get('size') == size
+                         and state.get('url') == file['url'] and _strong_etag(etag)
+                         and re.fullmatch(r'[0-9a-f]{64}', state.get('sha256', '')))
+            hasher = _sha256()
+            if resumable:
+                os.lseek(fd, 0, os.SEEK_SET)
+                while True:
+                    chunk = os.read(fd, CHUNK)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                if hasher.hexdigest() != state['sha256']:
+                    resumable = False
+                elif size == file['size_bytes']:
+                    if hasher.hexdigest() == file['sha256']:
+                        os.fsync(fd)
+                        self.emit('file_verified', path=file['path'], reused=True)
+                        return
+                    resumable = False
+            if not resumable:
+                size = 0
+                etag = None
+                os.ftruncate(fd, 0)
+                hasher = _sha256()
+            durable_size = size
+            durable_etag = etag if resumable else None
+            durable_hasher = hasher.copy()
+            last_checkpoint = time.monotonic()
+            for attempt in range(1, self.attempts + 1):
                 headers = {'Accept-Encoding': 'identity', 'User-Agent': 'SpeechCraft-models/0.1'}
                 if size:
                     headers.update(Range=f'bytes={size}-', **{'If-Range': etag})
@@ -319,19 +452,30 @@ class _Installer:
                         if code == 200:
                             size = 0
                             os.ftruncate(fd, 0)
+                            hasher = _sha256()
+                            durable_size = 0
+                            durable_hasher = hasher.copy()
+                            durable_etag = None
                         elif code == 206 and size:
                             expected = f"bytes {size}-{file['size_bytes'] - 1}/{file['size_bytes']}"
-                            if response.headers.get('Content-Range') != expected or response.headers.get('ETag') != etag:
+                            if (response.headers.get('Content-Range') != expected
+                                    or not _strong_etag(etag)
+                                    or response.headers.get('ETag') != etag):
                                 os.ftruncate(fd, 0)
+                                size = durable_size = 0
+                                hasher = durable_hasher = _sha256()
+                                etag = durable_etag = None
                                 raise _Retryable('invalid response range or validator; restarting file')
                         else:
                             os.ftruncate(fd, 0)
+                            size = durable_size = 0
+                            hasher = durable_hasher = _sha256()
+                            etag = durable_etag = None
                             raise _Retryable(f'unexpected response status {code}')
                         if response.headers.get('Content-Encoding', 'identity') != 'identity':
                             raise InstallError('encoded transfer refused')
                         length = response.headers.get('Content-Length')
                         if length is not None and length != str(file['size_bytes'] - size):
-                            os.ftruncate(fd, 0)
                             raise _Retryable('response length mismatch')
                         etag = response.headers.get('ETag')
                         os.lseek(fd, size, os.SEEK_SET)
@@ -341,18 +485,31 @@ class _Installer:
                             if not chunk:
                                 raise _Retryable('transfer ended before expected size')
                             _write(fd, chunk)
+                            hasher.update(chunk)
                             size += len(chunk)
-                            os.fsync(fd)
-                            digest = _digest(fd)
-                            _checkpoint(stage, state_name, {'url': file['url'], 'etag': etag,
-                                                          'size': size, 'sha256': digest})
+                            checkpoint_due = (size - durable_size >= CHECKPOINT_BYTES
+                                              or time.monotonic() - last_checkpoint >= CHECKPOINT_SECONDS)
+                            if checkpoint_due and _strong_etag(etag):
+                                os.fsync(fd)
+                                _checkpoint(stage, state_name, {'url': file['url'], 'etag': etag,
+                                                              'size': size, 'sha256': hasher.hexdigest()})
+                                durable_size = size
+                                durable_etag = etag
+                                durable_hasher = hasher.copy()
+                                last_checkpoint = time.monotonic()
                             self.emit('progress', path=file['path'], downloaded_bytes=size, total_bytes=file['size_bytes'], attempt=attempt)
                         if response.read(1):
                             os.ftruncate(fd, 0)
                             raise InstallError('transfer exceeds expected size')
-                    if _digest(fd) != file['sha256']:
+                    # The incremental hash covers reconstructed durable prefix
+                    # plus each new response byte exactly once. Flush before using
+                    # it as the authoritative end-to-end digest.
+                    os.fsync(fd)
+                    if os.fstat(fd).st_size != file['size_bytes'] or hasher.hexdigest() != file['sha256']:
                         os.ftruncate(fd, 0)
                         raise InstallError('download SHA-256 mismatch')
+                    _checkpoint(stage, state_name, {'url': file['url'], 'etag': etag,
+                                                    'size': size, 'sha256': hasher.hexdigest()})
                     self.emit('file_verified', path=file['path'], reused=False)
                     return
                 except urllib.error.HTTPError as exc:
@@ -360,10 +517,21 @@ class _Installer:
                     exc.close()
                     if code == 416:
                         os.ftruncate(fd, 0)
+                        size = durable_size = 0
+                        hasher = durable_hasher = _sha256()
+                        etag = durable_etag = None
                     elif code not in (408, 429, 500, 502, 503, 504):
                         raise InstallError(f'HTTP {code}') from exc
                 except (urllib.error.URLError, http.client.HTTPException, TimeoutError, ConnectionError, _Retryable) as exc:
                     error = str(exc)
+                # Drop bytes beyond the last data+metadata checkpoint. A crash
+                # between flushing a part and replacing its metadata is handled
+                # the same way on next invocation: size mismatch forces restart.
+                os.ftruncate(fd, durable_size)
+                os.fsync(fd)
+                size = durable_size
+                etag = durable_etag
+                hasher = durable_hasher.copy()
                 if attempt == self.attempts:
                     raise InstallError(f'transfer failed after {attempt} attempts: {error}')
                 self.emit('retrying', path=file['path'], attempt=attempt, error=error)

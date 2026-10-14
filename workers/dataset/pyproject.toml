@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Heavy audio dataset pipeline worker for SpeechCraft"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-  "speechcraft-models==0.1.0",
+  "speechcraft-model-manager==0.1.0",
   "filelock>=3.28.0,<4.0.0",
   "ctranslate2==4.7.2",
   "faster-whisper==1.2.1",
@@ -37,7 +37,7 @@ override-dependencies = [
 ]
 
 [tool.uv.sources]
-speechcraft-models = { path = "../../packages/model_manager" }
+speechcraft-model-manager = { path = "../../packages/model_manager" }
 torch = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
 

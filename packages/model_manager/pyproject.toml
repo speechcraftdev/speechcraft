@@ -1,13 +1,10 @@
 [project]
-name = "speechcraft-models"
+name = "speechcraft-model-manager"
 version = "0.1.0"
 description = "Lightweight offline model verification and verified downloads for SpeechCraft"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
-
-[project.scripts]
-speechcraft-models = "speechcraft_models.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
