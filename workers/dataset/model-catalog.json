@@ -12,6 +12,7 @@
         "format": "pyannote pipeline snapshot (PyTorch)",
         "revision": "UNRESOLVED: installed local snapshot has no recorded immutable revision",
         "availability": "unresolved",
+        "inventory_complete": false,
         "required_files": [
           { "path": "embedding/pytorch_model.bin", "min_size_bytes": 26646242 },
           { "path": "segmentation/pytorch_model.bin", "min_size_bytes": 5906507 }
@@ -32,6 +33,8 @@
           "format": "CTranslate2 / faster-whisper",
           "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
           "availability": "verified",
+          "inventory_complete": true,
+          "release_blockers": ["Trusted content hashes for every required file remain unresolved."],
           "required_files": [
             { "path": "config.json" }, { "path": "model.bin" },
             { "path": "preprocessor_config.json" }, { "path": "tokenizer.json" },
@@ -43,6 +46,7 @@
           "format": "MLX",
           "revision": "UNRESOLVED",
           "availability": "unresolved",
+          "inventory_complete": false,
           "required_files": [],
           "release_blockers": ["No MLX ASR model identity, immutable revision, file set, license/access record, or runtime-validation evidence found in this repository."]
         }
@@ -57,9 +61,11 @@
       "access": { "requirements": ["Public package/model; no gated access known"], "source": "https://github.com/snakers4/silero-vad" },
       "artifacts": [{
         "platform": "all-supported",
+        "supported_platforms": ["linux-x86_64", "macos-arm64"],
         "format": "package-managed Silero ONNX model",
         "revision": "6.2.1 (package pin; standalone ONNX revision not yet pinned)",
         "availability": "unresolved",
+        "inventory_complete": false,
         "required_files": [{ "path": "silero_vad.onnx" }],
         "release_blockers": ["Production calls silero_vad.load_silero_vad(onnx=True); package-resolved model bytes and all runtime assets must be captured and SHA-256 pinned before standalone catalog verification."]
       }],
@@ -76,6 +82,7 @@
         "format": "ONNX / sherpa-onnx",
         "revision": "0743f30 (repository commit containing export; source-checkpoint identity unresolved)",
         "availability": "unresolved",
+        "inventory_complete": false,
         "required_files": [{ "path": "nemo_en_titanet_large.onnx", "size_bytes": 101405493, "sha256": "d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77" }],
         "release_blockers": ["Experiment report documents incomplete checkpoint provenance and no production migration; validate redistribution license and platform/runtime support before release."]
       }],

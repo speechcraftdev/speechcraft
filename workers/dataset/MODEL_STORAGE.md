@@ -14,18 +14,63 @@ integrity checks. Projects may refer to model IDs/revisions but should not copy
 weights into project folders. Application upgrades must not replace this store.
 
 `model-catalog.json` is the initial catalog; `model-manifest.schema.json` is
-the JSON Schema. The pure-standard-library `speechcraft_dataset.model_manifest`
-parser validates the core contract and `verify_artifact()` checks a directory
-without network access. `verified` means every declared size/hash matched;
-`unverified` means files exist but the catalog has no integrity metadata for
-them. Missing assets return `missing`, partially present/short assets return
-`partial`, and a declared size or hash mismatch returns `corrupt`.
+its authoritative structural schema. The standard-library validator evaluates
+that schema's supported keywords directly and rejects unsupported keywords.
+Additional semantic checks enforce unique roles/IDs/platforms/file paths,
+canonical relative paths, consistent size bounds, and nonempty complete
+inventories. They are documented in the schema's `$comment`. Schema validation
+alone does not establish that catalog metadata is trusted or release-ready.
+
+`inventory_complete` explicitly records whether the full required file set is
+known. `availability: verified` describes resolved release metadata, not a local
+installation. Unknown inventories, unresolved availability, explicit release
+blockers, and missing SHA-256 values each prevent install readiness. The initial
+catalog still has blockers for every role; no artifact is currently installable.
+
+The verifier reports separate facts:
+
+| Field | Meaning |
+| --- | --- |
+| `present` | A nonempty inventory was checked and every declared path was readable as a regular file, even if truncated or corrupt. |
+| `complete` | The inventory is declared complete and every declared file is present without a detected truncation. This does not establish content integrity. |
+| `integrity_verified` | The inventory is complete and every file matched its trusted SHA-256 (and any size constraints). |
+| `install_ready` | Integrity is verified, availability is resolved, and there are no release blockers. |
+| `runtime_ready` | Always `null` in this PR. No inference or runtime validation has occurred. |
+
+Status precedence is `error` (unsafe path/read failure), `corrupt` (size excess
+or hash mismatch), `missing` (all declared files absent), `partial` (some files
+absent or truncated), then `verified` only when install-ready; otherwise
+`unverified`. An empty inventory is always unverified. Size-only and minimum-size
+metadata can detect truncation but cannot verify contents. A content-verified
+artifact with unresolved release metadata remains unverified at the aggregate
+level and is not install-ready. No files are downloaded or modified.
+
+Only a trusted manifest can supply trusted hashes. The verifier does not
+authenticate manifest publishers. It rejects all symlinks below the supplied
+root and rejects a symlink as the root's final component, using descriptor-relative
+opens with `O_NOFOLLOW` on Linux/macOS. It never opens a declared file through a
+symlink, including a symlinked parent directory. HF cache snapshots using symlinks
+must be deliberately materialized into regular files by a later installer.
+Verification is a point-in-time check: the future installer must serialize writes
+and publish immutable directories; a successful report cannot prevent later edits.
+
+Platform selection accepts `linux-x86_64` and `macos-arm64`. An exact platform
+entry wins, even if unresolved. Otherwise, an `all-supported` entry may be used
+only if its explicit `supported_platforms` includes the requested platform.
+Unsupported platforms and missing matches are errors. Shared Silero coverage is
+planned metadata, and its unresolved status still blocks installation.
 
 For a direct check from `workers/dataset`:
 
 ```bash
 python -m speechcraft_dataset.model_manifest model-catalog.json diarization linux-x86_64 /path/to/model
+python -m unittest tests.test_model_manifest -v
 ```
+
+The CLI emits JSON and exits `0` only for install-ready assets, `1` for any failed
+or unresolved file/release check, and `2` for malformed manifests, bad selection,
+or command-line usage. Tests use only fabricated files and the standard library;
+they require neither network access nor an ML environment.
 
 ## Next downloader PR
 

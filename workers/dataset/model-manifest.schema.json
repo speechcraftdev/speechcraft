@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://speechcraft.local/schemas/model-manifest-v1.json",
+  "$comment": "Authoritative structural schema. Python semantic checks additionally enforce unique role/id/platform/path values, canonical contained paths, consistent size bounds, and nonempty complete inventories.",
   "title": "SpeechCraft model manifest",
   "type": "object",
   "required": ["schema_version", "models"],
@@ -18,15 +19,17 @@
         "path": { "type": "string", "minLength": 1 },
         "size_bytes": { "type": "integer", "minimum": 0 },
         "min_size_bytes": { "type": "integer", "minimum": 0 },
-        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$(?![\\s\\S])" }
       },
       "additionalProperties": false
     },
     "artifact": {
       "type": "object",
-      "required": ["platform", "format", "revision", "availability", "required_files"],
+      "required": ["platform", "format", "revision", "availability", "inventory_complete", "required_files"],
       "properties": {
-        "platform": { "type": "string", "minLength": 1 },
+        "platform": { "type": "string", "enum": ["linux-x86_64", "macos-arm64", "all-supported"] },
+        "supported_platforms": { "type": "array", "minItems": 1, "items": { "type": "string", "enum": ["linux-x86_64", "macos-arm64"] } },
+        "inventory_complete": { "type": "boolean", "description": "True only when the full required file inventory is known." },
         "format": { "type": "string", "minLength": 1 },
         "revision": { "type": "string", "minLength": 1 },
         "availability": { "enum": ["verified", "unresolved"] },
