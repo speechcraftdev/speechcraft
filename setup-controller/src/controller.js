@@ -14,7 +14,7 @@ const ALLOWED = Object.freeze({
   failed: new Set(['running']),
   cancelled: new Set(['running']),
   interrupted: new Set(['running']),
-  completed: new Set(),
+  completed: new Set(['running']),
 });
 
 export class ControllerError extends Error {
@@ -32,9 +32,16 @@ export function assertTransition(from, to) {
   }
 }
 
-export function publicStatus(store, controllerStatus = 'running') {
+function publicJob(job) {
+  if (!job) return null;
+  const value = structuredClone(job);
+  delete value.child_process;
+  return value;
+}
+
+export function publicStatus(store, controllerStatus = 'running', mode = 'simulated') {
   const state = store.snapshot();
-  const job = state.job ? structuredClone(state.job) : {
+  const job = state.job ? publicJob(state.job) : {
     schema_version: 2,
     id: null, state: 'idle', stage: null, task_id: null, progress: null,
     error: null, attempt_count: 0, revision: state.revision,
@@ -45,15 +52,18 @@ export function publicStatus(store, controllerStatus = 'running') {
     controller_status: controllerStatus,
     job,
     state_revision: state.revision,
-    simulated: true,
+    mode,
+    simulated: mode === 'simulated',
     production_ready: false,
   };
 }
 
 export class SetupController {
-  constructor(store, { tasks = new SimulatedTasks() } = {}) {
+  constructor(store, { tasks = new SimulatedTasks(), mode = 'simulated' } = {}) {
     this.store = store;
     this.tasks = tasks;
+    this.mode = mode;
+    this.stages = tasks.stages || SETUP_STAGES;
     this.activeExecution = null;
     this.runner = null;
     this.stopping = false;
@@ -71,7 +81,14 @@ export class SetupController {
     }
   }
 
-  status() { return publicStatus(this.store, this.stopping ? 'stopping' : 'running'); }
+  status() { return publicStatus(this.store, this.stopping ? 'stopping' : 'running', this.mode); }
+
+  taskId(stage) { return this.tasks.taskId ? this.tasks.taskId(stage) : `simulated:${stage}`; }
+
+  initialProgress(stage, message) {
+    return this.tasks.initialProgress ? this.tasks.initialProgress(stage, message)
+      : { current: 0, total: 2, percent: 0, message };
+  }
 
   start() {
     if (this.stopping) throw new ControllerError(503, 'CONTROLLER_STOPPING', 'The setup controller is stopping.');
@@ -80,20 +97,24 @@ export class SetupController {
       if (current.state === 'running' || current.state === 'waiting_for_user' || current.state === 'cancelling') {
         return { job: current, idempotent: true };
       }
-      throw new ControllerError(409, 'JOB_EXISTS', 'A setup job already exists. Use retry when its state permits.');
+      if (current.state !== 'completed') {
+        throw new ControllerError(409, 'JOB_EXISTS', 'A setup job already exists. Use retry when its state permits.');
+      }
     }
     const now = new Date().toISOString();
+    const stage = this.stages[0];
     const job = {
       schema_version: 2,
       attempt_id: randomUUID(),
-      id: randomUUID(), state: 'running', stage: SETUP_STAGES[0],
-      task_id: `simulated:${SETUP_STAGES[0]}`,
+      id: randomUUID(), state: 'running', stage,
+      task_id: this.taskId(stage), mode: this.mode,
       created_at: now, updated_at: now, started_at: now, completed_at: null,
       attempt_count: 1, revision: 0,
-      progress: { current: 0, total: 2, percent: 0, message: 'Queued simulated setup.' },
+      progress: this.initialProgress(stage, `Queued ${this.mode} setup.`),
+      bootstrap_status: this.tasks.initialBootstrapStatus ? this.tasks.initialBootstrapStatus() : null,
       error: null,
     };
-    assertTransition('idle', job.state);
+    assertTransition(current?.state || 'idle', job.state);
     this.store.commit((state) => { state.job = job; }, 'job_started');
     this.launch();
     return { job: this.store.snapshot().job, idempotent: false };
@@ -109,17 +130,19 @@ export class SetupController {
       throw new ControllerError(409, 'RETRY_NOT_ALLOWED', 'Retry is allowed only for failed, cancelled, or interrupted jobs.');
     }
     assertTransition(current.state, 'running');
+    const stage = this.stages[0];
     this.store.commit((state) => {
       const job = state.job;
       job.state = 'running';
-      job.stage = SETUP_STAGES[0];
-      job.task_id = `simulated:${SETUP_STAGES[0]}`;
+      job.stage = stage;
+      job.task_id = this.taskId(stage);
       job.started_at = new Date().toISOString();
       job.completed_at = null;
       job.attempt_count += 1;
       job.attempt_id = randomUUID();
       job.error = null;
-      job.progress = { current: 0, total: 2, percent: 0, message: 'Queued setup retry.' };
+      job.progress = this.initialProgress(stage, 'Queued setup retry.');
+      job.bootstrap_status = this.tasks.initialBootstrapStatus ? this.tasks.initialBootstrapStatus() : job.bootstrap_status;
     }, 'job_retried');
     this.launch();
     return { job: this.store.snapshot().job, idempotent: false };
@@ -179,7 +202,7 @@ export class SetupController {
 
   async run(jobId, attemptId, signal) {
     try {
-      for (const stage of SETUP_STAGES) {
+      for (const stage of this.stages) {
         if (signal.aborted) { this.finishCancelled(jobId, attemptId); return; }
         const current = this.store.snapshot().job;
         if (!current || current.id !== jobId || current.attempt_id !== attemptId || current.state !== 'running') {
@@ -189,13 +212,24 @@ export class SetupController {
         this.store.commit((state) => {
           if (state.job?.id !== jobId || state.job.attempt_id !== attemptId || state.job.state !== 'running') return;
           state.job.stage = stage;
-          state.job.task_id = `simulated:${stage}`;
-          state.job.progress = { current: 0, total: 2, percent: 0, message: `${stage} simulation started.` };
+          state.job.task_id = this.taskId(stage);
+          state.job.progress = this.initialProgress(stage, `${stage} started.`);
         }, 'stage_started');
         await this.tasks.run(stage, {
           signal,
           attempt: current.attempt_count,
           attemptId,
+          bootstrapStatus: current.bootstrap_status,
+          onComponentStatus: (status) => {
+            const latest = this.store.snapshot().job;
+            if (latest?.id !== jobId || latest.attempt_id !== attemptId || latest.state !== 'running') return;
+            this.store.commit((state) => { state.job.bootstrap_status = status; }, 'component_status');
+          },
+          onChildProcess: (record) => {
+            const latest = this.store.snapshot().job;
+            if (latest?.id !== jobId || latest.attempt_id !== attemptId) return;
+            this.store.commit((state) => { state.job.child_process = record; }, record ? 'child_process_started' : 'child_process_stopped');
+          },
           onProgress: (progress) => {
             const latest = this.store.snapshot().job;
             if (latest?.id !== jobId || latest.attempt_id !== attemptId || latest.state !== 'running') return;
@@ -213,7 +247,9 @@ export class SetupController {
         this.store.commit((state) => {
           state.job.state = 'completed';
           state.job.completed_at = new Date().toISOString();
-          state.job.progress = { current: 2, total: 2, percent: 100, message: 'Simulated setup completed.' };
+          state.job.progress = this.tasks.completionProgress
+            ? this.tasks.completionProgress()
+            : { current: 2, total: 2, percent: 100, message: 'Simulated setup completed.' };
         }, 'job_completed');
       }
     } catch (error) {
@@ -228,7 +264,9 @@ export class SetupController {
           code: /^[A-Z0-9_]+$/.test(error?.code || '') ? error.code : 'SETUP_TASK_FAILED',
           message: /^[A-Z0-9_]+$/.test(error?.code || '') && error.code === 'SIMULATED_STAGE_FAILURE'
             ? `A simulated setup stage failed (${state.job.stage}).`
-            : 'A setup stage failed. Review diagnostics before retrying.',
+            : ['BootstrapError', 'PlatformError'].includes(error?.name) && typeof error.message === 'string'
+              ? error.message.slice(0, 320)
+              : 'A setup stage failed. Review diagnostics before retrying.',
         };
       }, 'job_failed');
     }

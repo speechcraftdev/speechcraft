@@ -21,10 +21,11 @@ async function fixture(options) {
   return value;
 }
 
-test('state transitions reject illegal jumps', () => {
+test('state transitions reject illegal jumps and completed jobs can be rerun explicitly', () => {
   assertTransition('idle', 'running');
   assertTransition('interrupted', 'running');
-  assert.throws(() => assertTransition('completed', 'running'), { code: 'INVALID_STATE_TRANSITION' });
+  assertTransition('completed', 'running');
+  assert.throws(() => assertTransition('running', 'idle'), { code: 'INVALID_STATE_TRANSITION' });
 });
 
 test('health is narrow and setup status requires authenticated session', async () => {

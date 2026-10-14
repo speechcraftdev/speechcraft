@@ -1,4 +1,4 @@
-# Setup Controller API v2
+# Setup Controller API v3
 
 All routes use `/setup-api`. JSON responses are UTF-8 and `Cache-Control: no-store`.
 The controller binds only to `127.0.0.1`. The eventual application must proxy
@@ -69,7 +69,8 @@ the other values belong to a persisted job. Legal transitions are enforced by
 the controller. Retry is an explicit new attempt on the existing job ID. State
 schema 1 migrates atomically to schema 2.
 
-This milestone simulates these ordered stages:
+State payload schema remains version 2. Simulation mode uses these ordered
+stages:
 
 1. `inspect_system`
 2. `bootstrap_runtime`
@@ -77,8 +78,20 @@ This milestone simulates these ordered stages:
 4. `install_models`
 5. `validate_runtime`
 
-No stage installs or inspects production runtimes. `completed` means only that
-the simulated stages finished.
+The launcher may select the predefined real `bootstrap` mode at controller
+startup. The browser cannot select a mode or change the plan. Bootstrap mode
+uses these ordered stages:
+
+1. `inspect_system`
+2. `install_uv`
+3. `install_python`
+4. `install_model_manager`
+5. `validate_bootstrap`
+
+`completed` means that the selected plan finished. In bootstrap mode the plan
+verifies uv, managed CPython, and the lightweight model-manager environment.
+It does not install model weights, inference backends, or make the workstation
+production-ready. `production_ready` is always `false` in API v3.
 
 ## Snapshot and job shape
 
@@ -102,15 +115,27 @@ the session cookie. Example while running:
     "attempt_id": "953f50e6-ec29-4fe9-a5b6-0d0b15d8ed8c",
     "revision": 18,
     "progress": {
-      "current": 1,
-      "total": 2,
-      "percent": 50,
-      "message": "install_models simulation in progress"
+      "phase": "installing",
+      "current": null,
+      "total": null,
+      "percent": null,
+      "message": "Installing the pinned managed Python runtime."
+    },
+    "mode": "bootstrap",
+    "bootstrap_status": {
+      "profile": "linux-x86_64",
+      "wsl": false,
+      "uv_verified": true,
+      "python_verified": true,
+      "model_manager_verified": false,
+      "bootstrap_ready": false,
+      "production_ready": false
     },
     "error": null
   },
   "state_revision": 18,
-  "simulated": true,
+  "mode": "bootstrap",
+  "simulated": false,
   "production_ready": false
 }
 ```
@@ -127,9 +152,11 @@ API accepts only `{}`; commands, paths, URLs, and arbitrary options are rejected
 
 ### `POST /setup-api/start`
 
-Starts the simulated job. Returns `202` with the new job, or `200` with the
-existing job when it is already running/waiting. A terminal existing job returns
-`409 JOB_EXISTS`; use retry when allowed.
+Starts the configured plan. Returns `202` with the new job, or `200` with the
+existing job when it is already running/waiting. A completed job may be started
+again as a new job ID; bootstrap rechecks and reuses verified components. Other
+failed, cancelled, or interrupted jobs must use explicit retry on the existing
+job ID. Concurrent starts still produce one active job.
 
 ### `POST /setup-api/retry`
 
@@ -208,7 +235,20 @@ an explicit API operation. The controller itself does not continue work while
 stopped; unfinished `running` or `cancelling` work becomes `interrupted` on the
 next startup and requires explicit retry.
 
-## Simulated readiness boundary
+## Progress contract
 
-Every response has `simulated: true` and `production_ready: false`, including a
-successful job. No inference or production readiness is asserted by this API.
+Progress is an object with `phase`, `current`, `total`, `percent`, and
+`message`. The phase is task state (for example `downloading`, `verifying`,
+`installing`, or `complete`). Byte fields and percentage are null if the
+underlying operation does not expose trustworthy byte progress. The bootstrap
+does not fabricate progress percentages for uv-managed Python/package work.
+`bootstrap_status` tracks `uv_verified`, `python_verified`,
+`model_manager_verified`, and `bootstrap_ready` separately. Paths or versions
+may be added to this object for authenticated local diagnostics; clients should
+ignore fields they do not use.
+
+## Readiness boundary
+
+Every response has `production_ready: false`, including successful bootstrap.
+The `simulated` field describes the configured controller mode and is false in
+real bootstrap mode. No model installation or inference readiness is asserted.

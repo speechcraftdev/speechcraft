@@ -6,6 +6,8 @@ import { ControllerError, SetupController } from './controller.js';
 import { defaultDataDirectory } from './paths.js';
 import { StateStore, StateStoreError } from './state-store.js';
 import { SimulatedTasks } from './simulated-tasks.js';
+import { BootstrapTasks } from './bootstrap.js';
+import { hostEnvironment, validateManagedStorageTargets } from './platform.js';
 
 const BODY_LIMIT = 16 * 1024;
 const HEARTBEAT_MS = 15_000;
@@ -59,15 +61,16 @@ function parseCsv(value) {
   return value?.split(',').map((item) => item.trim()).filter(Boolean) || [];
 }
 
-function statusEvent(job, revision, controllerStatus = 'running') {
+function statusEvent(job, revision, controllerStatus = 'running', mode = job?.mode || 'simulated') {
   const publicJob = job ? structuredClone(job) : {
     schema_version: 2,
     id: null, state: 'idle', stage: null, task_id: null, progress: null,
     error: null, attempt_count: 0, attempt_id: null, revision,
     created_at: null, updated_at: null, started_at: null, completed_at: null,
   };
+  if (publicJob) delete publicJob.child_process;
   return { controller_status: controllerStatus, state_revision: revision, job: publicJob,
-    simulated: true, production_ready: false };
+    mode, simulated: mode === 'simulated', production_ready: false };
 }
 
 function sse(response, id, event, data) {
@@ -75,11 +78,11 @@ function sse(response, id, event, data) {
   return response.write(encoded);
 }
 
-function diagnostics(store) {
+function diagnostics(store, mode = 'simulated') {
   const state = store.snapshot();
   return {
     state_revision: state.revision,
-    current_job: state.job ? structuredClone(state.job) : null,
+    current_job: state.job ? (() => { const job = structuredClone(state.job); delete job.child_process; return job; })() : null,
     recent_transitions: state.events.slice(-24).map((event) => ({
       id: event.id,
       type: event.type,
@@ -89,7 +92,8 @@ function diagnostics(store) {
       progress: event.data.job?.progress || null,
       error: event.data.job?.error || null,
     })),
-    simulated: true,
+    mode,
+    simulated: mode === 'simulated',
     production_ready: false,
   };
 }
@@ -103,8 +107,15 @@ export async function createSetupController({
   secureCookies = false,
   tasks,
   simulated = {},
+  mode = 'simulated',
+  bootstrapOptions = {},
 } = {}) {
   if (host !== '127.0.0.1') throw new Error('setup controller must bind to IPv4 loopback (127.0.0.1)');
+  if (!['simulated', 'bootstrap'].includes(mode)) throw new Error('setup mode must be simulated or bootstrap');
+  if (mode === 'bootstrap') {
+    const environment = hostEnvironment();
+    validateManagedStorageTargets(environment, [dataDirectory]);
+  }
   const store = StateStore.open(dataDirectory);
   let auth;
   let controller;
@@ -118,7 +129,11 @@ export async function createSetupController({
 
   try {
     auth = new SessionAuth(store.directory, { secureCookies });
-    controller = new SetupController(store, { tasks: tasks || new SimulatedTasks(simulated) });
+    const executor = tasks || (mode === 'bootstrap'
+      ? new BootstrapTasks({ dataDirectory: store.directory, ...bootstrapOptions })
+      : new SimulatedTasks(simulated));
+    await executor.recoverInterrupted?.(store);
+    controller = new SetupController(store, { tasks: executor, mode });
     const server = http.createServer((request, response) => {
       void route(request, response).catch((error) => {
         if (response.headersSent) {
@@ -160,7 +175,8 @@ export async function createSetupController({
     }
 
     function publishToClients(event, state) {
-      const data = statusEvent(event.data.job, event.id, controller.status().controller_status);
+      const currentStatus = controller.status();
+      const data = statusEvent(event.data.job, event.id, currentStatus.controller_status, currentStatus.mode);
       for (const client of clients) {
         if (!sse(client, event.id, event.type, data)) {
           clients.delete(client);
@@ -191,11 +207,12 @@ export async function createSetupController({
       if (replayPossible && last < state.revision) {
         for (const event of events) {
           if (event.id > last && !sse(response, event.id, event.type,
-            statusEvent(event.data.job, event.id))) break;
+            statusEvent(event.data.job, event.id, 'running', controller.status().mode))) break;
         }
       }
+      const currentStatus = controller.status();
       sse(response, state.revision, 'snapshot', statusEvent(state.job, state.revision,
-        controller.status().controller_status));
+        currentStatus.controller_status, currentStatus.mode));
       clients.add(response);
       const onClose = () => clients.delete(response);
       response.once('close', onClose);
@@ -246,7 +263,7 @@ export async function createSetupController({
       }
       if (url.pathname === '/setup-api/diagnostics') {
         if (request.method !== 'GET') throw new HttpError(405, 'METHOD_NOT_ALLOWED', 'Use GET for diagnostics.');
-        json(response, 200, diagnostics(store));
+        json(response, 200, diagnostics(store, controller.mode));
         return;
       }
       if (url.pathname === '/setup-api/events') {
@@ -331,15 +348,17 @@ export async function createSetupController({
 
 function parseArgs(args) {
   const options = { port: Number(process.env.SPEECHCRAFT_SETUP_PORT || 4317),
-    dataDirectory: defaultDataDirectory() };
+    dataDirectory: defaultDataDirectory(), mode: process.env.SPEECHCRAFT_SETUP_MODE || 'simulated' };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--port' && args[index + 1]) options.port = Number(args[++index]);
     else if (argument === '--data-dir' && args[index + 1]) options.dataDirectory = path.resolve(args[++index]);
+    else if (argument === '--mode' && args[index + 1]) options.mode = args[++index];
     else if (argument === '--step-delay-ms' && args[index + 1]) options.simulated = { stepDelayMs: Number(args[++index]) };
     else throw new Error(`unknown or incomplete argument: ${argument}`);
   }
   if (!Number.isInteger(options.port) || options.port < 0 || options.port > 65535) throw new Error('port must be an integer from 0 to 65535');
+  if (!['simulated', 'bootstrap'].includes(options.mode)) throw new Error('mode must be simulated or bootstrap');
   if (options.simulated && (!Number.isInteger(options.simulated.stepDelayMs) || options.simulated.stepDelayMs < 0 || options.simulated.stepDelayMs > 60_000)) {
     throw new Error('step delay must be an integer from 0 to 60000 milliseconds');
   }
@@ -352,12 +371,17 @@ async function main() {
   const allowedOrigins = parseCsv(process.env.SPEECHCRAFT_SETUP_ALLOWED_ORIGINS);
   const app = await createSetupController({
     ...options,
+    bootstrapOptions: {
+      wheelPath: process.env.SPEECHCRAFT_MODEL_MANAGER_WHEEL,
+      wheelSha256: process.env.SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256,
+    },
     allowedHosts: allowedHosts.length ? allowedHosts.map((value) => value.toLowerCase()) : undefined,
     allowedOrigins: allowedOrigins.length ? allowedOrigins : undefined,
     secureCookies: process.env.SPEECHCRAFT_SETUP_SECURE_COOKIES === '1',
   });
   console.log(JSON.stringify({ event: 'listening', host: app.host, port: app.port,
-    bootstrap_file: app.bootstrapPath, simulated: true }));
+    bootstrap_file: app.bootstrapPath, mode: app.controller.mode,
+    simulated: app.controller.mode === 'simulated' }));
   let closing = false;
   const stop = async (signal) => {
     if (closing) return;

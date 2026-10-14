@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "uv": {
+    "version": "0.12.23",
+    "release": "https://github.com/astral-sh/uv/releases/tag/0.12.23",
+    "source": "official Astral uv GitHub release; SHA-256 compared with that release's published .sha256 asset",
+    "artifacts": {
+      "linux-x86_64": {
+        "file": "uv-x86_64-unknown-linux-gnu.tar.gz",
+        "url": "https://github.com/astral-sh/uv/releases/download/0.12.23/uv-x86_64-unknown-linux-gnu.tar.gz",
+        "size_bytes": 19906150,
+        "sha256": "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6",
+        "tar_root": "uv-x86_64-unknown-linux-gnu",
+        "executable": "uv",
+        "executable_size_bytes": 47993144,
+        "executable_path": "runtimes/uv/0.12.23/linux-x86_64/uv",
+        "executable_sha256": "abdc39eab8b4ad341dca91f3823a23a343fae94bdb22ebdd9e91694415206f2f"
+      },
+      "macos-arm64": {
+        "file": "uv-aarch64-apple-darwin.tar.gz",
+        "url": "https://github.com/astral-sh/uv/releases/download/0.12.23/uv-aarch64-apple-darwin.tar.gz",
+        "size_bytes": 17044217,
+        "sha256": "50487ae565ccd96e499056b4674d438f4c53170202617b4c759defe0c6a1b544",
+        "tar_root": "uv-aarch64-apple-darwin",
+        "executable": "uv",
+        "executable_size_bytes": 35517728,
+        "executable_path": "runtimes/uv/0.12.23/macos-arm64/uv",
+        "executable_sha256": "2f7be1879e3337eef20875c0f80ef033337305d0405efc5d72642d6292f66b3b"
+      }
+    }
+  },
+  "python": {
+    "implementation": "CPython",
+    "version": "3.12.15",
+    "distribution": "Astral python-build-standalone install_only_stripped",
+    "build": "20261003",
+    "metadata_source": "uv 0.12.23 embedded crates/uv-python/download-metadata.json",
+    "metadata_source_url": "https://github.com/astral-sh/uv/blob/0.12.23/crates/uv-python/download-metadata.json",
+    "supported_profiles": {
+      "linux-x86_64": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+        "size_bytes": 34285590,
+        "sha256": "731af898886c5f821890dc901eca3c651cca8e51fa7308c159d12a1194aeac91"
+      },
+      "macos-arm64": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.12.15%2B20261003-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "size_bytes": 25013243,
+        "sha256": "ad8d0c637c0a36b967b310e2c07254f4d2ca8cabaa7699e55ed6290aceb481a2"
+      }
+    }
+  },
+  "model_manager": {
+    "distribution": "speechcraft-model-manager",
+    "required_python": ">=3.11",
+    "dependency_lock": "resources/model-manager-requirements.txt",
+    "requirements_sha256": "8ca98b11f6e8a028bb51b7933f8cdd216e8241f51803abea95fd6bf25aec77b9",
+    "wheel_identity": "launcher-configured exact local wheel SHA-256; required and rejected if absent",
+    "version": "0.1.0"
+  },
+  "disk_space": {
+    "safety_margin_bytes": 536870912,
+    "estimated_python_environment_bytes": 268435456,
+    "estimated_model_manager_environment_and_cache_bytes": 402653184
+  }
+}

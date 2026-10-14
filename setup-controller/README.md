@@ -1,18 +1,19 @@
-# SpeechCraft setup controller foundation
+# SpeechCraft setup controller
 
 This is an internal Node.js setup controller, independent of the dataset worker,
-Python, ML runtimes, model caches, and Next.js. It owns one durable setup job
-and exposes a loopback-only authenticated HTTP API. All operations in this
-milestone are simulated; no Python environment, dependency, model, or backend is
-installed. The future public application command remains `speechcraft` and is
-not created here.
+system Python, ML runtimes, and Next.js. It owns one durable setup job and
+exposes a loopback-only authenticated HTTP API. Simulation remains the default
+for frontend development. Launcher-selected `bootstrap` mode installs pinned
+uv, managed CPython, and an isolated lightweight `speechcraft_models`
+environment. It does not install models or make SpeechCraft production-ready.
+The future public application command remains `speechcraft` and is not created.
 
 ## Runtime and storage
 
 Minimum supported runtime is **Node.js 20.9**. The package has no runtime npm
-dependencies and uses ES modules plus Node's standard library. This version
-aligns with the current Next.js runtime floor and works with a bundled Node
-runtime later.
+dependencies and uses ES modules plus Node's standard library. Linux tests and
+the real bootstrap ran on Node 26.8.2. macOS ARM64 and WSL2 execution still need
+host validation. The runtime floor will be bundled by the future launcher.
 
 The default state directory is:
 
@@ -56,15 +57,15 @@ silently resumed. Cancellation first persists `cancelling`, aborts the current
 attempt, and becomes `cancelled` only after that executor settles. Retry is
 rejected until the previous attempt is conclusively stopped. Every progress,
 failure, and completion callback is scoped to the exact attempt ID. A graceful
-SIGINT/SIGTERM waits for simulated work to acknowledge cancellation, closes
+SIGINT/SIGTERM waits for owned work to acknowledge cancellation, closes
 event streams, and releases ownership. Jobs do not continue while the controller
 process is stopped.
 
-When predefined installation subprocesses are added, they must be owned by the
-attempt that launched them. Cancellation must terminate the owned process
-group, escalate only after a bounded grace period, wait for child exit/reap,
-and only then persist terminal `cancelled` or permit retry. A controller must
-not release installation ownership while a child can still write managed files.
+Each predefined bootstrap subprocess belongs to one persisted attempt.
+Cancellation terminates its process group, escalates after a bounded grace
+period, waits for exit/reap, and only then persists terminal `cancelled` or
+permits retry. On restart, the controller verifies process identity and stops
+surviving owned groups before revalidating artifacts.
 
 ## Start locally
 
@@ -76,7 +77,10 @@ npm start -- --data-dir /tmp/speechcraft-setup-dev --port 4317
 
 The controller binds only to `127.0.0.1`. Startup prints its address and the
 private bootstrap-token file path, never the token. Keep the state directory
-private. A faster deterministic simulation can use `--step-delay-ms 0`.
+private. Simulation is the default. Real runtime bootstrap is selected by the
+launcher with `--mode bootstrap` and requires a locally shipped model-manager
+wheel plus trusted SHA-256 configuration. A faster simulation uses
+`--step-delay-ms 0`.
 
 In another terminal, establish an authenticated browser/API session. This
 example uses only Node and curl; the bearer token is read from the mode-0600
@@ -156,6 +160,86 @@ the forwarded localhost origin, and the proxy's explicit Host/Origin allowlist
 must match it. Launcher integration must still validate first-run behavior,
 proxy header handling, and cookie behavior through SSH tunnels.
 
+## Managed runtime bootstrap
+
+The pinned manifest is [resources/bootstrap-manifest.json](resources/bootstrap-manifest.json).
+It supports Linux x86-64 (including Ubuntu WSL2 on WSL's native filesystem)
+and macOS ARM64. It pins **uv 0.12.23** and **CPython 3.12.15**. uv release
+archives are checked against exact size/SHA-256 values, then the extracted uv
+executable is independently checked against its own digest and version. The
+Python build and SHA-256 values come from uv's pinned embedded
+python-build-standalone metadata; `uv python install` verifies the actual
+archive against that metadata. This establishes content integrity, not
+byte-for-byte reproducible runtime construction.
+
+Managed files live below the persistent data directory:
+
+```text
+runtimes/uv/0.12.23/<profile>/uv
+runtimes/cpython-3.12.15+20261003/<profile>/...
+environments/speechcraft-model-manager/<version-python-platform-wheel-lock-id>/
+cache/bootstrap/uv/
+cache/bootstrap/huggingface/{hub,xet}/
+cache/bootstrap/{home,tmp}/
+staging/bootstrap/attempt-<attempt UUID>/
+quarantine/bootstrap/
+```
+
+The app release owns the bootstrap manifest and hash-locked dependency file.
+The launcher supplies an exact locally shipped `speechcraft-model-manager`
+wheel and its trusted SHA-256; no latest PyPI package is used. The wheel and
+dependency-lock digests are part of the environment's versioned directory, so
+a new wheel or lock produces a separate target and leaves older environments
+untouched. A released launcher must embed the wheel identity in trusted
+configuration. The environment contains no inference packages.
+
+Bootstrap invokes uv by absolute path, installs its pinned managed Python,
+validates version/platform/path/stdlib imports, then creates a dedicated
+environment and installs hash-pinned binary dependencies and the trusted wheel.
+It does not use system Python, pip, Conda, Homebrew, or user site-packages.
+Caller `UV_*`, `PIP_*`, Python, Conda, and Hugging Face credential variables
+are not inherited. Executable lookup, certificate and proxy variables are
+allowed; cache, home and temporary paths are redirected into managed storage.
+
+Capacity checks precede transfer/install stages. Estimates include the uv
+archive and executable, Python archive/environment, manager environment/cache,
+and a 512 MiB margin. uv can temporarily retain transfer/cache data alongside
+the installed runtime, so peak use can exceed the estimate. A successful job
+removes its attempt staging directory. Interrupted files remain available for
+diagnosis until retry, when only UUID-owned staging directories are removed
+under controller ownership. Corrupt versioned components are moved to the
+private quarantine directory and retained for diagnosis; cleanup is manual and
+must be limited to that directory after stopping SpeechCraft.
+
+WSL is detected from actual kernel identity, not the chosen artifact label.
+The data root and runtime, environment, cache, staging, and temporary paths are
+checked against `/proc/self/mountinfo`; Windows-backed mounts are rejected even
+when reached outside `/mnt`. If WSL filesystem ownership is ambiguous, setup
+fails closed. The bootstrap never touches model weights, projects, recordings,
+or exports.
+
+### Opt-in real-network smoke test
+
+Build the internal wheel as a development preparation step (this is not part of
+the end-user bootstrap), then record its digest from the trusted build output:
+
+```bash
+cd packages/model_manager
+uv build --wheel --out-dir /tmp/speechcraft-model-manager-wheel
+sha256sum /tmp/speechcraft-model-manager-wheel/speechcraft_model_manager-0.1.0-py3-none-any.whl
+cd ../../setup-controller
+SPEECHCRAFT_MODEL_MANAGER_WHEEL=/tmp/speechcraft-model-manager-wheel/speechcraft_model_manager-0.1.0-py3-none-any.whl \
+SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256=<trusted-wheel-sha256> \
+node scripts/real-bootstrap-smoke.js
+```
+
+The script creates an isolated temporary data directory, performs bootstrap,
+restarts the controller, confirms reuse, and retains its data directory for
+inspection. It downloads no model weights. The release launcher must provide
+the exact wheel identity rather than computing and trusting one at install
+time. See [MACOS_BOOTSTRAP_HANDOFF.md](MACOS_BOOTSTRAP_HANDOFF.md) for Kavin's
+Apple Silicon handoff.
+
 ## Tests
 
 Run from this directory, with Node 20.9 or later:
@@ -166,19 +250,18 @@ npm test
 node --test
 ```
 
-Tests use the real filesystem state store, HTTP server, temporary directories,
-local fetches, SSE connections, and actual child controller processes. They
-cover concurrent starts and controller ownership, browser disconnect/reconnect,
-multiple clients, retry, cancellation, crash recovery, corrupt state,
-CSRF/Origin/Host checks, unsafe fields, and simulated completion. They do not
-install Python or contact external services.
+Tests use the filesystem state store, HTTP server, temporary directories, local
+artifact transfers, actual child processes and SSE connections. They cover
+controller ownership/recovery and security, retries/cancellation, WSL policy
+fixtures, safe archive extraction, and the complete five-stage bootstrap with
+offline stand-in tools. Default tests make no network requests or Python
+installations. The real network smoke test is opt-in.
 
 ## Next PR
 
-Add the launcher handoff and same-origin Next.js proxy contract: the launcher
-should start/stop this package, provide the bootstrap capability without
-printing it, and configure the persistent data directory and exact proxy
-Host/Origin values. Then Kavin's Preparing UI can consume `/setup-api/status`
-and `/setup-api/events`. Keep real Python/model tasks in a later milestone with
-explicit task-specific cancellation, retry, and recovery semantics; this
-controller currently proves only the state and HTTP foundation.
+Integrate the controller with the launcher and same-origin Next.js proxy,
+provide the trusted manager-wheel digest, and let Kavin's Preparing UI consume
+`/setup-api/status` and `/setup-api/events`. Subsequent work may provision ML
+environments and models with explicit artifact, cancellation, retry, and
+recovery contracts. This bootstrap installs no model weights or inference
+runtime and cannot report workstation production readiness.
