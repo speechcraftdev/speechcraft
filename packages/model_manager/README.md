@@ -111,9 +111,23 @@ use descriptors with `O_NOFOLLOW`. Parent aliases of the explicitly chosen root
 (e.g. `/tmp` on macOS) are allowed. The store assumes a local filesystem and one
 user; advisory locking is not a security boundary against malicious same-user
 processes that ignore locks. NFS and native Windows are outside this milestone.
-On Windows 11 use Ubuntu WSL2 and keep the model store on the WSL Linux
-filesystem, rather than a Windows mounted drive. macOS uses the same POSIX
-implementation; native Apple Silicon acquisition testing is still pending.
+On Windows 11 use Ubuntu WSL2 and keep the model store and Hugging Face caches
+on the WSL Linux filesystem. The policy detects the running WSL kernel, not the
+artifact-selection label, and checks the resolved filesystem containing each
+path from mount information. This includes paths reached through symlinks or
+bind mounts outside `/mnt/<drive>`. On WSL, the manager checks the model root
+and the effective `huggingface_hub` `HF_HOME`, `HF_HUB_CACHE`, and
+`HF_XET_CACHE` locations. Those values are resolved by the installed Hub
+library from its supported environment configuration. If WSL is confirmed but
+mount information or cache configuration cannot be resolved, installation
+fails closed. The manager does not move or delete existing user caches. The
+setup controller can set these environment variables before starting the
+manager to use persistent SpeechCraft-managed cache locations. Temporary Hub
+snapshot files live inside the lock-protected per-artifact staging directory;
+only verified files are atomically published into the persistent model store.
+The shared Hub/Xet cache remains user-owned and is never cleaned by SpeechCraft.
+macOS uses the same POSIX implementation; native Apple Silicon acquisition
+testing is still pending.
 
 GitHub artifacts reserve two full copies plus 1 MiB, without crediting partial
 data. Hugging Face artifacts use `snapshot_download(local_dir=...)` into the
@@ -228,8 +242,10 @@ pending Kavin's handoff. No inference readiness is claimed on either platform.
 Linux x86-64 and Windows WSL2 use `Systran/faster-whisper-large-v3` in
 CTranslate2 format; macOS ARM64 uses `mlx-community/whisper-large-v3-mlx` in
 MLX format. There is no size/model fallback. WSL2 callers may pass
-`windows-wsl2`; storage under `/mnt/<drive>` is rejected when running inside
-WSL. Keep both the model store and caches on the WSL Linux filesystem.
+`windows-wsl2`. When the process is actually running in WSL, Windows-backed
+model and Hub cache storage is rejected for either `linux-x86_64` or
+`windows-wsl2` selection. Keep the model store, temporary snapshots, and Hub
+caches on the WSL Linux filesystem.
 
 The catalog pins every required file by size and SHA-256. Installation reserves
 space for bytes not already integrity-verified in resumable staging. The pinned

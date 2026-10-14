@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -133,34 +134,93 @@ def _strong_etag(value) -> bool:
     return isinstance(value, str) and re.fullmatch(r'"[^"\r\n]+"', value) is not None
 
 
-def _reject_wsl_windows_mount(root: Path, platform: str) -> None:
-    """Keep WSL model storage on its Linux filesystem, never a mounted drive."""
-    if platform != 'windows-wsl2':
-        return
+def _wsl_runtime() -> bool:
+    """Detect WSL from the running Linux kernel, independent of model selection."""
+    if not sys.platform.startswith('linux'):
+        return False
     try:
         release = os.uname().release.lower()
-    except AttributeError:
+    except (AttributeError, OSError):
+        release = ''
+    try:
+        with open('/proc/sys/kernel/osrelease', encoding='utf-8') as stream:
+            release += ' ' + stream.read().lower()
+    except OSError:
+        pass
+    return ('microsoft' in release or 'wsl' in release
+            or bool(os.environ.get('WSL_DISTRO_NAME'))
+            or bool(os.environ.get('WSL_INTEROP')))
+
+
+def _mountinfo_path(value: str) -> Path:
+    """Decode the octal escapes used by proc mountinfo fields."""
+    value = re.sub(r'\\([0-7]{3})', lambda match: chr(int(match.group(1), 8)), value)
+    return Path(value)
+
+
+def _reject_wsl_windows_mount(root: Path, platform: str | None = None) -> None:
+    """Reject Windows-backed storage on WSL, regardless of artifact label.
+
+    ``platform`` remains accepted for internal-call compatibility but has no
+    bearing on host detection or the storage policy.
+    """
+    if not _wsl_runtime():
         return
-    if 'microsoft' not in release:
-        return
-    candidate = root.resolve()
+    try:
+        candidate = root.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise InstallError('cannot safely resolve WSL model/cache storage path') from exc
     best = None
     try:
         with open('/proc/self/mountinfo', encoding='utf-8') as mounts:
             for line in mounts:
                 left, right = line.rstrip().split(' - ', 1)
                 fields = left.split()
-                mountpoint = Path(fields[4].replace('\\040', ' ').replace('\\011', '\t'))
+                if len(fields) < 5:
+                    raise ValueError('malformed mountinfo entry')
+                mountpoint = _mountinfo_path(fields[4])
                 try:
                     candidate.relative_to(mountpoint)
                 except ValueError:
                     continue
                 if best is None or len(mountpoint.parts) > len(best[0].parts):
-                    best = (mountpoint, right.split()[0])
-    except (OSError, ValueError, IndexError):
-        raise InstallError('cannot confirm WSL model-store filesystem; choose a path under the WSL Linux filesystem')
-    if best and best[1].lower() in {'9p', 'drvfs'}:
-        raise InstallError('WSL model storage must be inside the WSL Linux filesystem, not /mnt/<drive>')
+                    right_fields = right.split()
+                    if not right_fields:
+                        raise ValueError('malformed mountinfo filesystem')
+                    best = (mountpoint, right_fields[0].lower(), right_fields[1].lower())
+    except (OSError, ValueError, IndexError) as exc:
+        raise InstallError('cannot confirm WSL model/cache filesystem; choose a path under the WSL Linux filesystem') from exc
+    if best is None:
+        raise InstallError('cannot confirm WSL model/cache filesystem; choose a path under the WSL Linux filesystem')
+    fstype, source = best[1], best[2]
+    if fstype in {'9p', 'drvfs'} or 'drvfs' in fstype or source == 'drvfs':
+        raise InstallError('WSL model and Hugging Face storage must use the WSL Linux filesystem, not a Windows-mounted filesystem')
+
+
+def _validate_huggingface_storage(root: Path) -> None:
+    """Validate every effective Hub cache location using Hub's own constants."""
+    if not _wsl_runtime():
+        return
+    try:
+        from huggingface_hub import constants
+    except ImportError as exc:
+        raise InstallError('cannot resolve Hugging Face cache locations on WSL') from exc
+    # These constants are resolved by huggingface_hub from HF_HOME,
+    # HF_HUB_CACHE (including its supported legacy alias), and HF_XET_CACHE.
+    # Also check HF_HOME itself because Xet/Hub metadata may use its children.
+    locations = {
+        'HF_HOME': getattr(constants, 'HF_HOME', None),
+        'HF_HUB_CACHE': getattr(constants, 'HF_HUB_CACHE', None),
+        'HF_XET_CACHE': getattr(constants, 'HF_XET_CACHE', None),
+        'model staging': str(root),
+    }
+    for label, location in locations.items():
+        if not location:
+            raise InstallError(f'cannot resolve configured Hugging Face {label} location on WSL')
+        try:
+            _reject_wsl_windows_mount(Path(location))
+        except InstallError as exc:
+            raise InstallError(f'unsafe WSL {label} location: {exc}') from exc
 
 
 def _allocated_bytes_without_symlinks(root: Path) -> int:
@@ -460,7 +520,7 @@ class _Installer:
             raise InstallError('HF_XET_CHUNK_CACHE_SIZE_BYTES must be a nonnegative byte count')
         chunk_cache_limit = int(raw_chunk_limit)
         cache = Path(constants.HF_XET_CACHE).expanduser()
-        _reject_wsl_windows_mount(cache, self._event_context.get().get('platform', ''))
+        _validate_huggingface_storage(self.root)
         probe = cache
         while not probe.exists():
             if probe.parent == probe:
@@ -575,7 +635,9 @@ class _Installer:
 
     def _install(self, role, platform, *, experimental=False):
         model_id, key, artifact = self.resolve(role, platform, experimental=experimental)
-        _reject_wsl_windows_mount(self.root, platform)
+        _reject_wsl_windows_mount(self.root)
+        if artifact.get('source', {}).get('type') == 'huggingface':
+            _validate_huggingface_storage(self.root)
         path = self.root / model_id / key
         with self.store(model_id, True) as (root, model), self.lock(model, key):
             self._cleanup_stages(model, key)

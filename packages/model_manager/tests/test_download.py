@@ -9,6 +9,8 @@ from pathlib import Path
 import math
 import socket
 import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -133,6 +135,9 @@ class FakeHFHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         body = self.server.corrupt_data.get(name, data)
+        if name in self.server.corrupt_once:
+            self.server.corrupt_once.remove(name)
+            body = b'x' * len(data)
         try:
             self.wfile.write(body[start:])
         except (BrokenPipeError, ConnectionResetError):
@@ -224,6 +229,7 @@ class DownloadTests(unittest.TestCase):
         server.file_requests = []
         server.auth_headers = []
         server.corrupt_data = {}
+        server.corrupt_once = set()
         server.drop_file = None
         server.dropped = False
         thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
@@ -548,6 +554,148 @@ class DownloadTests(unittest.TestCase):
             installer.install('speaker_purity', 'linux-x86_64', experimental=True)
         self.assertFalse(list(missing_root.glob('titanet-large-speaker-purity/*/nemo_en_titanet_large.onnx')))
 
+    def test_whisper_multifile_interruption_restarts_and_verifies_every_file(self):
+        repo = 'Systran/faster-whisper-large-v3'
+        files = {
+            'config.json': b'{"fixture":"config"}',
+            'tokenizer.json': b'{"fixture":"tokenizer"}',
+            'preprocessor_config.json': b'{"fixture":"metadata"}',
+            'model.bin': b'W' * (256 * 1024),
+            'vocabulary.json': b'{"fixture":"vocabulary"}',
+        }
+        installer, _, _, server, root, events = self.make_hf_installer(
+            files, role='asr', repo=repo, platform='linux-x86_64')
+        installer.attempts = 1
+        server.drop_file = 'model.bin'
+        with self.assertRaises(InstallError):
+            installer.install('asr', 'linux-x86_64')
+        self.assertFalse(any(event['event'] == 'installed' for event in events))
+        stage = next(root.glob('whisper-large-v3/.stage-*'))
+        self.assertTrue((stage / '.hf-source/config.json').is_file())
+        self.assertTrue(list((stage / '.hf-source/.cache/huggingface/download').glob('*.incomplete')))
+
+        server.drop_file = None
+        installer.attempts = 2
+        result = installer.install('asr', 'linux-x86_64')
+        self.assertTrue(result['install_ready'])
+        self.assertEqual({item['path'] for item in result['files']}, set(files))
+        for name, data in files.items():
+            self.assertEqual((Path(result['root']) / name).read_bytes(), data)
+        self.assertTrue(installer.install('asr', 'linux-x86_64')['reused'])
+        self.assertEqual(server.file_requests.count('config.json'), 1)
+        self.assertGreaterEqual(server.file_requests.count('model.bin'), 2)
+
+    def test_whisper_same_size_corruption_is_retried_before_publication(self):
+        repo = 'Systran/faster-whisper-large-v3'
+        files = {
+            'config.json': b'{"fixture":"config"}',
+            'tokenizer.json': b'{"fixture":"tokenizer"}',
+            'preprocessor_config.json': b'{"fixture":"metadata"}',
+            'model.bin': b'W' * (64 * 1024),
+            'vocabulary.json': b'{"fixture":"vocabulary"}',
+        }
+        installer, _, _, server, _, events = self.make_hf_installer(
+            files, role='asr', repo=repo, platform='linux-x86_64')
+        server.corrupt_once.add('model.bin')
+        result = installer.install('asr', 'linux-x86_64')
+        self.assertTrue(result['install_ready'])
+        self.assertEqual((Path(result['root']) / 'model.bin').read_bytes(), files['model.bin'])
+        self.assertTrue(any(event['event'] == 'retrying' for event in events))
+        self.assertTrue(all(item['status'] == 'verified' for item in result['files']))
+
+    def test_whisper_concurrent_same_artifact_installs_serialize(self):
+        repo = 'Systran/faster-whisper-large-v3'
+        files = {
+            'config.json': b'{"fixture":"config"}',
+            'tokenizer.json': b'{"fixture":"tokenizer"}',
+            'preprocessor_config.json': b'{"fixture":"metadata"}',
+            'model.bin': b'W' * (32 * 1024),
+            'vocabulary.json': b'{"fixture":"vocabulary"}',
+        }
+        installer, _, _, server, _, _ = self.make_hf_installer(
+            files, role='asr', repo=repo, platform='linux-x86_64')
+        errors, results = [], []
+        barrier = threading.Barrier(2)
+        def run():
+            try:
+                barrier.wait()
+                results.append(installer.install('asr', 'linux-x86_64'))
+            except Exception as exc:
+                errors.append(exc)
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertCountEqual([result['reused'] for result in results], [False, True])
+        self.assertCountEqual(server.file_requests, list(files))
+
+    def test_whisper_failed_replacement_preserves_previous_verified_artifact(self):
+        repo = 'Systran/faster-whisper-large-v3'
+        files = {
+            'config.json': b'{"fixture":"config"}',
+            'tokenizer.json': b'{"fixture":"tokenizer"}',
+            'preprocessor_config.json': b'{"fixture":"metadata"}',
+            'model.bin': b'W' * (32 * 1024),
+            'vocabulary.json': b'{"fixture":"vocabulary"}',
+        }
+        installer, _, artifact, server, root, _ = self.make_hf_installer(
+            files, role='asr', repo=repo, platform='linux-x86_64')
+        previous = installer.install('asr', 'linux-x86_64')
+        old_catalog = copy.deepcopy(installer.catalog)
+        artifact['revision'] = 'b' * 40
+        replacement = b'N' * len(files['model.bin'])
+        server.files['model.bin'] = replacement
+        for item in artifact['required_files']:
+            if item['path'] == 'model.bin':
+                item['sha256'] = hashlib.sha256(replacement).hexdigest()
+        server.corrupt_data['model.bin'] = b'X' * len(replacement)
+        with self.assertRaises(InstallError):
+            installer.install('asr', 'linux-x86_64')
+        old_checker = _Installer(root, old_catalog, allow_test_http=True,
+                                 test_hf_endpoint=installer.test_hf_endpoint)
+        self.assertTrue(old_checker.check('asr', 'linux-x86_64')['install_ready'])
+        self.assertEqual((Path(previous['root']) / 'model.bin').read_bytes(), files['model.bin'])
+
+    def test_whisper_process_termination_leaves_recoverable_unpublished_stage(self):
+        repo = 'Systran/faster-whisper-large-v3'
+        files = {
+            'config.json': b'{"fixture":"config"}',
+            'tokenizer.json': b'{"fixture":"tokenizer"}',
+            'preprocessor_config.json': b'{"fixture":"metadata"}',
+            'model.bin': b'W' * (256 * 1024),
+            'vocabulary.json': b'{"fixture":"vocabulary"}',
+        }
+        installer, _, _, server, root, _ = self.make_hf_installer(
+            files, role='asr', repo=repo, platform='linux-x86_64')
+        server.drop_file = 'model.bin'
+        code = (
+            'import json, os, sys; '
+            'from speechcraft_models.download import _Installer; '
+            'try_install = lambda: _Installer(sys.argv[1], json.loads(sys.argv[2]), '
+            'allow_test_http=True, retry_delay=0, test_hf_endpoint=sys.argv[3], '
+            'attempts=1).install("asr", "linux-x86_64"); '
+            '\ntry:\n try_install()\nexcept Exception:\n os._exit(47)'
+        )
+        process = subprocess.run(
+            [sys.executable, '-c', code, str(root), json.dumps(installer.catalog),
+             installer.test_hf_endpoint], timeout=15, check=False)
+        self.assertEqual(process.returncode, 47)
+        stage = next(root.glob('whisper-large-v3/.stage-*'))
+        partials = list((stage / '.hf-source/.cache/huggingface/download').glob('*.incomplete'))
+        self.assertTrue(partials, 'expected Hub interrupted-transfer state in staging')
+        self.assertFalse(any(path.is_dir() and not path.name.startswith('.stage-')
+                             for path in (root / 'whisper-large-v3').iterdir()))
+        server.drop_file = None
+        result = installer.install('asr', 'linux-x86_64')
+        self.assertTrue(result['install_ready'])
+        self.assertTrue(all(item['status'] == 'verified' for item in result['files']))
+        for name, data in files.items():
+            self.assertEqual((Path(result['root']) / name).read_bytes(), data)
+
     def test_huggingface_insufficient_disk_fails_before_acquisition(self):
         filename = 'nemo_en_titanet_large.onnx'
         installer, _, _, server, _, _ = self.make_hf_installer({filename: b'model'})
@@ -677,7 +825,53 @@ class DownloadTests(unittest.TestCase):
                    return_value=SimpleNamespace(release='6.6.1-microsoft-standard-WSL2')):
             with patch('builtins.open', mock_open(read_data=mountinfo)):
                 with self.assertRaisesRegex(InstallError, 'WSL Linux filesystem'):
-                    _reject_wsl_windows_mount(Path('/mnt/c/Users/test/models'), 'windows-wsl2')
+                    _reject_wsl_windows_mount(Path('/mnt/c/Users/test/models'), 'linux-x86_64')
+
+    def test_wsl_storage_policy_is_host_detected_and_independent_of_selection(self):
+        mountinfo = ('36 25 0:34 / / rw,relatime - ext4 /dev/sda rw\n'
+                     '37 36 0:35 / /mnt/c rw,relatime - 9p drvfs rw\n'
+                     '38 36 0:35 / /home/test/windows rw,relatime - 9p drvfs rw\n')
+        with patch('speechcraft_models.download.os.uname',
+                   return_value=SimpleNamespace(release='6.6.1-microsoft-standard-WSL2')):
+            with patch('builtins.open', mock_open(read_data=mountinfo)):
+                for platform in ('linux-x86_64', 'windows-wsl2'):
+                    with self.subTest(platform=platform):
+                        _reject_wsl_windows_mount(Path(self.temp.name) / 'models', platform)
+                        for windows_mount in ('/mnt/c/Users/test/models', '/home/test/windows/models'):
+                            with self.assertRaisesRegex(InstallError, 'Windows-mounted'):
+                                _reject_wsl_windows_mount(Path(windows_mount), platform)
+                        with self.assertRaisesRegex(InstallError, 'Windows-mounted'):
+                            _Installer(Path('/mnt/c/SpeechCraft/models'), self.catalog).install(
+                                'asr', platform)
+
+    def test_wsl_storage_policy_follows_symlinks_and_fails_closed(self):
+        mountinfo = ('36 25 0:34 / / rw,relatime - ext4 /dev/sda rw\n'
+                     '37 36 0:35 / /mnt/c rw,relatime - 9p drvfs rw\n')
+        alias = Path(self.temp.name) / 'windows-models'
+        alias.symlink_to('/mnt/c/Users/test/models')
+        with patch('speechcraft_models.download.os.uname',
+                   return_value=SimpleNamespace(release='microsoft-standard-WSL2')):
+            with patch('builtins.open', mock_open(read_data=mountinfo)):
+                with self.assertRaisesRegex(InstallError, 'Windows-mounted'):
+                    _reject_wsl_windows_mount(alias)
+            with patch('builtins.open', side_effect=OSError('mountinfo unavailable')):
+                with self.assertRaisesRegex(InstallError, 'cannot confirm WSL'):
+                    _reject_wsl_windows_mount(Path(self.temp.name) / 'models')
+
+    def test_wsl_environment_marker_is_runtime_evidence(self):
+        mountinfo = ('36 25 0:34 / / rw,relatime - ext4 /dev/sda rw\n'
+                     '37 36 0:35 / /mnt/c rw,relatime - 9p drvfs rw\n')
+        with patch('speechcraft_models.download.os.uname',
+                   return_value=SimpleNamespace(release='6.6.1-custom')):
+            with patch('builtins.open', mock_open(read_data=mountinfo)):
+                with patch.dict(os.environ, {'WSL_INTEROP': '/run/WSL/123_interop'}):
+                    with self.assertRaisesRegex(InstallError, 'Windows-mounted'):
+                        _reject_wsl_windows_mount(Path('/mnt/c/model-store'))
+
+    def test_native_linux_and_macos_skip_wsl_restrictions(self):
+        with patch('speechcraft_models.download._wsl_runtime', return_value=False):
+            _reject_wsl_windows_mount(Path('/mnt/c/models'), 'linux-x86_64')
+            _reject_wsl_windows_mount(Path('/mnt/c/models'), 'macos-arm64')
 
     def test_wsl_xet_cache_rejects_windows_drive_mount(self):
         from huggingface_hub import constants
@@ -696,6 +890,23 @@ class DownloadTests(unittest.TestCase):
         finally:
             installer._event_context.reset(token)
             os.close(root_fd)
+
+    def test_wsl_rejects_effective_hf_home_and_hub_cache_locations(self):
+        from huggingface_hub import constants
+        from speechcraft_models.download import _validate_huggingface_storage
+        mountinfo = ('36 25 0:34 / / rw,relatime - ext4 /dev/sda rw\n'
+                     '37 36 0:35 / /mnt/c rw,relatime - 9p drvfs rw\n')
+        native_cache = str(Path(self.temp.name) / 'hf-cache')
+        with patch('speechcraft_models.download.os.uname',
+                   return_value=SimpleNamespace(release='microsoft-standard-WSL2')):
+            with patch('builtins.open', mock_open(read_data=mountinfo)):
+                with patch.object(constants, 'HF_HUB_CACHE', native_cache), \
+                     patch.object(constants, 'HF_XET_CACHE', native_cache):
+                    for field in ('HF_HOME', 'HF_HUB_CACHE', 'HF_XET_CACHE'):
+                        with self.subTest(cache=field):
+                            with patch.object(constants, field, '/mnt/c/Users/test/hf-cache'):
+                                with self.assertRaisesRegex(InstallError, 'Windows-mounted'):
+                                    _validate_huggingface_storage(Path(self.temp.name) / 'models')
 
     def test_invalid_file_paths_and_symlink_escapes(self):
         for path in ('../outside', '/outside', 'a/../../b', 'a\\b'):
