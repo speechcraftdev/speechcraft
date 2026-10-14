@@ -1,4 +1,4 @@
-# Setup Controller API v1
+# Setup Controller API v2
 
 All routes use `/setup-api`. JSON responses are UTF-8 and `Cache-Control: no-store`.
 The controller binds only to `127.0.0.1`. The eventual application must proxy
@@ -30,6 +30,17 @@ CSRF token for the authenticated session. After a browser refresh, call
 bootstrap secret is rotated each controller start, so a launcher establishes a
 new browser session after restart.
 
+The production launcher must not put this secret in a browser URL, JavaScript,
+or a console log. The planned browser handoff is for the launcher-owned
+same-origin proxy to receive a credential-free `POST /setup-api/session`, make
+the bearer-authenticated session request privately over loopback, and forward
+only the HTTP-only session cookie and CSRF response to the browser. Host and
+Origin remain validated end-to-end; no wildcard CORS is added. For HTTPS proxy
+access use `Secure` cookies. For SSH-tunneled localhost access, keep the
+controller/proxy bound to remote loopback and configure the forwarded Host and
+Origin explicitly. This proxy handoff still requires launcher integration
+testing.
+
 Every route except `/health` requires the session cookie. Mutations also require
 an allowed `Origin` and `X-SpeechCraft-CSRF`. Host and Origin are allowlisted;
 there is no CORS response. Credentials are never accepted in query parameters.
@@ -52,10 +63,11 @@ JavaScript.
 
 ## Job states and stages
 
-States are `idle`, `running`, `waiting_for_user`, `failed`, `cancelled`,
+States are `idle`, `running`, `waiting_for_user`, `cancelling`, `failed`, `cancelled`,
 `interrupted`, and `completed`. `idle` is the snapshot state when no job exists;
 the other values belong to a persisted job. Legal transitions are enforced by
-the controller. Retry is an explicit new attempt on the existing job ID.
+the controller. Retry is an explicit new attempt on the existing job ID. State
+schema 1 migrates atomically to schema 2.
 
 This milestone simulates these ordered stages:
 
@@ -77,7 +89,7 @@ the session cookie. Example while running:
 {
   "controller_status": "running",
   "job": {
-    "schema_version": 1,
+    "schema_version": 2,
     "id": "a676d84c-341a-4eae-9bd7-8b71dd149647",
     "state": "running",
     "stage": "install_models",
@@ -87,6 +99,7 @@ the session cookie. Example while running:
     "started_at": "2026-10-14T10:30:00.000Z",
     "completed_at": null,
     "attempt_count": 1,
+    "attempt_id": "953f50e6-ec29-4fe9-a5b6-0d0b15d8ed8c",
     "revision": 18,
     "progress": {
       "current": 1,
@@ -125,9 +138,12 @@ count increases. Returns `202`. Other states return `409 RETRY_NOT_ALLOWED`.
 
 ### `POST /setup-api/cancel`
 
-Persists cancellation and aborts owned simulated work. Returns `202` when it
-cancels a job and `200` for repeated cancellation of the same job. A completed
-or failed job cannot be cancelled.
+Persists `cancelling` and aborts owned work. The executor must settle before
+the job becomes terminal `cancelled`; retry is rejected while it is still
+stopping. Returns `202` when cancellation begins and `200` for a repeated
+request. An already failed or completed job cannot be cancelled. `attempt_id`
+changes on every retry, and events from older attempt IDs cannot change the
+current job.
 
 Operation response example:
 
@@ -189,8 +205,8 @@ EventSource reconnects and obtains current state.
 
 Disconnecting a browser or event stream does not cancel setup. Cancellation is
 an explicit API operation. The controller itself does not continue work while
-stopped; an unfinished `running` job becomes `interrupted` on the next startup
-and requires explicit retry.
+stopped; unfinished `running` or `cancelling` work becomes `interrupted` on the
+next startup and requires explicit retry.
 
 ## Simulated readiness boundary
 

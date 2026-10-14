@@ -1,12 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 export const EVENT_LIMIT = 256;
 const OWNER_VERSION = 1;
-const OWNER_GRACE_MS = 5_000;
 
 export class StateStoreError extends Error {
   constructor(code, message) {
@@ -79,63 +78,47 @@ export function atomicWriteFile(directory, filename, contents, mode = 0o600) {
   }
 }
 
-function inspectOwner(directory) {
-  const directoryInfo = fs.lstatSync(directory);
-  if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) {
-    throw new StateStoreError('LOCK_UNSAFE', 'controller lock path is not a real directory');
+function inspectOwner(lockPath) {
+  const info = fs.lstatSync(lockPath);
+  if (!info.isFile() || info.isSymbolicLink()) {
+    throw new StateStoreError('LOCK_UNSAFE', 'controller lock path is not a regular non-symlink file');
   }
-  const ownerPath = path.join(directory, 'owner.json');
-  if (!safeRegularFile(ownerPath)) {
-    if (Date.now() - directoryInfo.mtimeMs > OWNER_GRACE_MS) return { stale: true, ownerless: true };
-    return { stale: false, reason: 'controller ownership is being established' };
+  if ((typeof process.getuid === 'function' && info.uid !== process.getuid()) || (info.mode & 0o077) !== 0) {
+    throw new StateStoreError('LOCK_UNSAFE', 'controller lock ownership or permissions are unsafe; inspect it manually');
   }
-  if (fs.statSync(ownerPath).size > 4_096) {
-    return { stale: false, reason: 'controller lock metadata is oversized; manual inspection is required' };
+  if (info.size > 4_096) {
+    return { stale: false, reason: 'controller lock metadata is oversized; manual inspection is required', info };
   }
   let owner;
-  try { owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8')); }
-  catch { return { stale: false, reason: 'controller lock metadata is corrupt; manual inspection is required' }; }
-  if (owner?.version !== OWNER_VERSION || !Number.isSafeInteger(owner.pid)
-      || typeof owner.identity !== 'string' || typeof owner.nonce !== 'string') {
-    return { stale: false, reason: 'controller lock metadata is invalid; manual inspection is required' };
+  try { owner = JSON.parse(fs.readFileSync(lockPath, 'utf8')); }
+  catch { return { stale: false, reason: 'controller lock metadata is missing or corrupt; manual inspection is required', info }; }
+  if (owner?.version !== OWNER_VERSION || !Number.isSafeInteger(owner.pid) || owner.pid < 1
+      || typeof owner.identity !== 'string' || !/^[a-f0-9]{48}$/.test(owner.nonce || '')) {
+    return { stale: false, reason: 'controller lock metadata is invalid; manual inspection is required', info };
   }
   try {
     process.kill(owner.pid, 0);
   } catch (error) {
-    if (error.code === 'ESRCH') return { stale: true, ownerless: false };
-    return { stale: false, reason: 'cannot establish whether the controller lock owner is alive' };
+    if (error.code === 'ESRCH') return { stale: true, ownerless: false, info, owner };
+    return { stale: false, reason: 'cannot establish whether the controller lock owner is alive', info };
   }
   try {
     const liveIdentity = processIdentity(owner.pid);
-    if (liveIdentity !== owner.identity) return { stale: true, ownerless: false };
-    return { stale: false, reason: 'another controller owns this SpeechCraft installation' };
+    if (liveIdentity !== owner.identity) return { stale: true, ownerless: false, info, owner };
+    return { stale: false, reason: 'another controller owns this SpeechCraft installation', info, owner };
   } catch {
     // A live PID whose start identity cannot be checked is never evicted.
-    return { stale: false, reason: 'cannot safely identify the controller lock owner' };
+    return { stale: false, reason: 'cannot safely identify the controller lock owner', info };
   }
 }
 
-function removeStaleLock(lockDirectory, staleName) {
-  const staleInfo = fs.lstatSync(staleName);
-  if (!staleInfo.isDirectory() || staleInfo.isSymbolicLink()) {
-    throw new StateStoreError('LOCK_UNSAFE', 'stale controller lock path is unsafe');
-  }
-  const names = fs.readdirSync(staleName);
-  if (names.some((name) => name !== 'owner.json')) {
-    throw new StateStoreError('LOCK_UNSAFE', 'stale controller lock contains unexpected files; inspect it manually');
-  }
-  if (names.includes('owner.json')) {
-    if (!safeRegularFile(path.join(staleName, 'owner.json'))) {
-      throw new StateStoreError('LOCK_UNSAFE', 'stale controller lock has unsafe owner metadata');
-    }
-    fs.unlinkSync(path.join(staleName, 'owner.json'));
-  }
-  fs.rmdirSync(staleName);
-  syncDirectory(lockDirectory);
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function acquireOwnership(directory) {
-  const lockDirectory = path.join(directory, '.controller.lock');
+  const lockPath = path.join(directory, '.controller.lock');
+  const recoveryPath = path.join(directory, '.controller.recovery');
   const owner = {
     version: OWNER_VERSION,
     pid: process.pid,
@@ -143,39 +126,111 @@ function acquireOwnership(directory) {
     nonce: randomBytes(24).toString('hex'),
     createdAt: new Date().toISOString(),
   };
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  const writeExclusive = (target, value) => {
+    const fd = fs.openSync(target, 'wx', 0o600);
     try {
-      fs.mkdirSync(lockDirectory, { mode: 0o700 });
-      try {
-        fs.writeFileSync(path.join(lockDirectory, 'owner.json'), `${JSON.stringify(owner)}\n`, { flag: 'wx', mode: 0o600 });
-        const ownerFd = fs.openSync(path.join(lockDirectory, 'owner.json'), 'r');
-        try { fs.fsyncSync(ownerFd); } finally { fs.closeSync(ownerFd); }
-        syncDirectory(lockDirectory);
-        return { lockDirectory, owner };
-      } catch (error) {
-        throw new StateStoreError('LOCK_CREATE_FAILED', `could not record controller ownership: ${error.message}`);
+      fs.writeFileSync(fd, `${JSON.stringify(value)}\n`, 'utf8');
+      fs.fsyncSync(fd);
+    } finally { fs.closeSync(fd); }
+    syncDirectory(directory);
+    return fs.lstatSync(target);
+  };
+  const recoveryBlocker = () => {
+    if (!fs.existsSync(recoveryPath)) return false;
+    let reason = 'a controller is recovering stale ownership';
+    try {
+      const info = fs.lstatSync(recoveryPath);
+      if (!info.isFile() || info.isSymbolicLink()
+          || (typeof process.getuid === 'function' && info.uid !== process.getuid())
+          || (info.mode & 0o077) !== 0 || info.size > 4_096) reason = 'controller recovery metadata is unsafe';
+      else {
+        const recovery = JSON.parse(fs.readFileSync(recoveryPath, 'utf8'));
+        if (!Number.isSafeInteger(recovery.pid) || typeof recovery.identity !== 'string') reason = 'controller recovery metadata is corrupt';
       }
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const status = inspectOwner(lockDirectory);
-      if (!status.stale) throw new StateStoreError('CONTROLLER_ALREADY_RUNNING', status.reason);
-      const staleName = path.join(directory, `.controller-stale-${randomBytes(12).toString('hex')}`);
-      try {
-        fs.renameSync(lockDirectory, staleName);
-      } catch (renameError) {
-        if (renameError.code === 'ENOENT' || renameError.code === 'EEXIST') continue;
-        throw new StateStoreError('LOCK_RECOVERY_FAILED', `could not safely recover stale controller ownership: ${renameError.message}`);
-      }
-      removeStaleLock(directory, staleName);
+    } catch { reason = 'controller recovery metadata is corrupt'; }
+    throw new StateStoreError('LOCK_RECOVERY_REQUIRED', `${reason}; preserve the lock files and inspect ${directory} before manual recovery`);
+  };
+  recoveryBlocker();
+  try {
+    const info = writeExclusive(lockPath, owner);
+    // A stale-lock reclaimer can only create its marker after observing an old
+    // lock. Recheck after creation so a contender never proceeds through it.
+    if (fs.existsSync(recoveryPath)) {
+      const current = fs.lstatSync(lockPath);
+      if (sameFileIdentity(info, current)) fs.unlinkSync(lockPath);
+      throw new StateStoreError('CONTROLLER_ALREADY_RUNNING', 'another controller is recovering ownership; retry after it exits');
     }
+    return { lockPath, recoveryPath, owner, fileIdentity: info };
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
   }
-  throw new StateStoreError('CONTROLLER_ALREADY_RUNNING', 'another controller is acquiring ownership; retry shortly');
+
+  let status;
+  try { status = inspectOwner(lockPath); }
+  catch (error) { throw error; }
+  if (!status.stale) throw new StateStoreError('CONTROLLER_ALREADY_RUNNING', status.reason);
+
+  const recovery = { version: OWNER_VERSION, pid: process.pid, identity: owner.identity,
+    nonce: randomBytes(24).toString('hex'), createdAt: owner.createdAt };
+  let recoveryInfo;
+  try { recoveryInfo = writeExclusive(recoveryPath, recovery); }
+  catch (error) {
+    if (error.code === 'EEXIST') throw new StateStoreError('LOCK_RECOVERY_REQUIRED', 'another controller is recovering stale ownership; retry after it exits');
+    throw error;
+  }
+  let newInfo;
+  try {
+    const current = inspectOwner(lockPath);
+    if (!sameFileIdentity(status.info, current.info) || !current.stale
+        || current.owner?.nonce !== status.owner?.nonce) {
+      throw new StateStoreError('CONTROLLER_ALREADY_RUNNING', 'controller ownership changed during stale-lock recovery; retry after inspecting the owner');
+    }
+    // The exclusive recovery marker prevents compliant contenders from
+    // acquiring the now-vacant lock path. The inode check above means this
+    // unlink can only remove the stale file that was inspected.
+    const beforeUnlink = fs.lstatSync(lockPath);
+    if (!sameFileIdentity(status.info, beforeUnlink)) {
+      throw new StateStoreError('CONTROLLER_ALREADY_RUNNING', 'controller lock changed during recovery; no ownership was removed');
+    }
+    fs.unlinkSync(lockPath);
+    try { newInfo = writeExclusive(lockPath, owner); }
+    catch (error) {
+      if (error.code === 'EEXIST') throw new StateStoreError('CONTROLLER_ALREADY_RUNNING', 'another controller acquired ownership during recovery');
+      throw error;
+    }
+    // We created the lock while holding the recovery marker. No other
+    // compliant contender may treat it as stale until the marker is removed.
+    const ownerCheck = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    if (ownerCheck.nonce !== owner.nonce) throw new StateStoreError('LOCK_RECOVERY_FAILED', 'recovered lock identity changed unexpectedly');
+    fs.unlinkSync(recoveryPath);
+    syncDirectory(directory);
+    return { lockPath, recoveryPath, owner, fileIdentity: newInfo };
+  } catch (error) {
+    // If this process dies before this cleanup, the marker remains as a
+    // fail-closed recovery tombstone. It is never guessed stale or stolen.
+    try {
+      if (newInfo) {
+        const currentLock = fs.lstatSync(lockPath);
+        if (sameFileIdentity(newInfo, currentLock)
+            && JSON.parse(fs.readFileSync(lockPath, 'utf8')).nonce === owner.nonce) fs.unlinkSync(lockPath);
+      }
+    } catch {}
+    try {
+      const marker = fs.lstatSync(recoveryPath);
+      if (sameFileIdentity(recoveryInfo, marker)) {
+        const stored = JSON.parse(fs.readFileSync(recoveryPath, 'utf8'));
+        if (stored.nonce === recovery.nonce) fs.unlinkSync(recoveryPath);
+      }
+    } catch {}
+    throw error;
+  }
 }
 
-const JOB_STATES = new Set(['running', 'waiting_for_user', 'failed', 'cancelled', 'interrupted', 'completed']);
+const JOB_STATES = new Set(['running', 'waiting_for_user', 'cancelling', 'failed', 'cancelled', 'interrupted', 'completed']);
 
-function validateState(state) {
-  if (!state || state.schema_version !== STATE_VERSION || !Number.isSafeInteger(state.revision)
+function validateState(state, version = STATE_VERSION) {
+  const jobVersion = version === 1 ? 1 : 2;
+  if (!state || state.schema_version !== version || !Number.isSafeInteger(state.revision)
       || state.revision < 0 || !Array.isArray(state.events) || state.events.length > EVENT_LIMIT
       || !(state.job === null || (typeof state.job === 'object' && !Array.isArray(state.job)))
       || (state.revision === 0 && state.events.length !== 0)
@@ -184,7 +239,9 @@ function validateState(state) {
   }
   if (state.job !== null) {
     const job = state.job;
-    if (job.schema_version !== 1 || typeof job.id !== 'string' || !JOB_STATES.has(job.state)
+    if (job.schema_version !== jobVersion || typeof job.id !== 'string'
+        || (version === 2 && !/^[0-9a-f-]{36}$/i.test(job.attempt_id || ''))
+        || !JOB_STATES.has(job.state)
         || !Number.isSafeInteger(job.attempt_count) || job.attempt_count < 1
         || !Number.isSafeInteger(job.revision) || job.revision !== state.revision
         || typeof job.created_at !== 'string' || typeof job.updated_at !== 'string'
@@ -230,6 +287,10 @@ export class StateStore {
     const store = new StateStore(absolute, lock);
     try {
       store.state = store.read();
+      if (store.state.schema_version !== STATE_VERSION) {
+        store.state = migrateState(store.state);
+        atomicWriteFile(store.directory, 'state.json', `${JSON.stringify(store.state, null, 2)}\n`);
+      }
       return store;
     } catch (error) {
       store.releaseOwnership();
@@ -250,7 +311,8 @@ export class StateStore {
     let state;
     try { state = JSON.parse(fs.readFileSync(this.file, 'utf8')); }
     catch { throw new StateStoreError('STATE_CORRUPT', 'setup state JSON is corrupt; preserve the file and inspect it before recovery'); }
-    validateState(state);
+    if (state?.schema_version === 1) validateState(state, 1);
+    else validateState(state);
     return state;
   }
 
@@ -282,15 +344,27 @@ export class StateStore {
   }
 
   releaseOwnership() {
-    const { lockDirectory, owner } = this.lock;
+    const { lockPath, owner, fileIdentity } = this.lock;
     try {
-      const current = JSON.parse(fs.readFileSync(path.join(lockDirectory, 'owner.json'), 'utf8'));
+      const info = fs.lstatSync(lockPath);
+      if (!info.isFile() || info.isSymbolicLink() || !sameFileIdentity(fileIdentity, info)) return;
+      const current = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
       if (current.nonce !== owner.nonce) return;
-      fs.unlinkSync(path.join(lockDirectory, 'owner.json'));
-      fs.rmdirSync(lockDirectory);
+      fs.unlinkSync(lockPath);
       syncDirectory(this.directory);
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
   }
+}
+
+function migrateState(state) {
+  const migrateJob = (job) => job ? { ...job, schema_version: 2, attempt_id: randomUUID() } : null;
+  return {
+    ...state,
+    schema_version: STATE_VERSION,
+    job: migrateJob(state.job),
+    events: state.events.map((event) => ({ ...event,
+      data: { ...event.data, job: migrateJob(event.data.job) } })),
+  };
 }

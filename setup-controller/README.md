@@ -32,20 +32,39 @@ On macOS filesystems that reject directory fsync, atomic rename still prevents
 partial JSON, but power-loss durability depends on filesystem guarantees.
 There is no silent reset for malformed or unsupported state.
 
-Only one controller process can own a data directory. Ownership uses atomic
-directory creation and records PID plus an OS process-start identity (Linux
-boot ID and process start ticks; macOS `ps` start time), so a reused PID is not
-mistaken for the original owner. Stale ownership is reclaimed only after the
-prior process is confirmed dead or its process-start identity differs. An
-ambiguous/corrupt lock is left in place and requires inspection; it is never
-removed merely because a PID check failed. Locks and atomic rename provide local
-filesystem guarantees; network filesystems are unsupported.
+Only one controller process can own a data directory. A private regular lock
+file is created with exclusive `open(..., 'wx')` and records PID plus an OS
+process-start identity (Linux boot ID and process start ticks; macOS `ps` start
+time). This distinguishes normal PID reuse; if identity cannot be established,
+ownership fails closed. Stale recovery first takes a second exclusive recovery
+marker, then rechecks the original lock file's device/inode and owner nonce
+before unlinking it. This prevents an inspect-then-rename race from moving a
+new live owner's lock. All contenders honor the marker. If a process dies while
+holding that marker, the next start fails with `LOCK_RECOVERY_REQUIRED`; it
+does not guess or steal the marker. Stop all controller processes, inspect the
+private `.controller.recovery` and `.controller.lock` metadata, confirm the
+recorded recovery PID/start identity is no longer live, then remove only the
+stale `.controller.recovery` marker. Leave `.controller.lock` in place so the
+next start can reclaim it using the inode-checked protocol. Corrupt/unsafe
+metadata requires manual inspection and must not be removed based on PID alone.
+Local Linux and macOS filesystems are supported; network filesystems are not.
 
-After unexpected termination, persisted `running` work is marked
-`interrupted`; it is never reported as completed or silently resumed. A graceful
-SIGINT/SIGTERM persists cancellation, aborts simulated work, closes event streams,
-and releases ownership. Jobs do not continue while the controller process is
-stopped.
+Persistent state schema 1 upgrades atomically to schema 2, which adds a unique
+execution-attempt ID. After unexpected termination, persisted `running` or
+`cancelling` work is marked `interrupted`; it is never reported as completed or
+silently resumed. Cancellation first persists `cancelling`, aborts the current
+attempt, and becomes `cancelled` only after that executor settles. Retry is
+rejected until the previous attempt is conclusively stopped. Every progress,
+failure, and completion callback is scoped to the exact attempt ID. A graceful
+SIGINT/SIGTERM waits for simulated work to acknowledge cancellation, closes
+event streams, and releases ownership. Jobs do not continue while the controller
+process is stopped.
+
+When predefined installation subprocesses are added, they must be owned by the
+attempt that launched them. Cancellation must terminate the owned process
+group, escalate only after a bounded grace period, wait for child exit/reap,
+and only then persist terminal `cancelled` or permit retry. A controller must
+not release installation ownership while a child can still write managed files.
 
 ## Start locally
 
@@ -116,6 +135,26 @@ configure exact `SPEECHCRAFT_SETUP_ALLOWED_HOSTS` and
 `SPEECHCRAFT_SETUP_SECURE_COOKIES=1`, and proxy `/setup-api/*` through the same
 browser origin as Next.js. Proxy integration is not implemented in this
 milestone.
+
+### Launcher-to-browser session handoff
+
+The launcher must keep the bootstrap capability out of browser URLs, page
+JavaScript, console output, and arbitrary websites. The planned handoff is a
+same-origin proxy operation: the launcher holds the private bootstrap token in
+memory (or reads the mode-0600 file), and the frontend makes a credential-free
+`POST /setup-api/session` to the application origin. The launcher-side proxy
+uses the token only on its private loopback request to the controller, then
+forwards the controller's HTTP-only session `Set-Cookie` and CSRF response to
+that same-origin browser request. The token is never forwarded to the browser.
+The controller continues validating exact Host and Origin values; the proxy
+must preserve the browser Origin and must not allow cross-origin CORS. The
+cookie remains `HttpOnly` and `SameSite=Strict`, and mutations retain CSRF
+checks. The proxy can be HTTPS with `Secure` cookies or local HTTP with the
+loopback cookie policy. For SSH access, keep the controller and proxy bound to
+loopback on the remote host and forward the application port; the browser uses
+the forwarded localhost origin, and the proxy's explicit Host/Origin allowlist
+must match it. Launcher integration must still validate first-run behavior,
+proxy header handling, and cookie behavior through SSH tunnels.
 
 ## Tests
 

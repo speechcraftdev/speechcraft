@@ -61,9 +61,9 @@ function parseCsv(value) {
 
 function statusEvent(job, revision, controllerStatus = 'running') {
   const publicJob = job ? structuredClone(job) : {
-    schema_version: 1,
+    schema_version: 2,
     id: null, state: 'idle', stage: null, task_id: null, progress: null,
-    error: null, attempt_count: 0, revision,
+    error: null, attempt_count: 0, attempt_id: null, revision,
     created_at: null, updated_at: null, started_at: null, completed_at: null,
   };
   return { controller_status: controllerStatus, state_revision: revision, job: publicJob,

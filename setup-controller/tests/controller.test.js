@@ -37,7 +37,7 @@ test('health is narrow and setup status requires authenticated session', async (
   assert.equal(status.status, 200);
   const body = await status.json();
   assert.equal(body.job.state, 'idle');
-  assert.equal(body.job.schema_version, 1);
+  assert.equal(body.job.schema_version, 2);
   assert.equal(body.production_ready, false);
   const refreshed = await f.request('/setup-api/session');
   assert.equal(refreshed.status, 200);
@@ -132,7 +132,101 @@ test('simulated stage failure is durable and explicit retry completes without re
   assert.equal(status.simulated, true);
 });
 
-test('cancellation is persistent, observable, idempotent, and prevents duplicate work', async () => {
+test('cancellation remains nonterminal until the executor acknowledges stop', async () => {
+  let entered;
+  const atStage = new Promise((resolve) => { entered = resolve; });
+  let release;
+  const hold = new Promise((resolve) => { release = resolve; });
+  const f = await fixture({ tasks: { async run(stage) {
+    if (stage === 'inspect_system') { entered(); await hold; }
+  } } });
+  await f.request('/setup-api/start', { method: 'POST', body: {} });
+  await atStage;
+  const cancelled = await f.request('/setup-api/cancel', { method: 'POST', body: {} });
+  assert.equal(cancelled.status, 202);
+  assert.equal((await cancelled.json()).job.state, 'cancelling');
+  assert.throws(() => f.app.controller.retry(), { code: 'ATTEMPT_STILL_STOPPING' });
+  release();
+  await f.app.controller.waitForIdle();
+  assert.equal(f.app.controller.status().job.state, 'cancelled');
+});
+
+test('retry cannot overlap cancellation; late callbacks from old attempts cannot mutate the new attempt', async () => {
+  let entered;
+  const atStage = new Promise((resolve) => { entered = resolve; });
+  let release;
+  const hold = new Promise((resolve) => { release = resolve; });
+  const callbacks = [];
+  const f = await fixture({ tasks: { async run(stage, { onProgress }) {
+    callbacks.push(onProgress);
+    onProgress({ current: 1, total: 2, percent: 50, message: 'working' });
+    if (callbacks.length === 1) { entered(); await hold; }
+  } } });
+  await f.request('/setup-api/start', { method: 'POST', body: {} });
+  await atStage;
+  await f.request('/setup-api/cancel', { method: 'POST', body: {} });
+  assert.throws(() => f.app.controller.retry(), { code: 'ATTEMPT_STILL_STOPPING' });
+  const cancelAgain = f.app.controller.cancel();
+  assert.equal(cancelAgain.idempotent, true);
+  release();
+  await f.app.controller.waitForIdle();
+  assert.equal(f.app.controller.status().job.state, 'cancelled');
+  const retry = f.app.controller.retry();
+  const newAttempt = retry.job.attempt_id;
+  const revision = f.app.store.snapshot().revision;
+  callbacks[0]({ current: 2, total: 2, percent: 100, message: 'obsolete callback' });
+  assert.equal(f.app.store.snapshot().revision, revision);
+  assert.notEqual(newAttempt, f.app.store.snapshot().events.find((event) => event.type === 'job_started').data.job.attempt_id);
+  await f.app.controller.waitForIdle();
+  assert.equal(f.app.controller.status().job.state, 'completed');
+});
+
+test('multiple retries serialize and failure can be retried immediately', async () => {
+  let calls = 0;
+  let entered;
+  const atStage = new Promise((resolve) => { entered = resolve; });
+  let release;
+  const hold = new Promise((resolve) => { release = resolve; });
+  const f = await fixture({ tasks: { async run() {
+    calls += 1;
+    if (calls === 1) throw Object.assign(new Error('fail'), { code: 'SIMULATED_STAGE_FAILURE' });
+    if (calls === 2) { entered(); await hold; }
+  } } });
+  await f.request('/setup-api/start', { method: 'POST', body: {} });
+  await f.app.controller.waitForIdle();
+  assert.equal(f.app.controller.status().job.state, 'failed');
+  const retries = await Promise.all([
+    f.request('/setup-api/retry', { method: 'POST', body: {} }),
+    f.request('/setup-api/retry', { method: 'POST', body: {} }),
+  ]);
+  assert.deepEqual(retries.map((response) => response.status).sort(), [202, 409]);
+  await atStage;
+  release();
+  await f.app.controller.waitForIdle();
+  assert.equal(f.app.controller.status().job.state, 'completed');
+});
+
+test('cancellation terminal state follows executor acknowledgement and shutdown waits for it', async () => {
+  let entered;
+  const atStage = new Promise((resolve) => { entered = resolve; });
+  let release;
+  const hold = new Promise((resolve) => { release = resolve; });
+  const f = await fixture({ tasks: { async run(stage) {
+    if (stage === 'inspect_system') { entered(); await hold; }
+  } } });
+  f.app.controller.start();
+  await atStage;
+  const stopping = f.app.close();
+  assert.equal(f.app.controller.status().job.state, 'cancelling');
+  release();
+  await stopping;
+  assert.equal(f.app.controller.status().job.state, 'cancelled');
+  const reopened = StateStore.open(f.directory);
+  assert.equal(reopened.snapshot().job.state, 'cancelled');
+  reopened.releaseOwnership();
+});
+
+test('graceful cancellation stays observable and idempotent after executor stops', async () => {
   let entered;
   const atStage = new Promise((resolve) => { entered = resolve; });
   const f = await fixture({ simulated: { stepDelayMs: 0, stageGate: async (stage) => {
@@ -142,13 +236,11 @@ test('cancellation is persistent, observable, idempotent, and prevents duplicate
   await atStage;
   const cancelled = await f.request('/setup-api/cancel', { method: 'POST', body: {} });
   assert.equal(cancelled.status, 202);
-  assert.equal((await cancelled.json()).job.state, 'cancelled');
+  await f.app.controller.waitForIdle();
+  assert.equal(f.app.controller.status().job.state, 'cancelled');
   const again = await f.request('/setup-api/cancel', { method: 'POST', body: {} });
   assert.equal(again.status, 200);
   assert.equal((await again.json()).idempotent, true);
-  await f.app.controller.waitForIdle();
-  const status = await f.request('/setup-api/status').then((response) => response.json());
-  assert.equal(status.job.state, 'cancelled');
   assert.equal(f.app.store.snapshot().events.filter((event) => event.type === 'job_started').length, 1);
 });
 
