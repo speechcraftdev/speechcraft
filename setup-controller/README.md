@@ -41,12 +41,28 @@ the platform-selected Whisper Large-v3 artifact. The persistent model root is
 ownership of transfers, resumability, integrity checks and publication. These
 files are file-verified only; no inference result is implied.
 
-The worker recipe is unavailable for CPU Linux and macOS. The existing CUDA
-lock is not validated as an installable/release recipe. No trusted FFmpeg/
-FFprobe bundle, model inference helper, or gated pyannote authorization
-consumer is present. TitaNet's release blocker remains. These components
-appear as blocked in status, while an eligible backend can still be started
-and checked at `/healthz`. `production_ready` remains false.
+Worker installation is implemented as a trusted recipe consumer. A profile is
+installable only when its manifest entry is marked both `available` and
+`validated`, pins the project manifest and lock SHA-256 values, identifies the
+managed Python version, environment version, disk estimate, and required
+import checks. The checked-in CPU Linux, CUDA Linux, and macOS entries remain
+unavailable; the existing CUDA lock has not been validated as a full recipe.
+No trusted FFmpeg/FFprobe bundle or inference helper is present. When signed
+off helpers are added to `runtime_validation.probes`, the controller checks
+the helper digest, runs it through the managed model-manager interpreter with
+a bounded timeout and process ownership, and accepts readiness only from a
+structured result confirming inference completed. Missing helpers remain
+blocked. Pyannote authorization is not integrated and TitaNet's release
+blocker remains. These components appear as blocked in status, while an
+eligible backend can still be started and checked at `/healthz`.
+`production_ready` remains false.
+
+Backend service launch uses a durable ownership gate. The child blocks on
+stdin before importing Uvicorn or serving requests; the controller releases
+it only after persisting the process ID and identity. A restart that finds a
+version-2 `starting` record without a PID can safely clear it because the
+child could not have crossed the gate. Older or ambiguous records still fail
+closed and require inspection.
 
 The backend runs as a separately recorded process group on `127.0.0.1` with a
 dynamically allocated port. It writes project DB/media/exports beneath the

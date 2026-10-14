@@ -17,7 +17,7 @@ test('backend service is a managed process group, requires health, and stops cle
   fs.mkdirSync(path.join(appRoot, 'backend'), { recursive: true });
   const executable = path.join(bin, 'python');
   const runtimeExecutable = path.join(runtimeBin, 'python-real');
-  fs.writeFileSync(runtimeExecutable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); if (!m) process.exit(3); http.createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({status:'ok'}));}).listen(Number(m[1]),'127.0.0.1');\n`);
+  fs.writeFileSync(runtimeExecutable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); if (!m) process.exit(3); let launched=false; process.stdin.on('data',b=>{if(b.toString()==='1'&&!launched){launched=true;http.createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({status:'ok'}));}).listen(Number(m[1]),'127.0.0.1');}}); process.stdin.on('end',()=>{if(!launched)process.exit(125);});\n`);
   fs.chmodSync(runtimeExecutable, 0o755);
   fs.symlinkSync(runtimeExecutable, executable);
   const store = StateStore.open(path.join(root, 'state'));
@@ -66,7 +66,7 @@ test('recovery stops an owned backend after controller restart', async () => {
   fs.mkdirSync(runtimeBin, { recursive: true }); fs.mkdirSync(bin, { recursive: true }); fs.mkdirSync(path.join(appRoot, 'backend'), { recursive: true });
   const executable = path.join(bin, 'python');
   const runtimeExecutable = path.join(runtimeBin, 'python-real');
-  fs.writeFileSync(runtimeExecutable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); http.createServer((q,r)=>r.end('{"status":"ok"}')).listen(Number(m[1]),'127.0.0.1');\n`);
+  fs.writeFileSync(runtimeExecutable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); let launched=false; process.stdin.on('data',b=>{if(b.toString()==='1'&&!launched){launched=true;http.createServer((q,r)=>r.end('{"status":"ok"}')).listen(Number(m[1]),'127.0.0.1');}}); process.stdin.on('end',()=>{if(!launched)process.exit(125);});\n`);
   fs.chmodSync(runtimeExecutable, 0o755);
   fs.symlinkSync(runtimeExecutable, executable);
   const store = StateStore.open(path.join(root, 'state'));
@@ -80,5 +80,18 @@ test('recovery stops an owned backend after controller restart', async () => {
     assert.equal(store.snapshot().service_process, null);
     assert.throws(() => process.kill(ownedPid, 0), { code: 'ESRCH' },
       'reconciliation must stop the actual service process, not only clear its record');
+  } finally { store.releaseOwnership(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an un-released v2 backend launch intent is safely reconciled after restart', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-backend-intent-'));
+  const store = StateStore.open(root);
+  store.commit((state) => { state.service_process = { kind: 'speechcraft-backend', state: 'starting', launch_protocol: 2,
+    pid: null, process_group_id: null, identity: null, nonce: 'owned-launch-nonce',
+    attempt_id: 'c44d552a-8e3d-4af9-98d6-e603ce9dd2e1', port: 42123,
+    created_at: new Date().toISOString(), termination_status: 'active' }; }, 'test_launch_intent');
+  try {
+    assert.deepEqual(await reconcileOwnedService(store), { status: 'launch_not_released' });
+    assert.equal(store.snapshot().service_process, null);
   } finally { store.releaseOwnership(); fs.rmSync(root, { recursive: true, force: true }); }
 });

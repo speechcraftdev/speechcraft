@@ -91,7 +91,7 @@ export class BackendService {
     const port = await freeLoopbackPort();
     const nonce = randomUUID();
     const attemptId = this.attemptId || 'service';
-    const record = { kind: 'speechcraft-backend', state: 'starting', pid: null,
+    const record = { kind: 'speechcraft-backend', state: 'starting', launch_protocol: 2, pid: null,
       process_group_id: null, identity: null, nonce, attempt_id: attemptId, port,
       created_at: new Date().toISOString(), termination_status: 'active' };
     await this.persist(record);
@@ -101,11 +101,14 @@ export class BackendService {
       SPEECHCRAFT_DATASET_WORKER_ROOT: this.workerRoot || path.join(this.applicationRoot, 'workers', 'dataset'),
       SPEECHCRAFT_DATASET_WORKER_PYTHON: this.workerPython || '',
       SPEECHCRAFT_OWNED_PROCESS_NONCE: nonce };
-    const script = `import sys,uvicorn; sys.path.insert(0,${JSON.stringify(backendRoot)}); uvicorn.run('app.main:app',host='127.0.0.1',port=${port},log_level='warning')`;
+    // The service cannot bind its port or write application data until its
+    // durable PID/identity record has been committed. If the controller dies
+    // before that commit, closing stdin makes this gate exit harmlessly.
+    const script = `import sys\nif sys.stdin.buffer.read(1) != b'1': raise SystemExit(125)\nimport uvicorn\nsys.path.insert(0,${JSON.stringify(backendRoot)})\nuvicorn.run('app.main:app',host='127.0.0.1',port=${port},log_level='warning')`;
     // Keep the venv path as argv[0]: CPython uses it to locate sys.prefix.
     // `executable` above is only the resolved target used for containment.
     const child = spawn(requestedExecutable, ['-I', '-c', script], { cwd: backendRoot, env, shell: false,
-      detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      detached: true, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
     this.port = port;
     child.stdout.on('data', (chunk) => this.onOutput('stdout', chunk));
@@ -127,7 +130,16 @@ export class BackendService {
     }
     record.state = 'running';
     this.record = record;
-    await this.persist(record);
+    try {
+      await this.persist(record);
+      child.stdin.end('1');
+    } catch (error) {
+      // The gate has not been released, so no backend writer can run. Closing
+      // stdin causes the child to exit without touching application state.
+      child.stdin.destroy();
+      try { await new Promise((resolve) => child.once('close', resolve)); } catch {}
+      throw Object.assign(new Error('Could not persist backend process ownership before launch.'), { code: 'BACKEND_OWNERSHIP_PERSIST_FAILED', cause: error });
+    }
     child.once('exit', () => { void this.handleExit(record); });
     try {
       const deadline = Date.now() + START_TIMEOUT_MS;
@@ -206,6 +218,22 @@ export class BackendService {
 export async function reconcileOwnedService(store) {
   const record = store.snapshot().service_process;
   if (!record) return { status: 'none' };
+  if (record.pid === null && record.state === 'starting' && record.launch_protocol === 2) {
+    // Protocol 2 children wait for a one-byte stdin release that is sent only
+    // after PID and process identity are durably recorded. No release means
+    // the process could not have started the backend.
+    store.commit((state) => {
+      if (state.service_process?.nonce === record.nonce) state.service_process = null;
+      const component = state.job?.bootstrap_status?.components?.backend_service;
+      if (component) {
+        component.state = 'stopped'; component.verification = 'launch_gate_not_released';
+        component.failure_code = 'BACKEND_RESTART_REQUIRED';
+        component.message = 'A controller restart interrupted backend launch before its durable ownership gate; retry service startup.';
+        state.job.bootstrap_status.production_ready = false;
+      }
+    }, 'backend_unreleased_launch_reconciled');
+    return { status: 'launch_not_released' };
+  }
   store.commit((state) => {
     if (state.service_process?.pid === record.pid) {
       state.service_process.state = 'stopping';

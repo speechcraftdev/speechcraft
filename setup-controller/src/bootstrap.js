@@ -281,16 +281,48 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, onChildPro
     let killTimer = null;
     let uncertainTimer = null;
     let cancelled = false;
+    let terminationStarted = false;
     let settled = false;
     let ownershipWriteFailed = false;
     let ownershipUpdate = Promise.resolve();
-    const stop = () => {
-      if (cancelled) return;
+    const markTerminationUncertain = async (diagnostic) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      try {
+        if (childRecord) await onChildProcess?.({ ...childRecord,
+          termination_status: 'termination_uncertain', diagnostic });
+      } catch { ownershipWriteFailed = true; }
+      reject(new BootstrapError('BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN',
+        `${diagnostic} Ownership is retained and retry is blocked.`));
+    };
+    const stop = async () => {
       cancelled = true;
-      try { signalProcessGroup(child.pid, 'SIGTERM'); } catch {}
-      killTimer = setTimeout(() => {
-        if (childRecord && matchesProcessIdentity(childRecord, ownedProcessIdentity(child.pid, childRecord.nonce))) {
-          try { signalProcessGroup(child.pid, 'SIGKILL'); } catch {}
+      // Abort can race the `spawn` event. Never signal until durable ownership
+      // exists and the PID still identifies the process we created.
+      if (!childRecord || terminationStarted) return;
+      await ownershipUpdate;
+      if (settled || terminationStarted) return;
+      terminationStarted = true;
+      const initialIdentity = ownedProcessIdentity(childRecord.pid, childRecord.nonce);
+      if (!matchesProcessIdentity(childRecord, initialIdentity)) {
+        await markTerminationUncertain('The owned process identity changed before initial SIGTERM; no signal was sent.');
+        return;
+      }
+      try { signalProcessGroup(childRecord.pid, 'SIGTERM'); }
+      catch (error) {
+        await markTerminationUncertain(`Initial process-group SIGTERM could not be confirmed (${error.code || 'signal error'}).`);
+        return;
+      }
+      killTimer = setTimeout(async () => {
+        if (!childRecord || !matchesProcessIdentity(childRecord, ownedProcessIdentity(childRecord.pid, childRecord.nonce))) {
+          await markTerminationUncertain('The owned process identity changed before SIGKILL escalation; no signal was sent.');
+          return;
+        }
+        try { signalProcessGroup(childRecord.pid, 'SIGKILL'); }
+        catch (error) {
+          await markTerminationUncertain(`Process-group SIGKILL could not be confirmed (${error.code || 'signal error'}).`);
+          return;
         }
         uncertainTimer = setTimeout(async () => {
           if (settled) return;
@@ -311,14 +343,15 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, onChildPro
       }, graceMs);
       killTimer.unref?.();
     };
-    const onAbort = () => stop();
+    const onAbort = () => { void stop(); };
     signal?.addEventListener('abort', onAbort, { once: true });
     child.once('error', (error) => { spawnError = error; });
     child.once('spawn', () => {
       childRecord = { pid: child.pid, process_group_id: child.pid, identity: ownedProcessIdentity(child.pid, launchNonce),
         nonce: launchNonce, attempt_id: null, termination_status: 'active' };
       ownershipUpdate = Promise.resolve(onChildProcess?.(childRecord))
-        .catch(() => { ownershipWriteFailed = true; stop(); });
+        .then(() => { if (cancelled) void stop(); })
+        .catch(() => { ownershipWriteFailed = true; void stop(); });
     });
     child.once('close', async (code, childSignal) => {
       if (settled) return;
@@ -481,17 +514,27 @@ function inspectDirectoryOrMissing(directory) {
   }
 }
 
+function trustedFileMatches(file, expected) {
+  if (!/^[a-f0-9]{64}$/.test(expected || '')) return false;
+  try {
+    const info = fs.lstatSync(file);
+    if (!info.isFile() || info.isSymbolicLink()) return false;
+    return createHash('sha256').update(fs.readFileSync(file)).digest('hex') === expected;
+  } catch { return false; }
+}
+
 export class BootstrapTasks {
   constructor({ dataDirectory, wheelPath = process.env.SPEECHCRAFT_MODEL_MANAGER_WHEEL,
     wheelSha256 = process.env.SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256,
     bootstrapManifest = manifest, requirementsPath = REQUIREMENTS, fetchImpl = fetch,
-    availableBytes = null, processRunner = runOwnedProcess,
+    availableBytes = null, processRunner = runOwnedProcess, runtimeRecipe = runtimeManifest,
     applicationRoot = fileURLToPath(new URL('../../', import.meta.url)) } = {}) {
     if (!dataDirectory) throw new BootstrapError('DATA_DIRECTORY_REQUIRED', 'A SpeechCraft-managed data directory is required for bootstrap.');
     this.dataDirectory = fs.realpathSync(dataDirectory);
     this.wheelPath = wheelPath;
     this.wheelSha256 = wheelSha256;
     this.manifest = bootstrapManifest;
+    this.runtimeRecipe = runtimeRecipe;
     this.requirementsPath = requirementsPath;
     this.fetchImpl = fetchImpl;
     this.availableBytesOverride = availableBytes;
@@ -719,9 +762,9 @@ export class BootstrapTasks {
     if (stage === 'install_python') return this.ensurePython(context);
     if (stage === 'install_model_manager') return this.ensureModelManager(context);
     if (stage === 'install_backend_environment') return this.ensureBackendEnvironment(context);
-    if (stage === 'install_worker_environment') return this.blockWorkerProfile(context);
+    if (stage === 'install_worker_environment') return this.ensureWorkerEnvironment(context);
     if (stage === 'install_models') return this.installApprovedModels(context);
-    if (stage === 'validate_runtime') return this.markRuntimePending(context);
+    if (stage === 'validate_runtime') return this.validateRuntime(context);
     if (stage === 'start_services') return this.markServicesBlocked(context);
     if (stage === 'verify_services') return this.verifyServices(context);
     if (stage === 'validate_bootstrap') return this.validateBootstrap(context);
@@ -1052,18 +1095,74 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     this.requireSpace(runtimeManifest.disk_space.backend_environment_estimate_bytes + runtimeManifest.disk_space.safety_margin_bytes);
     const env = { ...this.makeEnvironment(this.paths), UV_PROJECT_ENVIRONMENT: target };
     this.emit(context, safeProgress('installing', 'Installing the backend from its repository lockfile into a versioned managed environment.'));
-    await this.runProcess(this.paths.uvExecutable, ['sync', '--locked', '--no-dev', '--no-install-project', '--python', await this.findPython(context), '--project', project], context, { cwd: project, env });
+    await this.runProcess(this.paths.uvExecutable, ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', project], context, { cwd: project, env });
     if (!await this.validateBackendEnvironment(context, target)) throw new BootstrapError('BACKEND_ENVIRONMENT_INVALID', 'The installed backend did not pass its managed-interpreter import probe.');
     this.setComponent(context, 'backend_environment', { state: 'verified', verification: 'lock_identity_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
   }
 
-  blockWorkerProfile(context) {
-    const worker = this.environment.profile === 'macos-arm64' ? runtimeManifest.worker.profiles['macos-arm64']
-      : runtimeManifest.worker.profiles['linux-x86_64-cuda'];
-    this.setComponent(context, 'worker_environment', { state: 'blocked', failure_code: 'runtime_profile_unavailable', message: worker.reason });
-    this.setComponent(context, 'ffmpeg', { state: 'blocked', failure_code: 'runtime_tool_unavailable', message: runtimeManifest.ffmpeg.reason });
-    this.setComponent(context, 'dataset_processing', { state: 'blocked', failure_code: 'runtime_profile_unavailable', message: 'Dataset processing requires a validated worker environment and managed FFmpeg artifact.' });
-    this.emit(context, safeProgress('blocked', 'No validated dataset-worker recipe and trusted FFmpeg bundle are available for this host.'));
+  workerEnvironmentPath(recipe) {
+    return path.join(this.dataDirectory, 'environments', 'worker', `v${recipe.environment_version}-${recipe.lock_sha256.slice(0, 16)}-${selectRuntimeProfile(this.environment).workerProfile}`);
+  }
+
+  async ensureWorkerEnvironment(context) {
+    const selection = selectRuntimeProfile(this.environment);
+    const recipe = this.runtimeRecipe.worker?.profiles?.[selection.workerProfile];
+    this.setComponent(context, 'ffmpeg', { state: 'blocked', failure_code: 'runtime_tool_unavailable',
+      message: this.runtimeRecipe.ffmpeg?.reason || 'No trusted prebuilt FFmpeg artifact is approved.' });
+    if (!recipe?.available || recipe.validated !== true) {
+      const reason = recipe?.reason || `No trusted, validated worker recipe is available for ${selection.workerProfile}.`;
+      this.setComponent(context, 'worker_environment', { state: 'blocked', failure_code: 'runtime_profile_unavailable', message: reason });
+      this.setComponent(context, 'dataset_processing', { state: 'blocked', failure_code: 'runtime_profile_unavailable', message: 'Dataset processing requires a validated worker environment and managed FFmpeg artifact.' });
+      this.emit(context, safeProgress('blocked', reason));
+      return;
+    }
+    const digestPattern = /^[a-f0-9]{64}$/;
+    if (!digestPattern.test(recipe.lock_sha256 || '') || !digestPattern.test(recipe.project_manifest_sha256 || '')
+        || !Number.isSafeInteger(recipe.environment_version) || recipe.environment_version < 1
+        || recipe.python_version !== this.manifest.python.version
+        || !Array.isArray(recipe.validation_modules) || recipe.validation_modules.some((name) => !/^[A-Za-z_][A-Za-z0-9_.]*$/.test(name))) {
+      throw new BootstrapError('WORKER_RECIPE_INVALID', 'The trusted worker recipe is incomplete or malformed.');
+    }
+    const project = path.resolve(this.applicationRoot, recipe.project || this.runtimeRecipe.worker.project);
+    const relativeProject = path.relative(this.applicationRoot, project);
+    if (relativeProject === '..' || relativeProject.startsWith(`..${path.sep}`) || path.isAbsolute(relativeProject)) {
+      throw new BootstrapError('WORKER_RECIPE_INVALID', 'The worker project path escapes the application package.');
+    }
+    const lock = path.resolve(project, recipe.lockfile || this.runtimeRecipe.worker.lockfile.split('/').at(-1));
+    const lockRelative = path.relative(project, lock);
+    if (lockRelative === '..' || lockRelative.startsWith(`..${path.sep}`) || path.isAbsolute(lockRelative)) {
+      throw new BootstrapError('WORKER_RECIPE_INVALID', 'The worker lockfile path escapes its trusted project.');
+    }
+    const projectManifest = path.join(project, 'pyproject.toml');
+    if (!trustedFileMatches(lock, recipe.lock_sha256) || !trustedFileMatches(projectManifest, recipe.project_manifest_sha256)) {
+      throw new BootstrapError('WORKER_RECIPE_INTEGRITY_FAILED', 'The worker lock or project manifest differs from its trusted recipe.');
+    }
+    const target = this.workerEnvironmentPath(recipe);
+    const python = path.join(target, 'bin', 'python');
+    const probe = `import importlib.util,json,os,platform,sys\nassert sys.version.split()[0]==${JSON.stringify(recipe.python_version)},sys.version\nassert os.path.realpath(sys.prefix)==os.path.realpath(${JSON.stringify(target)})\nbase=os.path.realpath(sys.base_prefix); runtime=os.path.realpath(${JSON.stringify(this.paths.pythonRoot)})\nassert base==runtime or base.startswith(runtime+os.sep),base\nassert platform.machine().lower() in ('x86_64','amd64','arm64','aarch64')\nmodules=${JSON.stringify(recipe.validation_modules)}\nmissing=[name for name in modules if importlib.util.find_spec(name) is None]\nassert not missing,missing\nprint(json.dumps({'kind':'SPEECHCRAFT_WORKER_ENV_PROBE','profile':${JSON.stringify(selection.workerProfile)},'version':sys.version.split()[0],'missing':missing,'python':sys.executable}))`;
+    if (inspectDirectoryOrMissing(target)) {
+      try {
+        const result = await this.runProcess(python, ['-I', '-c', probe], context, { cwd: project });
+        parseProbe(result, 'SPEECHCRAFT_WORKER_ENV_PROBE', 'WORKER_ENVIRONMENT_INVALID');
+        this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${recipe.environment_version}/${selection.workerProfile}`,
+          verification: 'trusted_lock_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
+        this.setComponent(context, 'dataset_processing', { state: 'blocked', failure_code: 'runtime_tool_unavailable', message: this.runtimeRecipe.ffmpeg?.reason || 'Managed FFmpeg is unavailable.' });
+        return;
+      } catch (error) {
+        if (error.code === 'BOOTSTRAP_CANCELLED' || error.code === 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN') throw error;
+        await this.quarantine(target, 'invalid-worker-env');
+      }
+    }
+    ensureManagedDirectory(this.dataDirectory, target);
+    this.requireSpace((recipe.estimated_bytes || 0) + (this.runtimeRecipe.disk_space.safety_margin_bytes || 0));
+    const env = { ...this.makeEnvironment(this.paths), UV_PROJECT_ENVIRONMENT: target };
+    this.emit(context, safeProgress('installing', `Installing the trusted ${selection.workerProfile} worker environment.`));
+    await this.runProcess(this.paths.uvExecutable, ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', project], context, { cwd: project, env });
+    const result = await this.runProcess(python, ['-I', '-c', probe], context, { cwd: project });
+    parseProbe(result, 'SPEECHCRAFT_WORKER_ENV_PROBE', 'WORKER_ENVIRONMENT_INVALID');
+    this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${recipe.environment_version}/${selection.workerProfile}`,
+      verification: 'trusted_lock_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
+    this.setComponent(context, 'dataset_processing', { state: 'blocked', failure_code: 'runtime_tool_unavailable', message: this.runtimeRecipe.ffmpeg?.reason || 'Managed FFmpeg is unavailable.' });
   }
 
   async installApprovedModels(context) {
@@ -1106,9 +1205,51 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     }
   }
 
-  markRuntimePending(context) {
-    this.setComponent(context, 'runtime_probes', { state: 'blocked', failure_code: 'runtime_validation_pending', message: runtimeManifest.runtime_validation.reason });
-    this.status(context, { runtime_validation_pending: true, production_ready: false });
+  async validateRuntime(context) {
+    const probes = this.runtimeRecipe.runtime_validation?.probes;
+    if (!this.runtimeRecipe.runtime_validation?.available || !Array.isArray(probes) || probes.length === 0) {
+      const reason = this.runtimeRecipe.runtime_validation?.reason || 'No trusted inference validation helper is configured.';
+      this.setComponent(context, 'runtime_probes', { state: 'blocked', failure_code: 'runtime_validation_pending', message: reason });
+      this.status(context, { runtime_validation_pending: true, production_ready: false });
+      return;
+    }
+    const python = this.getManagerPython();
+    const validated = [];
+    for (const probe of probes) {
+      if (!/^[a-z][a-z0-9_]*$/.test(probe.component || '') || !/^[a-f0-9]{64}$/.test(probe.sha256 || '')
+          || !Number.isSafeInteger(probe.timeout_ms) || probe.timeout_ms < 1000 || probe.timeout_ms > 10 * 60_000
+          || !Array.isArray(probe.arguments) || probe.arguments.some((arg) => typeof arg !== 'string' || arg.length > 200)) {
+        throw new BootstrapError('RUNTIME_PROBE_RECIPE_INVALID', 'A trusted runtime-validation recipe is malformed.');
+      }
+      const helper = path.resolve(this.applicationRoot, probe.helper);
+      const relative = path.relative(this.applicationRoot, helper);
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !trustedFileMatches(helper, probe.sha256)) {
+        throw new BootstrapError('RUNTIME_PROBE_INTEGRITY_FAILED', 'A runtime-validation helper is outside the application or failed its trusted digest check.');
+      }
+      this.setComponent(context, probe.component, { state: 'validating', failure_code: null, message: null });
+      const timer = AbortSignal.timeout(probe.timeout_ms);
+      const signal = context.signal ? AbortSignal.any([context.signal, timer]) : timer;
+      let result;
+      try { result = await this.runProcess(python, ['-I', helper, ...probe.arguments], { ...context, signal }, { cwd: this.applicationRoot }); }
+      catch (error) {
+        if (timer.aborted && !context.signal?.aborted) throw new BootstrapError('RUNTIME_PROBE_TIMEOUT', `The ${probe.component} runtime probe exceeded its trusted time limit.`, { cause: error });
+        throw error;
+      }
+      if (result.code !== 0) throw new BootstrapError('RUNTIME_PROBE_FAILED', `The ${probe.component} runtime probe failed (exit code ${result.code}).`);
+      let report;
+      try { report = JSON.parse(result.stdout); } catch { throw new BootstrapError('RUNTIME_PROBE_RESPONSE_INVALID', `The ${probe.component} runtime probe returned invalid JSON.`); }
+      if (report.schema_version !== 1 || report.component !== probe.component || report.success !== true
+          || report.inference_completed !== true || typeof report.identity !== 'string' || !report.identity) {
+        throw new BootstrapError('RUNTIME_PROBE_FAILED', `The ${probe.component} probe did not confirm successful inference for the expected component.`);
+      }
+      this.setComponent(context, probe.component, { state: 'runtime_ready', identity: report.identity,
+        verification: 'trusted_inference_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null,
+        runtime_ready: true, device: typeof report.device === 'string' ? report.device : null });
+      validated.push(probe.component);
+    }
+    this.setComponent(context, 'runtime_probes', { state: 'verified', verification: 'trusted_inference_probes', components: validated,
+      last_verified_at: new Date().toISOString(), failure_code: null, message: null });
+    this.status(context, { runtime_validation_pending: false, production_ready: false });
   }
 
   markServicesBlocked(context) {

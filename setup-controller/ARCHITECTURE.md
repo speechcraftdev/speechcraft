@@ -46,14 +46,22 @@ updates and are reused through the model manager's status/install checks.
 lightweight model manager. Launcher-selected `runtime` extends this plan with:
 
 1. Locked backend dependency environment installation and import validation.
-2. Worker profile inspection and explicit unavailable state when a validated
-   recipe is absent.
+2. Worker recipe consumption: verify the declared project and lock hashes,
+   install into a versioned environment with the managed interpreter, then
+   validate the declared imports and environment identity. The stage reports
+   unavailable while no profile recipe is explicitly marked validated.
 3. Silero and platform-selected Whisper acquisition through the model manager.
-4. Runtime-probe status (blocked until trusted real inference helpers exist).
+4. Runtime-probe execution when trusted helpers are declared. Helpers must be
+   in the shipped application tree, match their manifest SHA-256, finish under
+   a bounded timeout, and return schema-versioned JSON with
+   `inference_completed: true`. Imports alone do not produce runtime readiness.
 5. Backend startup in a process group, loopback `/healthz` validation and
    separate service ownership.
 
 Backend service status says only that the API process answers its health check.
+It waits at a stdin launch gate until its PID and OS identity are durably
+recorded. A v2 starting intent with no PID proves the gate was never released
+and is safe to clear; records without this protocol remain conservative.
 The backend retains ownership of on-demand dataset jobs. It receives
 `SPEECHCRAFT_DATASET_WORKER_ROOT` and
 `SPEECHCRAFT_DATASET_WORKER_PYTHON`; the latter points at the future managed

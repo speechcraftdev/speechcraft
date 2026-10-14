@@ -102,6 +102,18 @@ TitaNet release approval, and inference helpers are unavailable and stay
 blocked. `completed` means the selected controller plan finished, not that
 every component is ready.
 
+The controller can consume a worker profile only when its trusted runtime
+manifest entry has `available: true` and `validated: true`, pinned project and
+lock SHA-256 values, a Python version matching the managed runtime, a versioned
+environment identity, and declared import checks. Runtime helpers are
+similarly manifest-pinned by shipped path and SHA-256 and have a bounded
+timeout. A helper result must be one JSON object containing
+`schema_version: 1`, the matching `component`, `success: true`,
+`inference_completed: true`, and a nonempty `identity`. A failed or absent
+helper leaves the component pending/blocked; the controller does not synthesize
+inference success. These recipe fields are internal release inputs, not API
+request fields.
+
 The earlier real `bootstrap` mode uses these ordered stages:
 
 1. `inspect_system`

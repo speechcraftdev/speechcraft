@@ -173,6 +173,29 @@ test('an owned bootstrap subprocess that ignores SIGTERM is killed and reaped be
   assert.ok(Date.now() - started < 2_000);
 });
 
+test('initial SIGTERM is withheld when the recorded process identity changes', { skip: process.platform === 'win32' }, async () => {
+  const abort = new AbortController();
+  let observed = null;
+  const operation = runOwnedProcess(process.execPath, ['-e', 'setInterval(() => {},1000)'], {
+    signal: abort.signal, cwd: os.tmpdir(), env: { PATH: process.env.PATH }, graceMs: 40,
+    onChildProcess(record) {
+      if (record?.clear) return;
+      observed = { pid: record.pid, identity: record.identity };
+      record.identity = 'deliberately-changed-identity';
+    },
+  });
+  try {
+    const deadline = Date.now() + 2_000;
+    while (!observed && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(observed);
+    abort.abort();
+    await assert.rejects(operation, { code: 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN' });
+    assert.doesNotThrow(() => process.kill(observed.pid, 0), 'identity mismatch must not signal the possibly reused process group');
+  } finally {
+    if (observed) { try { process.kill(observed.pid, 'SIGKILL'); } catch {} }
+  }
+});
+
 test('an exited leader with a SIGTERM-ignoring descendant retains uncertain ownership', { skip: process.platform === 'win32' }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-owned-descendant-'));
   const pidFile = path.join(root, 'descendant.pid');
