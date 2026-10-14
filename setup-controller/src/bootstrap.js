@@ -2,10 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { inspectHost, validateManagedStorage } from './platform.js';
+import { PRODUCTION_STAGES, assertTrustedBackendRecipe, initialComponents, runtimeRoots, runtimeManifest, selectRuntimeProfile } from './runtime-plan.js';
 
 const manifest = JSON.parse(fs.readFileSync(fileURLToPath(new URL('../resources/bootstrap-manifest.json', import.meta.url)), 'utf8'));
 
@@ -126,7 +128,7 @@ export function extractUvArchive(archiveBytes, artifact) {
   return uv;
 }
 
-function processIdentity(pid, nonce = null) {
+export function ownedProcessIdentity(pid, nonce = null) {
   if (process.platform === 'linux') {
     try {
       const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
@@ -192,10 +194,12 @@ function waitForProcessGroupExit(pid, timeoutMs) {
 export async function terminateRecoveredProcess(record, { graceMs = CHILD_TERMINATE_GRACE_MS } = {}) {
   if (!record || !Number.isSafeInteger(record.pid) || record.pid < 2
       || typeof record.identity !== 'string' || typeof record.attempt_id !== 'string'
+      || (record.process_group_id !== undefined && record.process_group_id !== null
+        && record.process_group_id !== record.pid)
       || (process.platform === 'darwin' && typeof record.nonce !== 'string')) {
     throw new BootstrapError('BOOTSTRAP_PROCESS_IDENTITY_UNKNOWN', 'An interrupted bootstrap process has incomplete ownership metadata; inspect it before retrying.');
   }
-  const currentIdentity = processIdentity(record.pid, record.nonce);
+  const currentIdentity = ownedProcessIdentity(record.pid, record.nonce);
   if (currentIdentity === null) {
     try { process.kill(-record.pid, 0); }
     catch (error) { if (error.code === 'ESRCH') return { stopped: true, alreadyExited: true }; }
@@ -209,7 +213,7 @@ export async function terminateRecoveredProcess(record, { graceMs = CHILD_TERMIN
   if (await waitForProcessGroupExit(record.pid, graceMs)) return { stopped: true, alreadyExited: false };
   // Once the leader exits, the numeric process-group ID may eventually be
   // reused. Escalation is safe only while the original leader identity lives.
-  if (!matchesProcessIdentity(record, processIdentity(record.pid, record.nonce))) {
+  if (!matchesProcessIdentity(record, ownedProcessIdentity(record.pid, record.nonce))) {
     throw new BootstrapError('BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN', 'The bootstrap leader exited but its process group still has members; ownership is retained and retry is blocked. Inspect the recorded process group before continuing.');
   }
   try { signalProcessGroup(record.pid, 'SIGKILL'); }
@@ -246,7 +250,7 @@ export async function reconcileOwnedProcess(store) {
   }
 }
 
-export function runOwnedProcess(executable, args, { signal, cwd, env, onChildProcess,
+export function runOwnedProcess(executable, args, { signal, cwd, env, onChildProcess, onOutput,
   graceMs = CHILD_TERMINATE_GRACE_MS, maxOutputBytes = OUTPUT_CAPTURE_LIMIT } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new BootstrapError('BOOTSTRAP_CANCELLED', 'Bootstrap was cancelled.')); return; }
@@ -262,6 +266,7 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, onChildPro
     }
     const collected = { stdout: [], stderr: [], stdoutBytes: 0, stderrBytes: 0 };
     const capture = (stream, field, byteField) => stream.on('data', (chunk) => {
+      try { onOutput?.(field, Buffer.from(chunk)); } catch {}
       const remaining = maxOutputBytes - collected[byteField];
       if (remaining > 0) {
         const kept = Buffer.from(chunk.subarray(0, remaining));
@@ -284,7 +289,7 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, onChildPro
       cancelled = true;
       try { signalProcessGroup(child.pid, 'SIGTERM'); } catch {}
       killTimer = setTimeout(() => {
-        if (childRecord && matchesProcessIdentity(childRecord, processIdentity(child.pid, childRecord.nonce))) {
+        if (childRecord && matchesProcessIdentity(childRecord, ownedProcessIdentity(child.pid, childRecord.nonce))) {
           try { signalProcessGroup(child.pid, 'SIGKILL'); } catch {}
         }
         uncertainTimer = setTimeout(async () => {
@@ -310,7 +315,7 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, onChildPro
     signal?.addEventListener('abort', onAbort, { once: true });
     child.once('error', (error) => { spawnError = error; });
     child.once('spawn', () => {
-      childRecord = { pid: child.pid, process_group_id: child.pid, identity: processIdentity(child.pid, launchNonce),
+      childRecord = { pid: child.pid, process_group_id: child.pid, identity: ownedProcessIdentity(child.pid, launchNonce),
         nonce: launchNonce, attempt_id: null, termination_status: 'active' };
       ownershipUpdate = Promise.resolve(onChildProcess?.(childRecord))
         .catch(() => { ownershipWriteFailed = true; stop(); });
@@ -323,7 +328,7 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, onChildPro
       let processGroupSafe = true;
       if (!spawnError && childRecord) {
         processGroupSafe = await waitForProcessGroupExit(child.pid, cancelled ? graceMs : 100);
-        if (!processGroupSafe && matchesProcessIdentity(childRecord, processIdentity(child.pid, childRecord.nonce))) {
+        if (!processGroupSafe && matchesProcessIdentity(childRecord, ownedProcessIdentity(child.pid, childRecord.nonce))) {
           try { signalProcessGroup(child.pid, 'SIGKILL'); } catch {}
           processGroupSafe = await waitForProcessGroupExit(child.pid, graceMs);
         }
@@ -480,7 +485,8 @@ export class BootstrapTasks {
   constructor({ dataDirectory, wheelPath = process.env.SPEECHCRAFT_MODEL_MANAGER_WHEEL,
     wheelSha256 = process.env.SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256,
     bootstrapManifest = manifest, requirementsPath = REQUIREMENTS, fetchImpl = fetch,
-    availableBytes = null, processRunner = runOwnedProcess } = {}) {
+    availableBytes = null, processRunner = runOwnedProcess,
+    applicationRoot = fileURLToPath(new URL('../../', import.meta.url)) } = {}) {
     if (!dataDirectory) throw new BootstrapError('DATA_DIRECTORY_REQUIRED', 'A SpeechCraft-managed data directory is required for bootstrap.');
     this.dataDirectory = fs.realpathSync(dataDirectory);
     this.wheelPath = wheelPath;
@@ -490,6 +496,7 @@ export class BootstrapTasks {
     this.fetchImpl = fetchImpl;
     this.availableBytesOverride = availableBytes;
     this.processRunner = processRunner;
+    this.applicationRoot = path.resolve(applicationRoot);
     this.environment = null;
     this.paths = null;
     this.stages = BOOTSTRAP_STAGES;
@@ -497,11 +504,14 @@ export class BootstrapTasks {
 
   taskId(stage) { return `bootstrap:${stage}`; }
   initialProgress(stage, message) { return safeProgress(stage === 'inspect_system' ? 'inspecting' : 'queued', message); }
-  completionProgress() { return safeProgress('complete', 'Managed uv, Python, and model-manager environment verified. SpeechCraft is not production-ready.'); }
+  completionProgress() { return safeProgress('complete', 'The configured setup plan finished. Component blockers and runtime readiness are reported separately; SpeechCraft is not production-ready.'); }
   initialBootstrapStatus() { return {
     profile: null, wsl: false, data_directory: this.dataDirectory,
     available_bytes: null, uv_verified: false, python_verified: false,
     model_manager_verified: false, bootstrap_ready: false, production_ready: false,
+    components: initialComponents(), runtime_profile: null,
+    model_root: path.join(this.dataDirectory, 'models'),
+    hf_cache_root: path.join(this.dataDirectory, 'cache', 'bootstrap', 'huggingface'),
   }; }
 
   emit(context, progress) { context.onProgress?.(progress); }
@@ -512,7 +522,7 @@ export class BootstrapTasks {
 
   async recoverInterrupted(store) {
     const job = store.snapshot().job;
-    if (job?.mode !== 'bootstrap') return;
+    if (!['bootstrap', 'runtime'].includes(job?.mode)) return;
     const status = this.initialBootstrapStatus();
     const attemptId = job.attempt_id;
     try {
@@ -542,8 +552,34 @@ export class BootstrapTasks {
             const managerPython = path.join(this.paths.environmentRoot, 'bin', 'python');
             const manager = await this.verifyModelManager(managerPython, context);
             this.status(context, { model_manager_verified: true, manager_version: manager.version });
+            this.setComponent(context, 'model_manager', { state: 'verified', verification: 'catalog_import_and_cli', last_verified_at: new Date().toISOString(), failure_code: null, message: null });
           } catch {}
         } catch {}
+      }
+      if (job.mode === 'runtime' && context.componentStatus.model_manager_verified) {
+        try {
+          const backendValid = await this.validateBackendEnvironment(context);
+          this.setComponent(context, 'backend_environment', backendValid
+            ? { state: 'verified', verification: 'lock_identity_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null }
+            : { state: 'pending', verification: 'revalidation_failed', failure_code: 'BACKEND_ENVIRONMENT_INVALID', message: 'The managed backend environment must be repaired before use.' });
+        } catch (error) {
+          this.setComponent(context, 'backend_environment', { state: 'pending', verification: 'revalidation_failed', failure_code: error.code || 'BACKEND_ENVIRONMENT_INVALID', message: 'The managed backend environment must be repaired before use.' });
+        }
+        const runtime = selectRuntimeProfile(this.environment);
+        for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper']]) {
+          try {
+            const managerPython = path.join(this.paths.environmentRoot, 'bin', 'python');
+            const result = await this.runProcess(managerPython, ['-I', '-m', 'speechcraft_models', 'status', role,
+              '--platform', runtime.modelPlatform, '--root', path.join(this.dataDirectory, 'models')], context, { allowFailure: true });
+            const report = JSON.parse(result.stdout);
+            const installed = report.install_ready === true && report.integrity_verified === true;
+            this.setComponent(context, component, installed
+              ? { state: 'files_verified', verification: 'manifest_size_and_sha256', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Files are verified; inference readiness is not established.', runtime_ready: false, report }
+              : { state: ['missing', 'partial', 'corrupt', 'error', 'unverified'].includes(report.status) ? report.status : 'error', verification: 'manifest_check', failure_code: 'MODEL_FILES_NOT_VERIFIED', message: 'Model files need repair before use.', runtime_ready: false, report });
+          } catch {
+            this.setComponent(context, component, { state: 'pending', verification: 'revalidation_failed', failure_code: 'MODEL_STATUS_UNAVAILABLE', message: 'Model files must be rechecked before use.', runtime_ready: false });
+          }
+        }
       }
       this.status(context, { bootstrap_ready: Boolean(context.componentStatus.uv_verified
         && context.componentStatus.python_verified && context.componentStatus.model_manager_verified),
@@ -631,7 +667,7 @@ export class BootstrapTasks {
     return env;
   }
 
-  async runProcess(executable, args, context, { cwd = this.dataDirectory, env = this.makeEnvironment(this.paths) } = {}) {
+  async runProcess(executable, args, context, { cwd = this.dataDirectory, env = this.makeEnvironment(this.paths), onOutput, allowFailure = false } = {}) {
     const childCallback = (record) => {
       if (!context.onChildProcess) return;
       if (record?.clear) return context.onChildProcess(null, 'termination_confirmed');
@@ -643,8 +679,8 @@ export class BootstrapTasks {
     await context.onChildProcess?.({ attempt_id: context.attemptId, state: 'starting', pid: null,
       identity: null, termination_status: 'active', created_at: new Date().toISOString() }, 'active');
     const result = await this.processRunner(executable, args, { signal: context.signal, cwd, env,
-      onChildProcess: childCallback });
-    if (result.code !== 0) {
+      onChildProcess: childCallback, onOutput });
+    if (result.code !== 0 && !allowFailure) {
       throw new BootstrapError('BOOTSTRAP_COMMAND_FAILED', `A trusted bootstrap operation failed (exit code ${result.code ?? 'unknown'}).`);
     }
     return result;
@@ -682,6 +718,12 @@ export class BootstrapTasks {
     if (stage === 'install_uv') return this.ensureUv(context);
     if (stage === 'install_python') return this.ensurePython(context);
     if (stage === 'install_model_manager') return this.ensureModelManager(context);
+    if (stage === 'install_backend_environment') return this.ensureBackendEnvironment(context);
+    if (stage === 'install_worker_environment') return this.blockWorkerProfile(context);
+    if (stage === 'install_models') return this.installApprovedModels(context);
+    if (stage === 'validate_runtime') return this.markRuntimePending(context);
+    if (stage === 'start_services') return this.markServicesBlocked(context);
+    if (stage === 'verify_services') return this.verifyServices(context);
     if (stage === 'validate_bootstrap') return this.validateBootstrap(context);
     throw new BootstrapError('BOOTSTRAP_STAGE_UNKNOWN', 'The configured bootstrap stage is unknown.');
   }
@@ -692,6 +734,15 @@ export class BootstrapTasks {
     catch (error) { throw error instanceof BootstrapError ? error : new BootstrapError(error.code || 'PLATFORM_UNSUPPORTED', error.message); }
     this.paths = this.getPaths(this.environment.profile);
     this.cleanupOldAttempts(context);
+    let nvidia = null;
+    if (this.environment.os === 'linux') {
+      try {
+        const output = execFileSync('nvidia-smi', ['--query-gpu=name,driver_version,cuda_version', '--format=csv,noheader'], {
+          encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim().split(/\r?\n/).slice(0, 8);
+        if (output.length && output[0]) nvidia = output.map((line) => line.slice(0, 240));
+      } catch { nvidia = null; }
+    }
     let available = this.currentFreeBytes();
     if (available === null) {
       try {
@@ -703,6 +754,11 @@ export class BootstrapTasks {
     }
     this.status(context, { profile: this.environment.profile, wsl: this.environment.wsl,
       available_bytes: available, data_directory: this.dataDirectory,
+      runtime_profile: selectRuntimeProfile(this.environment),
+      host_details: { cpu_model: os.cpus()[0]?.model?.slice(0, 160) || null,
+        logical_cpu_count: os.cpus().length, nvidia_gpus: nvidia,
+        cuda_detected: Boolean(nvidia?.length), cuda_compatibility: 'not_assessed',
+        cuda_runtime_validated: false },
       uv_verified: false, python_verified: false, model_manager_verified: false,
       bootstrap_ready: false, production_ready: false });
     this.emit(context, safeProgress('inspected', `Supported ${this.environment.profile} host and managed storage confirmed.`));
@@ -932,8 +988,136 @@ export class BootstrapTasks {
     this.status(context, { uv_verified: true, python_verified: true, model_manager_verified: true,
       bootstrap_ready: true, production_ready: false, python_version: pythonInfo.version,
       python_executable: python, manager_version: manager.version });
+    this.setComponent(context, 'uv', { state: 'verified', verification: 'sha256_and_version', last_verified_at: new Date().toISOString(), failure_code: null, message: null });
+    this.setComponent(context, 'managed_python', { state: 'verified', verification: 'runtime_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null });
+    this.setComponent(context, 'model_manager', { state: 'verified', verification: 'catalog_import_and_cli', last_verified_at: new Date().toISOString(), failure_code: null, message: null });
     const attemptDirectory = path.join(this.paths.stagingRoot, `attempt-${context.attemptId}`);
     removeOwnedDirectory(this.dataDirectory, attemptDirectory);
     this.emit(context, safeProgress('complete', 'Bootstrap components are verified; models and inference are not installed or ready.'));
+  }
+
+  setComponent(context, name, patch) {
+    const current = context.componentStatus || this.initialBootstrapStatus();
+    current.components ||= initialComponents();
+    current.components[name] = { ...(current.components[name] || {}), ...patch };
+    this.status(context, { components: current.components, production_ready: false });
+  }
+
+  getManagerPython() { return path.join(this.paths.environmentRoot, 'bin', 'python'); }
+
+  backendEnvironmentPath() {
+    return path.join(this.dataDirectory, 'environments', 'backend', `0.1.0-py${this.manifest.python.version}-${this.environment.profile}-${runtimeManifest.backend.lock_sha256.slice(0, 12)}`);
+  }
+
+  async validateBackendEnvironment(context, target = this.backendEnvironmentPath()) {
+    const { project } = assertTrustedBackendRecipe(this.applicationRoot);
+    const python = path.join(target, 'bin', 'python');
+    const probe = String.raw`import importlib.util, json, os, sys
+assert sys.version_info[:3] == (3,12,15), sys.version
+assert importlib.util.find_spec('fastapi')
+assert os.path.realpath(sys.prefix) == os.path.realpath(${JSON.stringify(target)})
+base = os.path.realpath(sys.base_prefix); runtime = os.path.realpath(${JSON.stringify(this.paths.pythonRoot)})
+assert base == runtime or base.startswith(runtime + os.sep)
+sys.path.insert(0, ${JSON.stringify(project)})
+assert importlib.util.find_spec('app.main')
+import app.models, app.dataset_worker_client
+print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable,'version':'.'.join(map(str,sys.version_info[:3]))}))`;
+    if (!inspectDirectoryOrMissing(target)) return false;
+    try {
+      const result = await this.runProcess(python, ['-I', '-c', probe], context, { cwd: project });
+      parseProbe(result, 'SPEECHCRAFT_BACKEND_ENV_PROBE', 'BACKEND_ENVIRONMENT_INVALID');
+      return true;
+    } catch (error) {
+      if (error.code === 'BOOTSTRAP_CANCELLED') throw error;
+      return false;
+    }
+  }
+
+  async ensureBackendEnvironment(context) {
+    const selection = selectRuntimeProfile(this.environment);
+    if (!runtimeManifest.backend.profiles.includes(selection.profile)) {
+      this.setComponent(context, 'backend_environment', { state: 'blocked', failure_code: 'runtime_profile_unavailable', message: `No trusted backend recipe is available for ${selection.profile}.` });
+      return;
+    }
+    const { project, lock } = assertTrustedBackendRecipe(this.applicationRoot);
+    const lockDigest = createHash('sha256').update(fs.readFileSync(lock)).digest('hex');
+    if (lockDigest !== runtimeManifest.backend.lock_sha256) throw new BootstrapError('BACKEND_RECIPE_INTEGRITY_FAILED', 'The backend dependency lock does not match the trusted runtime manifest.');
+    const target = this.backendEnvironmentPath();
+    if (await this.validateBackendEnvironment(context, target)) {
+      this.setComponent(context, 'backend_environment', { state: 'verified', verification: 'lock_identity_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
+      return;
+    }
+    if (inspectDirectoryOrMissing(target)) await this.quarantine(target, 'invalid-backend-env');
+    ensureManagedDirectory(this.dataDirectory, target);
+    this.requireSpace(runtimeManifest.disk_space.backend_environment_estimate_bytes + runtimeManifest.disk_space.safety_margin_bytes);
+    const env = { ...this.makeEnvironment(this.paths), UV_PROJECT_ENVIRONMENT: target };
+    this.emit(context, safeProgress('installing', 'Installing the backend from its repository lockfile into a versioned managed environment.'));
+    await this.runProcess(this.paths.uvExecutable, ['sync', '--locked', '--no-dev', '--no-install-project', '--python', await this.findPython(context), '--project', project], context, { cwd: project, env });
+    if (!await this.validateBackendEnvironment(context, target)) throw new BootstrapError('BACKEND_ENVIRONMENT_INVALID', 'The installed backend did not pass its managed-interpreter import probe.');
+    this.setComponent(context, 'backend_environment', { state: 'verified', verification: 'lock_identity_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
+  }
+
+  blockWorkerProfile(context) {
+    const worker = this.environment.profile === 'macos-arm64' ? runtimeManifest.worker.profiles['macos-arm64']
+      : runtimeManifest.worker.profiles['linux-x86_64-cuda'];
+    this.setComponent(context, 'worker_environment', { state: 'blocked', failure_code: 'runtime_profile_unavailable', message: worker.reason });
+    this.setComponent(context, 'ffmpeg', { state: 'blocked', failure_code: 'runtime_tool_unavailable', message: runtimeManifest.ffmpeg.reason });
+    this.setComponent(context, 'dataset_processing', { state: 'blocked', failure_code: 'runtime_profile_unavailable', message: 'Dataset processing requires a validated worker environment and managed FFmpeg artifact.' });
+    this.emit(context, safeProgress('blocked', 'No validated dataset-worker recipe and trusted FFmpeg bundle are available for this host.'));
+  }
+
+  async installApprovedModels(context) {
+    const profile = selectRuntimeProfile(this.environment);
+    const root = runtimeRoots(this.dataDirectory).models;
+    validateManagedStorage(this.environment, [root, this.paths.hfHome, this.paths.hfHub, this.paths.hfXet, this.paths.temporary]);
+    const python = this.getManagerPython();
+    for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper']]) {
+      this.setComponent(context, component, { state: 'downloading', failure_code: null, message: null, identity: role === 'asr' ? `Whisper Large-v3/${profile.modelPlatform}` : 'manifest-pinned Silero ONNX' });
+      let result;
+      let progressBuffer = '';
+      try {
+        result = await this.runProcess(python, ['-I', '-m', 'speechcraft_models', 'install', role,
+          '--platform', profile.modelPlatform, '--root', root], context, { cwd: this.dataDirectory,
+          env: { ...this.makeEnvironment(this.paths), SPEECHCRAFT_MODELS_ROOT: root },
+          onOutput: (stream, chunk) => {
+            if (stream !== 'stderr') return;
+            progressBuffer = `${progressBuffer}${chunk.toString('utf8')}`.slice(-16_384);
+            const lines = progressBuffer.split(/\r?\n/);
+            progressBuffer = lines.pop() || '';
+            for (const line of lines) {
+              try {
+                const event = JSON.parse(line);
+                if (!['progress', 'downloading', 'source_progress', 'source_file_acquired'].includes(event.event)) continue;
+                const current = Number.isSafeInteger(event.downloaded_bytes) ? event.downloaded_bytes
+                  : Number.isSafeInteger(event.transferred_bytes) ? event.transferred_bytes : null;
+                const total = Number.isSafeInteger(event.total_bytes) ? event.total_bytes : null;
+                this.emit(context, safeProgress('downloading', `${role}: ${event.path || event.current_file || 'model artifact'} transfer`, current, total));
+              } catch {}
+            }
+          } });
+      } catch (error) {
+        this.setComponent(context, component, { state: 'failed', failure_code: error.code || 'MODEL_INSTALL_FAILED', message: error.message.slice(0, 320), runtime_ready: false });
+        throw error;
+      }
+      let report;
+      try { report = JSON.parse(result.stdout); } catch { throw new BootstrapError('MODEL_MANAGER_RESPONSE_INVALID', `The model manager returned an invalid verification report for ${role}.`); }
+      if (report.install_ready !== true || report.status !== 'verified') throw new BootstrapError('MODEL_FILES_NOT_VERIFIED', `Model files for ${role} did not pass the trusted manifest checks.`);
+      this.setComponent(context, component, { state: 'files_verified', verification: 'manifest_size_and_sha256', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Files are verified; runtime inference has not been tested.', runtime_ready: false, report });
+    }
+  }
+
+  markRuntimePending(context) {
+    this.setComponent(context, 'runtime_probes', { state: 'blocked', failure_code: 'runtime_validation_pending', message: runtimeManifest.runtime_validation.reason });
+    this.status(context, { runtime_validation_pending: true, production_ready: false });
+  }
+
+  markServicesBlocked(context) {
+    this.setComponent(context, 'backend_service', { state: 'blocked', failure_code: 'service_supervision_unavailable', message: 'The authenticated controller does not yet own a verified backend service process. It will not infer service readiness from a process or import probe.' });
+    this.status(context, { production_ready: false });
+  }
+
+  verifyServices(context) {
+    this.setComponent(context, 'backend_service', { state: 'blocked', failure_code: 'service_health_unavailable', message: 'No supervised backend health check completed.' });
+    this.status(context, { bootstrap_ready: Boolean(context.componentStatus.uv_verified && context.componentStatus.python_verified && context.componentStatus.model_manager_verified), production_ready: false });
   }
 }

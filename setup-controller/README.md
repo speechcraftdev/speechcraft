@@ -3,9 +3,12 @@
 This is an internal Node.js setup controller, independent of the dataset worker,
 system Python, ML runtimes, and Next.js. It owns one durable setup job and
 exposes a loopback-only authenticated HTTP API. Simulation remains the default
-for frontend development. Launcher-selected `bootstrap` mode installs pinned
-uv, managed CPython, and an isolated lightweight `speechcraft_models`
-environment. It does not install models or make SpeechCraft production-ready.
+for frontend development. Launcher-selected `bootstrap` mode retains the
+original uv/Python/model-manager bootstrap plan. Launcher-selected `runtime`
+mode continues through a hash-identified backend dependency environment,
+approved model acquisition, runtime validation, and a supervised loopback
+FastAPI health check. It reports unavailable worker, FFmpeg, model-authorization,
+and inference-probe requirements as blockers and never treats them as ready.
 The future public application command remains `speechcraft` and is not created.
 
 ## Runtime and storage
@@ -14,6 +17,51 @@ Minimum supported runtime is **Node.js 20.9**. The package has no runtime npm
 dependencies and uses ES modules plus Node's standard library. Linux tests and
 the real bootstrap ran on Node 26.8.2. macOS ARM64 and WSL2 execution still need
 host validation. The runtime floor will be bundled by the future launcher.
+
+## Real setup plans
+
+Run the complete controller-owned orchestration plan with:
+
+```bash
+npm start -- --data-dir /tmp/speechcraft-setup-dev --mode runtime
+```
+
+Trusted runtime inputs are listed in `resources/runtime-manifest.json`. The
+backend recipe verifies both `backend/pyproject.toml` and `backend/uv.lock`
+before using pinned `uv sync --locked --no-dev --no-install-project` into a
+versioned environment. The installed environment is probed with its managed
+interpreter and backend imports. It checks for at least 4 GiB plus a 512 MiB
+reserve before dependency acquisition. Older verified environment versions
+are not removed when a new version is created.
+
+The runtime plan invokes `python -m speechcraft_models install` for Silero and
+the platform-selected Whisper Large-v3 artifact. The persistent model root is
+`<controller-data>/models`; Hugging Face home, Hub and Xet caches are under
+`<controller-data>/cache/bootstrap/huggingface`. The model manager retains
+ownership of transfers, resumability, integrity checks and publication. These
+files are file-verified only; no inference result is implied.
+
+The worker recipe is unavailable for CPU Linux and macOS. The existing CUDA
+lock is not validated as an installable/release recipe. No trusted FFmpeg/
+FFprobe bundle, model inference helper, or gated pyannote authorization
+consumer is present. TitaNet's release blocker remains. These components
+appear as blocked in status, while an eligible backend can still be started
+and checked at `/healthz`. `production_ready` remains false.
+
+The backend runs as a separately recorded process group on `127.0.0.1` with a
+dynamically allocated port. It writes project DB/media/exports beneath the
+managed application-data subtree and receives worker root/Python paths through
+the backend's existing environment interface. The controller owns only the
+backend service; the backend continues to own on-demand dataset jobs. Graceful
+controller shutdown stops the service. Startup reconciles the previous service
+process before exposing the API; ambiguous ownership fails closed.
+
+`POST /setup-api/repair` reruns the selected trusted plan, or retries a failed
+or interrupted attempt. It accepts no component path or command. A completed
+runtime plan can reuse verified components and repair invalid ones.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for state, ownership and readiness
+boundaries, and [API.md](API.md) for the expanded plan and component contract.
 
 The default state directory is:
 
@@ -254,12 +302,24 @@ SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256=<trusted-wheel-sha256> \
 node scripts/real-bootstrap-smoke.js
 ```
 
-The script creates an isolated temporary data directory, performs bootstrap,
-restarts the controller, confirms reuse, and retains its data directory for
-inspection. It downloads no model weights. The release launcher must provide
-the exact wheel identity rather than computing and trusting one at install
-time. See [MACOS_BOOTSTRAP_HANDOFF.md](MACOS_BOOTSTRAP_HANDOFF.md) for Kavin's
-Apple Silicon handoff.
+The bootstrap script creates an isolated temporary data directory, performs
+bootstrap, restarts the controller, confirms reuse, and retains its data
+directory. It downloads no model weights. The runtime smoke uses the same
+isolated-store pattern but downloads platform-selected Whisper Large-v3 and
+Silero and may require several gigabytes:
+
+```bash
+SPEECHCRAFT_MODEL_MANAGER_WHEEL=/absolute/trusted/path/to/wheel.whl \
+SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256=<trusted-wheel-sha256> \
+SPEECHCRAFT_APPLICATION_ROOT=/absolute/path/to/speechcraft-release \
+node scripts/real-runtime-smoke.js
+```
+
+Set `SPEECHCRAFT_RUNTIME_SMOKE_DIR` to a fresh directory on the intended
+filesystem when `/tmp` is unsuitable. It retains the isolated directory for
+recovery inspection. The release launcher must supply the exact wheel identity
+rather than computing and trusting one at install time. See the macOS and WSL
+handoff notes for host checks.
 
 ## Tests
 
@@ -274,15 +334,15 @@ node --test
 Tests use the filesystem state store, HTTP server, temporary directories, local
 artifact transfers, actual child processes and SSE connections. They cover
 controller ownership/recovery and security, retries/cancellation, WSL policy
-fixtures, safe archive extraction, and the complete five-stage bootstrap with
-offline stand-in tools. Default tests make no network requests or Python
-installations. The real network smoke test is opt-in.
+fixtures, safe archive extraction, backend service lifecycle and bootstrap with
+offline stand-in tools. Default tests make no network requests or managed
+Python/model installations. Real network smoke tests are opt-in.
 
 ## Next PR
 
-Integrate the controller with the launcher and same-origin Next.js proxy,
-provide the trusted manager-wheel digest, and let Kavin's Preparing UI consume
-`/setup-api/status` and `/setup-api/events`. Subsequent work may provision ML
-environments and models with explicit artifact, cancellation, retry, and
-recovery contracts. This bootstrap installs no model weights or inference
-runtime and cannot report workstation production readiness.
+Next Linux runtime work must validate a CPU worker recipe, validate the
+CUDA-specific recipe or explicitly defer it, provide managed FFmpeg/FFprobe
+artifacts, and implement real inference helpers before production readiness is
+possible. Pyannote authorization/source and TitaNet licensing remain separate
+gates. Launcher and same-origin proxy integration plus Kavin's Preparing UI
+follow after those runtime contracts are settled.

@@ -78,3 +78,21 @@ test('state schema v1 upgrades atomically with execution attempt identities', ()
   assert.match(store.snapshot().job.attempt_id, /^[0-9a-f-]{36}$/i);
   store.releaseOwnership();
 });
+
+test('event journal omits bulky component reports while authoritative status retains them', () => {
+  const target = directory();
+  const store = StateStore.open(target);
+  store.commit((state) => {
+    state.job = { schema_version: 2, id: 'fce21296-97b5-44a4-b8e5-0eb6458bbbe1',
+      attempt_id: 'fce21296-97b5-44a4-b8e5-0eb6458bbbe2', state: 'running',
+      stage: 'install_models', task_id: 'runtime:install_models', created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(), started_at: new Date().toISOString(), completed_at: null,
+      attempt_count: 1, revision: 1, progress: null, error: null,
+      bootstrap_status: { components: { whisper: { state: 'files_verified', report: { files: [{ path: 'model.bin', detail: 'x'.repeat(20_000) }] } } } } };
+  }, 'job_started');
+  assert.equal(store.snapshot().job.bootstrap_status.components.whisper.report.files[0].detail.length, 20_000);
+  assert.equal(store.snapshot().events[0].data.job.bootstrap_status, undefined);
+  assert.equal(store.snapshot().events[0].data.component_updates.whisper.state, 'files_verified');
+  assert.ok(fs.statSync(path.join(target, 'state.json')).size < 1_048_576);
+  store.releaseOwnership();
+});

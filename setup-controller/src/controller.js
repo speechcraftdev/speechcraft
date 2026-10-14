@@ -54,6 +54,11 @@ export function publicStatus(store, controllerStatus = 'running', mode = 'simula
     state_revision: state.revision,
     mode,
     simulated: mode === 'simulated',
+    setup_plan: state.job?.plan_id || (mode === 'simulated' ? 'simulated-v1' : mode === 'runtime' ? 'speechcraft-runtime-v1' : 'bootstrap-v1'),
+    components: state.job?.bootstrap_status?.components || null,
+    runtime_profile: state.job?.bootstrap_status?.runtime_profile || null,
+    bootstrap_ready: state.job?.bootstrap_status?.bootstrap_ready === true,
+    partial_ready: state.job?.bootstrap_status?.partial_ready === true,
     production_ready: false,
   };
 }
@@ -110,7 +115,7 @@ export class SetupController {
     const job = {
       schema_version: 2,
       attempt_id: randomUUID(),
-      id: randomUUID(), state: 'running', stage,
+      id: randomUUID(), plan_id: this.mode === 'simulated' ? 'simulated-v1' : this.mode === 'runtime' ? 'speechcraft-runtime-v1' : 'bootstrap-v1', state: 'running', stage,
       task_id: this.taskId(stage), mode: this.mode,
       created_at: now, updated_at: now, started_at: now, completed_at: null,
       attempt_count: 1, revision: 0,
@@ -153,6 +158,7 @@ export class SetupController {
       job.completed_at = null;
       job.attempt_count += 1;
       job.attempt_id = randomUUID();
+      job.plan_id ||= recordedMode === 'simulated' ? 'simulated-v1' : recordedMode === 'runtime' ? 'speechcraft-runtime-v1' : 'bootstrap-v1';
       job.error = null;
       job.progress = this.initialProgress(stage, 'Queued setup retry.');
       job.bootstrap_status = this.tasks.initialBootstrapStatus ? this.tasks.initialBootstrapStatus() : job.bootstrap_status;
@@ -244,7 +250,7 @@ export class SetupController {
           bootstrapStatus: current.bootstrap_status,
           onComponentStatus: (status) => {
             const latest = this.store.snapshot().job;
-            if (latest?.id !== jobId || latest.attempt_id !== attemptId || latest.state !== 'running') return;
+            if (latest?.id !== jobId || latest.attempt_id !== attemptId || !['running', 'completed'].includes(latest.state)) return;
             this.store.commit((state) => { state.job.bootstrap_status = status; }, 'component_status');
           },
           onChildProcess: (record) => {
@@ -259,6 +265,18 @@ export class SetupController {
           onProgress: (progress) => {
             const latest = this.store.snapshot().job;
             if (latest?.id !== jobId || latest.attempt_id !== attemptId || latest.state !== 'running') return;
+            const execution = this.activeExecution;
+            if (progress?.phase === 'downloading' && Number.isSafeInteger(progress.current)
+                && Number.isSafeInteger(progress.total) && execution?.attemptId === attemptId) {
+              const now = Date.now();
+              const previous = execution.lastTransferProgress;
+              const fileChanged = previous && previous.message !== progress.message;
+              if (previous && !fileChanged && progress.current >= previous.current
+                  && progress.current - previous.current < 1024 * 1024 && now - previous.at < 750
+                  && progress.current !== progress.total) return;
+              execution.lastTransferProgress = { current: progress.current, total: progress.total,
+                message: progress.message, at: now };
+            }
             this.store.commit((state) => { state.job.progress = progress; }, 'task_progress');
           },
         });

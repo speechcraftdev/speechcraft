@@ -8,6 +8,8 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "smoke:bootstrap": "node scripts/real-bootstrap-smoke.js",
+    "smoke:runtime": "node scripts/real-runtime-smoke.js"
   }
 }

@@ -47,6 +47,29 @@ test('health is narrow and setup status requires authenticated session', async (
   assert.match(f.setCookie, /SameSite=Strict/);
 });
 
+test('runtime plan exposes component readiness and repair only reruns the trusted plan', async () => {
+  const components = { ffmpeg: { state: 'blocked', verification: 'pending', failure_code: 'runtime_tool_unavailable', message: 'No trusted tool artifact.' } };
+  const f = await fixture({ mode: 'runtime', tasks: {
+    stages: ['inspect_system'], taskId: (stage) => `runtime:${stage}`,
+    initialBootstrapStatus: () => ({ components, production_ready: false, bootstrap_ready: false }),
+    initialProgress: (_stage, message) => ({ phase: 'queued', current: null, total: null, percent: null, message }),
+    async run(_stage, context) { context.onProgress({ phase: 'verified', current: null, total: null, percent: null, message: 'fixture complete' }); },
+    completionProgress: () => ({ phase: 'complete', current: null, total: null, percent: null, message: 'partial setup complete' }),
+  } });
+  const started = await f.request('/setup-api/start', { method: 'POST', body: {} }).then((r) => r.json());
+  await f.app.controller.waitForIdle();
+  let status = await f.request('/setup-api/status').then((r) => r.json());
+  assert.equal(status.setup_plan, 'speechcraft-runtime-v1');
+  assert.equal(status.mode, 'runtime');
+  assert.equal(status.production_ready, false);
+  assert.equal(status.components.ffmpeg.state, 'blocked');
+  const repaired = await f.request('/setup-api/repair', { method: 'POST', body: {} }).then((r) => r.json());
+  assert.notEqual(repaired.job.id, started.job.id);
+  await f.app.controller.waitForIdle();
+  status = await f.request('/setup-api/status').then((r) => r.json());
+  assert.equal(status.production_ready, false);
+});
+
 test('two concurrent starts return the same active job and only start once', async () => {
   let entered;
   const atStage = new Promise((resolve) => { entered = resolve; });

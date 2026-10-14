@@ -251,6 +251,18 @@ function validateState(state, version = STATE_VERSION) {
       throw new StateStoreError('STATE_INVALID', 'setup state job record is malformed');
     }
   }
+  if (state.service_process !== undefined && state.service_process !== null) {
+    const service = state.service_process;
+    if (!service || service.kind !== 'speechcraft-backend' || typeof service.nonce !== 'string'
+        || !/^[a-f0-9-]{36}$/i.test(service.attempt_id || '')
+        || (service.pid !== null && (!Number.isSafeInteger(service.pid) || service.pid < 2))
+        || (service.process_group_id !== null && (!Number.isSafeInteger(service.process_group_id) || service.process_group_id < 2))
+        || (service.identity !== null && typeof service.identity !== 'string')
+        || !['starting', 'running', 'stopping', 'termination_uncertain'].includes(service.state) || typeof service.created_at !== 'string'
+        || !Number.isSafeInteger(service.port) || service.port < 1 || service.port > 65535) {
+      throw new StateStoreError('STATE_INVALID', 'persisted backend service ownership metadata is malformed');
+    }
+  }
   let lastRevision = 0;
   for (const [index, event] of state.events.entries()) {
     if (!event || !Number.isSafeInteger(event.id) || event.id <= lastRevision
@@ -261,6 +273,39 @@ function validateState(state, version = STATE_VERSION) {
     }
     lastRevision = event.id;
   }
+}
+
+function journalJob(job) {
+  if (!job) return null;
+  const snapshot = structuredClone(job);
+  // Full component reports remain in the authoritative job. Bounded event
+  // history stores only compact job state plus component deltas below.
+  delete snapshot.bootstrap_status;
+  delete snapshot.child_process;
+  delete snapshot.python_executable;
+  if (snapshot.progress?.message) snapshot.progress.message = snapshot.progress.message.slice(0, 320);
+  return snapshot;
+}
+
+function componentDeltas(previous, next) {
+  const before = previous?.bootstrap_status?.components || {};
+  const after = next?.bootstrap_status?.components || {};
+  const updates = {};
+  for (const [name, value] of Object.entries(after)) {
+    const compact = (item) => ({
+      identity: typeof item?.identity === 'string' ? item.identity.slice(0, 160) : null,
+      state: item?.state || 'pending', verification: item?.verification || 'pending',
+      last_verified_at: item?.last_verified_at || null,
+      failure_code: item?.failure_code || null,
+      message: typeof item?.message === 'string' ? item.message.slice(0, 320) : null,
+      runtime_ready: item?.runtime_ready === true,
+      ...(Number.isSafeInteger(item?.port) ? { port: item.port } : {}),
+    });
+    const updated = compact(value);
+    if (JSON.stringify(compact(before[name])) === JSON.stringify(updated)) continue;
+    updates[name] = updated;
+  }
+  return updates;
 }
 
 export class StateStore {
@@ -301,7 +346,7 @@ export class StateStore {
   read() {
     if (!safeRegularFile(this.file)) {
       if (fs.existsSync(this.file)) throw new StateStoreError('STATE_UNSAFE', 'setup state must be a regular non-symlink file');
-      return { schema_version: STATE_VERSION, revision: 0, job: null, events: [] };
+      return { schema_version: STATE_VERSION, revision: 0, job: null, service_process: null, events: [] };
     }
     const fileInfo = fs.lstatSync(this.file);
     if ((typeof process.getuid === 'function' && fileInfo.uid !== process.getuid())
@@ -319,6 +364,7 @@ export class StateStore {
   snapshot() { return structuredClone(this.state); }
 
   commit(mutator, type) {
+    const previous = this.state;
     const next = structuredClone(this.state);
     mutator(next);
     next.revision += 1;
@@ -327,7 +373,10 @@ export class StateStore {
       next.job.updated_at = now;
       next.job.revision = next.revision;
     }
-    next.events.push({ id: next.revision, type, at: now, data: { job: structuredClone(next.job) } });
+    const updates = componentDeltas(previous.job, next.job);
+    next.events.push({ id: next.revision, type, at: now, data: {
+      job: journalJob(next.job), ...(Object.keys(updates).length ? { component_updates: updates } : {}),
+    } });
     if (next.events.length > EVENT_LIMIT) next.events.splice(0, next.events.length - EVENT_LIMIT);
     validateState(next);
     atomicWriteFile(this.directory, 'state.json', `${JSON.stringify(next, null, 2)}\n`);

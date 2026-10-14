@@ -1,4 +1,4 @@
-# Setup Controller API v3
+# Setup Controller API v4
 
 All routes use `/setup-api`. JSON responses are UTF-8 and `Cache-Control: no-store`.
 The controller binds only to `127.0.0.1`. The eventual application must proxy
@@ -78,9 +78,31 @@ stages:
 4. `install_models`
 5. `validate_runtime`
 
-The launcher may select the predefined real `bootstrap` mode at controller
-startup. The browser cannot select a mode or change the plan. Bootstrap mode
-uses these ordered stages:
+The launcher may select predefined real modes at controller startup. The
+browser cannot select a mode or change the plan. `bootstrap` mode retains the
+small bootstrap plan below. `runtime` mode uses this ordered plan:
+
+1. `inspect_system`
+2. `install_uv`
+3. `install_python`
+4. `install_model_manager`
+5. `validate_bootstrap`
+6. `install_backend_environment`
+7. `install_worker_environment`
+8. `install_models`
+9. `validate_runtime`
+10. `start_services`
+11. `verify_services`
+
+Runtime mode installs approved Silero and platform-selected Whisper files
+through `speechcraft_models`, installs backend dependencies from the trusted
+lock and starts the backend only after loopback health succeeds. Worker
+profiles, FFmpeg/FFprobe artifacts, the pyannote authorization consumer,
+TitaNet release approval, and inference helpers are unavailable and stay
+blocked. `completed` means the selected controller plan finished, not that
+every component is ready.
+
+The earlier real `bootstrap` mode uses these ordered stages:
 
 1. `inspect_system`
 2. `install_uv`
@@ -88,10 +110,10 @@ uses these ordered stages:
 4. `install_model_manager`
 5. `validate_bootstrap`
 
-`completed` means that the selected plan finished. In bootstrap mode the plan
-verifies uv, managed CPython, and the lightweight model-manager environment.
-It does not install model weights, inference backends, or make the workstation
-production-ready. `production_ready` is always `false` in API v3.
+`completed` means the selected plan finished. It does not itself establish
+inference or workstation readiness. `production_ready` is always `false` in
+API v4. `bootstrap_ready` covers only uv, managed CPython and model-manager
+verification; `files_verified` does not mean `runtime_ready`.
 
 ## Snapshot and job shape
 
@@ -136,6 +158,9 @@ the session cookie. Example while running:
   "state_revision": 18,
   "mode": "bootstrap",
   "simulated": false,
+  "setup_plan": "bootstrap-v1",
+  "bootstrap_ready": false,
+  "components": null,
   "production_ready": false
 }
 ```
@@ -171,6 +196,31 @@ stopping. Returns `202` when cancellation begins and `200` for a repeated
 request. An already failed or completed job cannot be cancelled. `attempt_id`
 changes on every retry, and events from older attempt IDs cannot change the
 current job.
+
+### `POST /setup-api/repair`
+
+Reruns the launcher-selected plan or safely retries a failed/interrupted job.
+Active plans are returned idempotently. A completed plan starts a new inspect
+and reuse pass. The endpoint accepts `{}` only; no component paths, commands or
+package choices are accepted.
+
+## Component readiness
+
+Runtime mode includes a `components` map in status and SSE snapshots. Each item
+reports identity, state, verification method, last verified time, failure code
+and a safe message. Components include uv, managed Python, model manager,
+backend/worker environments, FFmpeg, Silero, Whisper, TitaNet, pyannote,
+runtime probes, backend service and dataset processing. States include
+`pending`, `downloading`, `files_verified`, `verified`, `stopped`, `failed`,
+and `blocked`. A healthy backend or verified model files do not imply inference
+readiness. `partial_ready` is a development indicator only.
+
+The future gated-model operation will use `waiting_for_user` and an
+authenticated same-origin submission scoped to the active attempt. A trusted
+helper must consume the credential through protected stdin/descriptor data;
+it must never appear in persistent job state, events, URLs, process arguments,
+logs or diagnostics. It will be discarded after the helper exits. This release
+has no gated-model consumer and accepts no token.
 
 Operation response example:
 
@@ -214,12 +264,15 @@ Errors use this shape:
 `GET /setup-api/events` requires the session cookie and
 `Accept: text/event-stream`. The controller immediately emits an authoritative
 `snapshot`. Event IDs are monotonically increasing persisted state revisions.
-Progress and transition frames carry the same public snapshot shape:
+Every connection ends with an authoritative full snapshot. Retained transition
+frames carry a compact job projection and any changed component states in
+`component_updates`; clients should read the final snapshot rather than rebuild
+readiness from the journal. Example:
 
 ```text
 id: 18
 event: task_progress
-data: {"state_revision":18,"job":{"id":"...","state":"running","stage":"install_models"},"simulated":true,"production_ready":false}
+data: {"state_revision":18,"job":{"id":"...","state":"running","stage":"install_models"},"component_updates":{"whisper":{"state":"downloading","verification":"pending"}},"simulated":false,"production_ready":false}
 ```
 
 On reconnect, send the standard `Last-Event-ID` header. If all later journal
@@ -249,6 +302,6 @@ ignore fields they do not use.
 
 ## Readiness boundary
 
-Every response has `production_ready: false`, including successful bootstrap.
-The `simulated` field describes the configured controller mode and is false in
-real bootstrap mode. No model installation or inference readiness is asserted.
+Every response has `production_ready: false`, including successful runtime
+plans. The `simulated` field describes the configured controller mode. Model
+files are only file-verified; actual inference is not asserted.

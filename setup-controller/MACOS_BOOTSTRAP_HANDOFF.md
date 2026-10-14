@@ -91,3 +91,42 @@ Attach the JSON status snapshot and summarize:
 
 This confirms file/runtime bootstrap only. MLX installation, Whisper inference,
 GPU behavior, and Transcript Correctness evaluation remain separate work.
+# Runtime plan handoff (Apple Silicon)
+
+The full controller plan is available as launcher-selected `runtime` mode.
+Run it only with a separately built model-manager wheel and SHA-256 configured
+as described below. It can install the macOS MLX Whisper files, install the
+locked backend dependencies, start the backend, and report blockers. Do not
+interpret file installation or `/healthz` success as MLX inference or SpeechCraft
+readiness. The dataset-worker and inference helper profiles are currently
+blocked and require separate validated recipes.
+
+From `setup-controller/` on Kavin's M4 Pro:
+
+```bash
+node --version                         # must be >=20.9
+export SPEECHCRAFT_SETUP_DATA_DIR="$TMPDIR/speechcraft-runtime-macos"
+export SPEECHCRAFT_MODEL_MANAGER_WHEEL="/absolute/path/to/speechcraft_model_manager-0.1.0-py3-none-any.whl"
+export SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256="<trusted wheel sha256>"
+export SPEECHCRAFT_APPLICATION_ROOT="/absolute/path/to/speechcraft-release"
+npm start -- --mode runtime --data-dir "$SPEECHCRAFT_SETUP_DATA_DIR" --port 4317
+```
+
+Establish the development session using the private `bootstrap.token` file and
+the authenticated `/setup-api/session` flow in `API.md`, then call start. Do not
+put the token in a URL or paste it into browser JavaScript. Call status until
+the plan finishes; confirm `runtime_profile.profile` is `macos-arm64`, Whisper
+is `files_verified`, the model report names the pinned `mlx-community` artifact,
+and `runtime_ready` remains false. Call `/setup-api/repair` to confirm valid
+artifacts are reused. To exercise recovery, stop the controller with SIGTERM
+during acquisition, then restart against the same isolated data directory and
+retry; never use the user's normal model cache for this test.
+
+Return the M4 model, macOS version, Node/Python/huggingface-hub versions,
+selected model revision, API status/diagnostics with secrets removed, model and
+HF cache disk usage, elapsed/download bytes reported by the downloader, reuse
+result, and interrupted-retry result. Also note filesystem or native dependency
+problems. MLX inference and Transcript Correctness evaluation belong to the
+separate runtime compatibility spike.
+
+The earlier bootstrap-only notes follow.

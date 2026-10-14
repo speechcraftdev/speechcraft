@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "description": "Trusted runtime inputs currently present in this repository. A recipe marked unavailable must not be installed or reported ready.",
+  "backend": {
+    "distribution": "speechcraft-backend",
+    "project": "backend",
+    "project_manifest_sha256": "e8f626273ec912d72b9f276874427921defb6f4376312cbe9a9bcab4bc648ea7",
+    "lockfile": "backend/uv.lock",
+    "lock_sha256": "a5815e29cc2a89fb952bbee64c7d69be5a7c791f98cbad0ecae25d1221c734b8",
+    "profiles": ["linux-x86_64", "macos-arm64"],
+    "installation": "uv-sync-locked",
+    "validation_helper": null
+  },
+  "disk_space": {"backend_environment_estimate_bytes": 4294967296, "safety_margin_bytes": 536870912},
+  "worker": {
+    "distribution": "speechcraft-dataset-worker",
+    "project": "workers/dataset",
+    "lockfile": "workers/dataset/uv.lock",
+    "lock_sha256": "fd1dc080556d013c90850acea97458b3a0765f7f00c0d3a3380d8b17539a0feb",
+    "project_manifest_sha256": "6d14728d89ed22100802c8f1bc0e51a4d5535a3a321879fc7156d4b956a9feb6",
+    "profiles": {
+      "linux-x86_64-cpu": {"available": false, "reason": "No validated CPU dependency lock is checked in."},
+      "linux-x86_64-cuda": {"available": false, "reason": "The repository lock is CUDA 12.8-specific but has no validated installation and inference recipe yet."},
+      "macos-arm64": {"available": false, "reason": "No validated Apple Silicon worker dependency lock is checked in."}
+    },
+    "required_tool": "ffmpeg",
+    "validation_helper": "workers/dataset/scripts/preflight.py"
+  },
+  "models": {
+    "manager_interface": "python -m speechcraft_models",
+    "approved_roles": ["speech_detection", "asr"],
+    "blocked_roles": {
+      "diarization": "Pyannote Community-1 acquisition and token authorization are not integrated.",
+      "speaker_purity": "TitaNet provenance and redistribution approval remain blocked."
+    }
+  },
+  "runtime_validation": {
+    "available": false,
+    "reason": "No trusted model inference validation helpers are checked in. File verification does not establish runtime readiness."
+  },
+  "ffmpeg": {
+    "available": false,
+    "reason": "No trusted prebuilt FFmpeg artifact manifest or redistribution approval is checked in."
+  }
+}

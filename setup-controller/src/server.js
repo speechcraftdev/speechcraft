@@ -7,6 +7,8 @@ import { defaultDataDirectory } from './paths.js';
 import { StateStore, StateStoreError } from './state-store.js';
 import { SimulatedTasks } from './simulated-tasks.js';
 import { BootstrapTasks, reconcileOwnedProcess } from './bootstrap.js';
+import { RuntimeTasks } from './runtime-tasks.js';
+import { reconcileOwnedService } from './backend-service.js';
 import { hostEnvironment, validateManagedStorageTargets } from './platform.js';
 
 const BODY_LIMIT = 16 * 1024;
@@ -61,7 +63,7 @@ function parseCsv(value) {
   return value?.split(',').map((item) => item.trim()).filter(Boolean) || [];
 }
 
-function statusEvent(job, revision, controllerStatus = 'running', mode = job?.mode || 'simulated') {
+function statusEvent(job, revision, controllerStatus = 'running', mode = job?.mode || 'simulated', componentUpdates = null) {
   const publicJob = job ? structuredClone(job) : {
     schema_version: 2,
     id: null, state: 'idle', stage: null, task_id: null, progress: null,
@@ -70,7 +72,13 @@ function statusEvent(job, revision, controllerStatus = 'running', mode = job?.mo
   };
   if (publicJob) delete publicJob.child_process;
   return { controller_status: controllerStatus, state_revision: revision, job: publicJob,
-    mode, simulated: mode === 'simulated', production_ready: false };
+    mode, simulated: mode === 'simulated', setup_plan: job?.plan_id || null,
+    components: job?.bootstrap_status?.components || null,
+    component_updates: componentUpdates,
+    runtime_profile: job?.bootstrap_status?.runtime_profile || null,
+    bootstrap_ready: job?.bootstrap_status?.bootstrap_ready === true,
+    partial_ready: job?.bootstrap_status?.partial_ready === true,
+    production_ready: false };
 }
 
 function sse(response, id, event, data) {
@@ -91,6 +99,7 @@ function diagnostics(store, mode = 'simulated') {
       stage: event.data.job?.stage || null,
       progress: event.data.job?.progress || null,
       error: event.data.job?.error || null,
+      component_updates: event.data.component_updates || null,
     })),
     mode,
     simulated: mode === 'simulated',
@@ -111,8 +120,8 @@ export async function createSetupController({
   bootstrapOptions = {},
 } = {}) {
   if (host !== '127.0.0.1') throw new Error('setup controller must bind to IPv4 loopback (127.0.0.1)');
-  if (!['simulated', 'bootstrap'].includes(mode)) throw new Error('setup mode must be simulated or bootstrap');
-  if (mode === 'bootstrap') {
+  if (!['simulated', 'bootstrap', 'runtime'].includes(mode)) throw new Error('setup mode must be simulated, bootstrap, or runtime');
+  if (mode !== 'simulated') {
     const environment = hostEnvironment();
     validateManagedStorageTargets(environment, [dataDirectory]);
   }
@@ -129,13 +138,21 @@ export async function createSetupController({
 
   try {
     auth = new SessionAuth(store.directory, { secureCookies });
-    const executor = tasks || (mode === 'bootstrap'
-      ? new BootstrapTasks({ dataDirectory: store.directory, ...bootstrapOptions })
+    const executor = tasks || (mode !== 'simulated'
+      ? (mode === 'runtime' ? new RuntimeTasks({ dataDirectory: store.directory, store, ...bootstrapOptions })
+        : new BootstrapTasks({ dataDirectory: store.directory, ...bootstrapOptions }))
       : new SimulatedTasks(simulated));
     // Ownership reconciliation is mode-independent: a simulated restart must
     // not bypass a writer left by an interrupted real bootstrap.
     await reconcileOwnedProcess(store);
-    await executor.recoverInterrupted?.(store);
+    await reconcileOwnedService(store);
+    if (executor.recoverInterrupted) await executor.recoverInterrupted(store);
+    else if (['bootstrap', 'runtime'].includes(store.snapshot().job?.mode)) {
+      // A later simulation-only process still revalidates persisted real
+      // artifacts. It never retries or installs, but does not retain stale
+      // readiness claims merely because the launcher changed its mode.
+      await new BootstrapTasks({ dataDirectory: store.directory, ...bootstrapOptions }).recoverInterrupted(store);
+    }
     controller = new SetupController(store, { tasks: executor, mode });
     const server = http.createServer((request, response) => {
       void route(request, response).catch((error) => {
@@ -179,7 +196,7 @@ export async function createSetupController({
 
     function publishToClients(event, state) {
       const currentStatus = controller.status();
-      const data = statusEvent(event.data.job, event.id, currentStatus.controller_status, currentStatus.mode);
+      const data = statusEvent(event.data.job, event.id, currentStatus.controller_status, currentStatus.mode, event.data.component_updates || null);
       for (const client of clients) {
         if (!sse(client, event.id, event.type, data)) {
           clients.delete(client);
@@ -210,7 +227,7 @@ export async function createSetupController({
       if (replayPossible && last < state.revision) {
         for (const event of events) {
           if (event.id > last && !sse(response, event.id, event.type,
-            statusEvent(event.data.job, event.id, 'running', controller.status().mode))) break;
+            statusEvent(event.data.job, event.id, 'running', controller.status().mode, event.data.component_updates || null))) break;
         }
       }
       const currentStatus = controller.status();
@@ -293,6 +310,13 @@ export async function createSetupController({
         json(response, 202, { ...result, state_revision: store.snapshot().revision });
         return;
       }
+      if (url.pathname === '/setup-api/repair') {
+        const current = store.snapshot().job;
+        const result = current && ['failed', 'cancelled', 'interrupted'].includes(current.state)
+          ? controller.retry() : controller.start();
+        json(response, result.idempotent ? 200 : 202, { ...result, state_revision: store.snapshot().revision });
+        return;
+      }
       if (url.pathname === '/setup-api/cancel') {
         const result = controller.cancel();
         json(response, result.idempotent ? 200 : 202, { ...result, state_revision: store.snapshot().revision });
@@ -326,6 +350,7 @@ export async function createSetupController({
       stopping = true;
       closePromise = (async () => {
         await controller.shutdown();
+        await executor.shutdown?.();
         clearInterval(heartbeat);
         unsubscribe();
         for (const client of clients) client.end();
@@ -361,7 +386,7 @@ function parseArgs(args) {
     else throw new Error(`unknown or incomplete argument: ${argument}`);
   }
   if (!Number.isInteger(options.port) || options.port < 0 || options.port > 65535) throw new Error('port must be an integer from 0 to 65535');
-  if (!['simulated', 'bootstrap'].includes(options.mode)) throw new Error('mode must be simulated or bootstrap');
+  if (!['simulated', 'bootstrap', 'runtime'].includes(options.mode)) throw new Error('mode must be simulated, bootstrap, or runtime');
   if (options.simulated && (!Number.isInteger(options.simulated.stepDelayMs) || options.simulated.stepDelayMs < 0 || options.simulated.stepDelayMs > 60_000)) {
     throw new Error('step delay must be an integer from 0 to 60000 milliseconds');
   }
@@ -377,6 +402,7 @@ async function main() {
     bootstrapOptions: {
       wheelPath: process.env.SPEECHCRAFT_MODEL_MANAGER_WHEEL,
       wheelSha256: process.env.SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256,
+      applicationRoot: process.env.SPEECHCRAFT_APPLICATION_ROOT,
     },
     allowedHosts: allowedHosts.length ? allowedHosts.map((value) => value.toLowerCase()) : undefined,
     allowedOrigins: allowedOrigins.length ? allowedOrigins : undefined,
