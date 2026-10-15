@@ -4,13 +4,34 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { assertTrustedBackendRecipe, initialComponents, runtimeManifest, selectRuntimeProfile } from '../src/runtime-plan.js';
+import { assertTrustedBackendRecipe, cudaProfileReady, initialComponents, runtimeManifest, selectRuntimeProfile } from '../src/runtime-plan.js';
 import { RuntimeTasks } from '../src/runtime-tasks.js';
+
+const sha = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 test('platform selection keeps WSL storage host identity separate from model artifact selection', () => {
   assert.equal(selectRuntimeProfile({ os: 'linux', architecture: 'x86_64', profile: 'linux-x86_64', wsl: true }).modelPlatform, 'windows-wsl2');
   assert.equal(selectRuntimeProfile({ os: 'macos', architecture: 'arm64', profile: 'macos-arm64', wsl: false }).modelPlatform, 'macos-arm64');
   assert.throws(() => selectRuntimeProfile({ profile: 'windows-x64', os: 'windows', architecture: 'x86_64' }), { code: 'RUNTIME_PROFILE_UNAVAILABLE' });
+});
+
+test('CUDA remains a candidate until its recipe and independent Torch/CTranslate2 probes pass', () => {
+  const host = { os: 'linux', architecture: 'x86_64', profile: 'linux-x86_64', wsl: false };
+  assert.equal(selectRuntimeProfile(host, { gpuDetected: true }).workerProfile, 'linux-x86_64-cpu');
+  assert.equal(selectRuntimeProfile(host, { gpuDetected: true, cudaRecipeAvailable: true, cudaValidated: true,
+    cudaProbe: { success: true, torch: true, ctranslate2: true } }).workerProfile, 'linux-x86_64-cpu',
+  'a CUDA profile marked unavailable in the trusted catalog cannot be selected');
+  const fixture = structuredClone(runtimeManifest);
+  fixture.worker.profiles['linux-x86_64-cuda'].available = true;
+  fixture.worker.profiles['linux-x86_64-cuda'].validated = true;
+  assert.equal(cudaProfileReady(fixture.worker.profiles['linux-x86_64-cuda'], true,
+    { success: true, torch: true, ctranslate2: true }), true, 'all runtime conditions must be present');
+  assert.equal(cudaProfileReady(fixture.worker.profiles['linux-x86_64-cuda'], true,
+    { success: true, torch: true, ctranslate2: false }), false);
+  assert.equal(cudaProfileReady(fixture.worker.profiles['linux-x86_64-cuda'], false,
+    { success: true, torch: true, ctranslate2: true }), false);
+  assert.equal(selectRuntimeProfile(host, { gpuDetected: true, cudaRecipeAvailable: true, cudaValidated: true,
+    cudaProbe: { success: true, torch: true, ctranslate2: false } }).workerProfile, 'linux-x86_64-cpu');
 });
 
 test('checked-in backend recipe identity is verified and unsupported components remain blocked', () => {
@@ -22,7 +43,12 @@ test('checked-in backend recipe identity is verified and unsupported components 
   assert.equal(runtimeManifest.worker.profiles['macos-arm64'].available, false);
   assert.equal(initialComponents().pyannote.state, 'blocked');
   assert.equal(initialComponents().titanet.state, 'blocked');
-  assert.equal(initialComponents().runtime_probes.failure_code, 'runtime_validation_pending');
+  assert.equal(initialComponents().runtime_probes.state, 'pending');
+  assert.equal(runtimeManifest.runtime_validation.available, true);
+  for (const probe of runtimeManifest.runtime_validation.probes) {
+    assert.match(probe.environment_role, /^(worker|backend|model_manager)$/);
+    assert.equal(sha(path.resolve(root, probe.helper)), probe.sha256, `trusted helper hash: ${probe.component}`);
+  }
 });
 
 test('runtime executor reports an explicitly unavailable worker recipe without pretending it was installed', async () => {
@@ -92,12 +118,49 @@ test('runtime probe runner requires a trusted helper and explicit completed infe
   tasks.paths = { home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
   const context = { attemptId: '00000000-0000-4000-8000-000000000099', signal: new AbortController().signal,
     componentStatus: tasks.initialBootstrapStatus(), onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };
+  context.componentStatus.components.worker_environment = { state: 'verified', path: path.join(root, 'environments', 'worker', 'v1') };
   const managerPython = path.join(root, 'environments', 'model-manager', 'bin', 'python');
   fs.mkdirSync(path.dirname(managerPython), { recursive: true });
   fs.writeFileSync(managerPython, 'fixture interpreter');
   tasks.getManagerPython = () => managerPython;
   await tasks.run('validate_runtime', context);
   assert.equal(context.componentStatus.components.silero.state, 'runtime_ready');
+  assert.equal(context.componentStatus.production_ready, false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('runtime probe failures remain component blockers and do not hide later successful probes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-runtime-probe-blockers-'));
+  const failed = path.join(root, 'failed.py'); const good = path.join(root, 'good.py');
+  fs.writeFileSync(failed, '# trusted failing fixture'); fs.writeFileSync(good, '# trusted successful fixture');
+  const sha = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  const workerPython = path.join(root, 'environments', 'worker', 'v1', 'bin', 'python');
+  fs.mkdirSync(path.dirname(workerPython), { recursive: true }); fs.writeFileSync(workerPython, 'fixture interpreter');
+  const runtimeRecipe = structuredClone(runtimeManifest);
+  runtimeRecipe.runtime_validation = { available: true, probes: [
+    { component: 'ffmpeg', helper: 'failed.py', sha256: sha(failed), environment_role: 'worker', arguments: ['ffmpeg'], timeout_ms: 2000 },
+    { component: 'silero', helper: 'good.py', sha256: sha(good), environment_role: 'worker', arguments: ['silero'], timeout_ms: 2000 },
+  ] };
+  const calls = [];
+  const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, runtimeRecipe,
+    processRunner: async (executable) => {
+      calls.push(executable);
+      return calls.length === 1
+        ? { code: 1, stdout: JSON.stringify({ schema_version: 1, component: 'ffmpeg', success: false, inference_completed: false, error_code: 'runtime_tool_unavailable', error: 'Managed FFmpeg is absent.' }), stderr: '' }
+        : { code: 0, stdout: JSON.stringify({ schema_version: 1, component: 'silero', success: true,
+          inference_completed: true, identity: 'silero-fixture', device: 'cpu' }), stderr: '' };
+    } });
+  tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
+  tasks.paths = { home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
+  const context = { attemptId: '00000000-0000-4000-8000-000000000099', signal: new AbortController().signal,
+    componentStatus: tasks.initialBootstrapStatus(), onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };
+  context.componentStatus.components.worker_environment = { state: 'verified', path: path.join(root, 'environments', 'worker', 'v1') };
+  context.bootstrapStatus = context.componentStatus;
+  await tasks.run('validate_runtime', context);
+  assert.deepEqual(calls, [workerPython, workerPython]);
+  assert.equal(context.componentStatus.components.ffmpeg.state, 'blocked');
+  assert.equal(context.componentStatus.components.silero.state, 'runtime_ready');
+  assert.deepEqual(context.componentStatus.components.runtime_probes.blocked_components, ['ffmpeg']);
   assert.equal(context.componentStatus.production_ready, false);
   fs.rmSync(root, { recursive: true, force: true });
 });

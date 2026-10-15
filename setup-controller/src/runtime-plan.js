@@ -13,12 +13,26 @@ export const PRODUCTION_STAGES = Object.freeze([
   'validate_runtime', 'start_services', 'verify_services',
 ]);
 
-export function selectRuntimeProfile(host = hostEnvironment()) {
+export function cudaProfileReady(recipe, gpuDetected, cudaProbe) {
+  return gpuDetected === true && recipe?.available === true && recipe?.validated === true
+    && cudaProbe?.success === true && cudaProbe?.torch === true && cudaProbe?.ctranslate2 === true;
+}
+
+export function selectRuntimeProfile(host = hostEnvironment(), capabilities = {}) {
   if (host.profile === 'macos-arm64') return { host, profile: 'macos-arm64', modelPlatform: 'macos-arm64', workerProfile: 'macos-arm64' };
-  if (host.profile === 'linux-x86_64') return { host, profile: 'linux-x86_64', modelPlatform: host.wsl ? 'windows-wsl2' : 'linux-x86_64', workerProfile: 'linux-x86_64-cpu' };
+  if (host.profile === 'linux-x86_64') {
+    const cudaValidated = capabilities.cudaValidated === true
+      && cudaProfileReady(runtimeManifest.worker.profiles['linux-x86_64-cuda'], capabilities.gpuDetected, capabilities.cudaProbe);
+    const workerProfile = cudaValidated ? 'linux-x86_64-cuda' : 'linux-x86_64-cpu';
+    return { host, profile: 'linux-x86_64', modelPlatform: host.wsl ? 'windows-wsl2' : 'linux-x86_64', workerProfile,
+      accelerator: cudaValidated ? 'cuda' : 'cpu', cuda_candidate: capabilities.gpuDetected === true,
+      cuda_validated: cudaValidated, cpu_fallback_available: runtimeManifest.worker.profiles['linux-x86_64-cpu'].available === true
+        && runtimeManifest.worker.profiles['linux-x86_64-cpu'].validated === true };
+  }
   throw Object.assign(new Error('No trusted SpeechCraft runtime profile exists for this host.'), { code: 'RUNTIME_PROFILE_UNAVAILABLE' });
 }
 
+/** CUDA is selectable only after both the recipe and runtime probes are trusted. */
 export function hashMatches(file, expected) {
   if (!/^[a-f0-9]{64}$/.test(expected || '')) return false;
   try {
@@ -45,7 +59,9 @@ export function initialComponents() {
     whisper: component('pending', 'Whisper Large-v3; platform-selected format'),
     titanet: component('blocked', null, { code: 'model_release_blocked', message: runtimeManifest.models.blocked_roles.speaker_purity }),
     pyannote: component('blocked', null, { code: 'model_authorization_unavailable', message: runtimeManifest.models.blocked_roles.diarization }),
-    runtime_probes: component('blocked', null, { code: 'runtime_validation_pending', message: runtimeManifest.runtime_validation.reason }),
+    runtime_probes: runtimeManifest.runtime_validation.available === true
+      ? component('pending', 'trusted managed-worker inference probes')
+      : component('blocked', null, { code: 'runtime_validation_pending', message: runtimeManifest.runtime_validation.reason }),
     backend_service: component('blocked', null, { code: 'service_start_pending', message: 'Backend service supervision is not configured for this application release.' }),
     dataset_processing: component('blocked', null, { code: 'runtime_profile_unavailable', message: 'The worker environment and required FFmpeg runtime are not verified.' }),
   };

@@ -45,15 +45,17 @@ Worker installation is implemented as a trusted recipe consumer. A profile is
 installable only when its manifest entry is marked both `available` and
 `validated`, pins the project manifest and lock SHA-256 values, identifies the
 managed Python version, environment version, disk estimate, and required
-import checks. The checked-in CPU Linux, CUDA Linux, and macOS entries remain
-unavailable; the existing CUDA lock has not been validated as a full recipe.
-No trusted FFmpeg/FFprobe bundle or inference helper is present. When signed
-off helpers are added to `runtime_validation.probes`, the controller checks
-the helper digest, runs it through the managed model-manager interpreter with
-a bounded timeout and process ownership, and accepts readiness only from a
-structured result confirming inference completed. Missing helpers remain
-blocked. Pyannote authorization is not integrated and TitaNet's release
-blocker remains. These components appear as blocked in status, while an
+import checks. The checked-in Linux CPU profile is installable and validated.
+CUDA Linux and macOS remain unavailable; the CUDA lock is not yet a validated
+complete recipe. Trusted worker inference probes are checked in for FFmpeg,
+Silero, Whisper, experimental TitaNet, Community-1, and CUDA. The controller
+checks their digests, runs them through the managed worker interpreter with a
+bounded timeout and process ownership, and accepts readiness only from a
+structured result confirming inference completed. Failed probes leave their
+components blocked and do not imply full readiness. Pyannote authorization is
+not integrated and TitaNet's release blocker remains. No FFmpeg/FFprobe bundle
+is installed until its exact source, digest, and redistribution obligations
+are approved. These components appear as blocked in status, while an
 eligible backend can still be started and checked at `/healthz`.
 `production_ready` remains false.
 
@@ -356,12 +358,13 @@ Python/model installations. Real network smoke tests are opt-in.
 
 ## Next PR
 
-The Linux x86-64 CPU worker recipe is now pinned, controller-installable and
-validated on this host for environment imports, Silero ONNX, offline Whisper
-Large-v3, and experimental local TitaNet inference. CUDA remains unvalidated
-because this host has no working NVIDIA driver. Managed FFmpeg/FFprobe and
-trusted inference-probe recipes are still unavailable. Full dataset processing
-therefore remains blocked until a trusted FFmpeg package and authorized local
-Community-1 snapshot are available. TitaNet's licensing/provenance and score
-calibration remain separate release gates. The Mac worker runtime still needs
-Kavin's M4 Pro validation.
+The Linux x86-64 CPU worker recipe is pinned, controller-installable, and
+validated for environment imports plus actual Silero ONNX and offline Whisper
+Large-v3 inference. This host has an RTX 4060, but its CTranslate2 Whisper GPU
+attempt failed because `libcublas.so.12` is unavailable; the installed Torch
+is CPU-only, so CUDA remains unvalidated and unselectable. Controller-run probes
+confirmed Silero and Whisper readiness while retaining FFmpeg, TitaNet, and
+Community-1 blockers. The complete dataset job remains blocked without a
+trusted managed FFmpeg build and authorized Community-1 snapshot. TitaNet's
+licensing/provenance and score calibration remain release gates. Mac and WSL2
+were not tested.

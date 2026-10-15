@@ -528,6 +528,7 @@ export class BootstrapTasks {
     wheelSha256 = process.env.SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256,
     bootstrapManifest = manifest, requirementsPath = REQUIREMENTS, fetchImpl = fetch,
     availableBytes = null, processRunner = runOwnedProcess, runtimeRecipe = runtimeManifest,
+    runtimeProbeAudio = process.env.SPEECHCRAFT_RUNTIME_PROBE_AUDIO || null,
     applicationRoot = fileURLToPath(new URL('../../', import.meta.url)) } = {}) {
     if (!dataDirectory) throw new BootstrapError('DATA_DIRECTORY_REQUIRED', 'A SpeechCraft-managed data directory is required for bootstrap.');
     this.dataDirectory = fs.realpathSync(dataDirectory);
@@ -535,6 +536,7 @@ export class BootstrapTasks {
     this.wheelSha256 = wheelSha256;
     this.manifest = bootstrapManifest;
     this.runtimeRecipe = runtimeRecipe;
+    this.runtimeProbeAudio = runtimeProbeAudio;
     this.requirementsPath = requirementsPath;
     this.fetchImpl = fetchImpl;
     this.availableBytesOverride = availableBytes;
@@ -780,7 +782,10 @@ export class BootstrapTasks {
     let nvidia = null;
     if (this.environment.os === 'linux') {
       try {
-        const output = execFileSync('nvidia-smi', ['--query-gpu=name,driver_version,cuda_version', '--format=csv,noheader'], {
+        // `cuda_version` is a display-only field on current nvidia-smi builds,
+        // not a queryable GPU property. Keep this as candidate detection only;
+        // actual CUDA selection requires runtime inference probes.
+        const output = execFileSync('nvidia-smi', ['--query-gpu=name,driver_version', '--format=csv,noheader'], {
           encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'],
         }).trim().split(/\r?\n/).slice(0, 8);
         if (output.length && output[0]) nvidia = output.map((line) => line.slice(0, 240));
@@ -797,10 +802,17 @@ export class BootstrapTasks {
     }
     this.status(context, { profile: this.environment.profile, wsl: this.environment.wsl,
       available_bytes: available, data_directory: this.dataDirectory,
-      runtime_profile: selectRuntimeProfile(this.environment),
+      runtime_profile: selectRuntimeProfile(this.environment, {
+        gpuDetected: Boolean(nvidia?.length),
+        cudaRecipeAvailable: this.runtimeRecipe.worker?.profiles?.['linux-x86_64-cuda']?.available === true
+          && this.runtimeRecipe.worker?.profiles?.['linux-x86_64-cuda']?.validated === true,
+        // Host visibility is only a candidate. CUDA becomes selectable after
+        // managed PyTorch, CTranslate2, and required model probes all pass.
+        cudaValidated: false,
+      }),
       host_details: { cpu_model: os.cpus()[0]?.model?.slice(0, 160) || null,
         logical_cpu_count: os.cpus().length, nvidia_gpus: nvidia,
-        cuda_detected: Boolean(nvidia?.length), cuda_compatibility: 'not_assessed',
+        cuda_detected: Boolean(nvidia?.length), cuda_candidate: Boolean(nvidia?.length), cuda_compatibility: 'not_assessed',
         cuda_runtime_validated: false },
       uv_verified: false, python_verified: false, model_manager_verified: false,
       bootstrap_ready: false, production_ready: false });
@@ -1219,6 +1231,42 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       return;
     }
     const validated = [];
+    const blocked = [];
+    const components = context.componentStatus.components || {};
+    const managedRoot = path.resolve(this.dataDirectory);
+    const managedPath = (candidate) => {
+      if (typeof candidate !== 'string' || !candidate) return '';
+      const resolved = path.resolve(candidate);
+      const relative = path.relative(managedRoot, resolved);
+      return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) ? '' : resolved;
+    };
+    let probeAudio = '';
+    if (this.runtimeProbeAudio) {
+      try {
+        const candidate = path.resolve(this.runtimeProbeAudio);
+        const stat = fs.lstatSync(candidate);
+        if (stat.isFile() && !stat.isSymbolicLink() && stat.size <= 100 * 1024 * 1024) probeAudio = candidate;
+      } catch {}
+    }
+    const modelPlatform = selectRuntimeProfile(this.environment).modelPlatform;
+    const modelPaths = {};
+    for (const [role, name] of [['asr', 'whisper'], ['speech_detection', 'silero'], ['speaker_purity', 'titanet'], ['diarization', 'pyannote']]) {
+      const item = components[name];
+      const candidate = item?.report?.root || item?.path;
+      if (candidate && managedPath(candidate)) modelPaths[role] = managedPath(candidate);
+    }
+    const helperEnvironment = { ...this.makeEnvironment(this.paths),
+      HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', HF_HUB_DISABLE_IMPLICIT_TOKEN: '1',
+      SPEECHCRAFT_MANAGED_RUNTIME: '1', SPEECHCRAFT_MODEL_ROOT: path.join(this.dataDirectory, 'models'),
+      SPEECHCRAFT_MODEL_PLATFORM: modelPlatform,
+      SPEECHCRAFT_ASR_MODEL_PATH: modelPaths.asr || '',
+      SPEECHCRAFT_SILERO_ONNX_PATH: modelPaths.speech_detection ? path.join(modelPaths.speech_detection, 'silero_vad.onnx') : '',
+      SPEECHCRAFT_TITANET_ONNX_PATH: modelPaths.speaker_purity ? path.join(modelPaths.speaker_purity, 'nemo_en_titanet_large.onnx') : '',
+      SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH: modelPaths.diarization || '',
+      SPEECHCRAFT_FFMPEG_BIN: components.ffmpeg?.state === 'verified' && managedPath(components.ffmpeg.path) ? path.join(components.ffmpeg.path, 'ffmpeg') : '',
+      SPEECHCRAFT_FFPROBE_BIN: components.ffmpeg?.state === 'verified' && managedPath(components.ffmpeg.path) ? path.join(components.ffmpeg.path, 'ffprobe') : '',
+      SPEECHCRAFT_RUNTIME_PROBE_AUDIO: probeAudio,
+    };
     for (const probe of probes) {
       if (!/^[a-z][a-z0-9_]*$/.test(probe.component || '') || !/^[a-f0-9]{64}$/.test(probe.sha256 || '')
           || !Number.isSafeInteger(probe.timeout_ms) || probe.timeout_ms < 1000 || probe.timeout_ms > 10 * 60_000
@@ -1246,26 +1294,36 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       const timer = AbortSignal.timeout(probe.timeout_ms);
       const signal = context.signal ? AbortSignal.any([context.signal, timer]) : timer;
       let result;
-      try { result = await this.runProcess(python, ['-I', helper, ...probe.arguments], { ...context, signal }, { cwd: this.applicationRoot }); }
+      try { result = await this.runProcess(python, ['-I', helper, ...probe.arguments], { ...context, signal },
+        { cwd: this.applicationRoot, env: helperEnvironment, allowFailure: true }); }
       catch (error) {
         if (timer.aborted && !context.signal?.aborted) throw new BootstrapError('RUNTIME_PROBE_TIMEOUT', `The ${probe.component} runtime probe exceeded its trusted time limit.`, { cause: error });
         throw error;
       }
-      if (result.code !== 0) throw new BootstrapError('RUNTIME_PROBE_FAILED', `The ${probe.component} runtime probe failed (exit code ${result.code}).`);
       let report;
-      try { report = JSON.parse(result.stdout); } catch { throw new BootstrapError('RUNTIME_PROBE_RESPONSE_INVALID', `The ${probe.component} runtime probe returned invalid JSON.`); }
-      if (report.schema_version !== 1 || report.component !== probe.component || report.success !== true
+      try { report = JSON.parse(result.stdout); } catch {
+        report = { success: false, error_code: 'RUNTIME_PROBE_RESPONSE_INVALID', error: 'Probe returned invalid JSON.' };
+      }
+      if (result.code !== 0 || report.schema_version !== 1 || report.component !== probe.component || report.success !== true
           || report.inference_completed !== true || typeof report.identity !== 'string' || !report.identity) {
-        throw new BootstrapError('RUNTIME_PROBE_FAILED', `The ${probe.component} probe did not confirm successful inference for the expected component.`);
+        const code = typeof report.error_code === 'string' && /^[a-z][a-z0-9_]{1,79}$/.test(report.error_code)
+          ? report.error_code : 'runtime_probe_failed';
+        this.setComponent(context, probe.component, { state: 'blocked', runtime_ready: false,
+          failure_code: code, message: typeof report.error === 'string' ? report.error.slice(0, 320)
+            : `The ${probe.component} probe did not confirm successful inference.` });
+        blocked.push(probe.component);
+        continue;
       }
       this.setComponent(context, probe.component, { state: 'runtime_ready', identity: report.identity,
         verification: 'trusted_inference_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null,
         runtime_ready: true, device: typeof report.device === 'string' ? report.device : null });
       validated.push(probe.component);
     }
-    this.setComponent(context, 'runtime_probes', { state: 'verified', verification: 'trusted_inference_probes', components: validated,
-      last_verified_at: new Date().toISOString(), failure_code: null, message: null });
-    this.status(context, { runtime_validation_pending: false, production_ready: false });
+    this.setComponent(context, 'runtime_probes', { state: blocked.length ? 'blocked' : 'verified',
+      verification: 'trusted_inference_probes', components: validated, blocked_components: blocked,
+      last_verified_at: new Date().toISOString(), failure_code: blocked.length ? 'runtime_probe_blocked' : null,
+      message: blocked.length ? `Runtime probes remain blocked for: ${blocked.join(', ')}.` : null });
+    this.status(context, { runtime_validation_pending: blocked.length > 0, production_ready: false });
   }
 
   markServicesBlocked(context) {

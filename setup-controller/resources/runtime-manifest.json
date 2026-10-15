@@ -61,11 +61,19 @@
     }
   },
   "runtime_validation": {
-    "available": false,
-    "reason": "No trusted model inference validation helpers are checked in. File verification does not establish runtime readiness."
+    "available": true,
+    "protocol": "speechcraft-runtime-probe-v1",
+    "reason": "Trusted worker probes are installed. A local intelligible recording is required for Whisper, TitaNet, Community-1, and FFmpeg; Community-1 authorization and managed FFmpeg remain external blockers.",
+    "probes": [
+      {"component": "ffmpeg", "helper": "workers/dataset/scripts/runtime_probe.py", "sha256": "7210798fa3c74e0a75c092f097ff8f1a0b529b6a38e37fec779934dbdfdbf3e6", "environment_role": "worker", "arguments": ["ffmpeg"], "timeout_ms": 600000},
+      {"component": "silero", "helper": "workers/dataset/scripts/runtime_probe.py", "sha256": "7210798fa3c74e0a75c092f097ff8f1a0b529b6a38e37fec779934dbdfdbf3e6", "environment_role": "worker", "arguments": ["silero"], "timeout_ms": 600000},
+      {"component": "whisper", "helper": "workers/dataset/scripts/runtime_probe.py", "sha256": "7210798fa3c74e0a75c092f097ff8f1a0b529b6a38e37fec779934dbdfdbf3e6", "environment_role": "worker", "arguments": ["whisper"], "timeout_ms": 600000},
+      {"component": "titanet", "helper": "workers/dataset/scripts/runtime_probe.py", "sha256": "7210798fa3c74e0a75c092f097ff8f1a0b529b6a38e37fec779934dbdfdbf3e6", "environment_role": "worker", "arguments": ["titanet"], "timeout_ms": 600000},
+      {"component": "pyannote", "helper": "workers/dataset/scripts/runtime_probe.py", "sha256": "7210798fa3c74e0a75c092f097ff8f1a0b529b6a38e37fec779934dbdfdbf3e6", "environment_role": "worker", "arguments": ["pyannote"], "timeout_ms": 600000}
+    ]
   },
   "ffmpeg": {
     "available": false,
-    "reason": "No trusted prebuilt FFmpeg artifact manifest or redistribution approval is checked in."
+    "reason": "Provisioning blocked: no exact prebuilt archive digest, corresponding-source/configuration materials, and redistribution approval have been verified for SpeechCraft. Arbitrary PATH executables are not trusted."
   }
 }
