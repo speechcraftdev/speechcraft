@@ -70,19 +70,26 @@ environment and its required tools validate.
 
 ## Current component gates
 
-The Linux CPU worker lock is missing. The checked-in worker project/lock is
-CUDA 12.8 constrained and has not been validated as an end-user recipe. The
-macOS worker recipe is also missing. GPU detection is diagnostic only and
-never upgrades the selected runtime profile to CUDA readiness. There is no
-trusted FFmpeg/FFprobe artifact bundle or redistribution record, no real
-inference validation helper, no gated pyannote source/token consumer, and
-TitaNet release approval remains blocked. Consequently dataset processing and
-`production_ready` remain false. Runtime installation can be partial and the
-API reports each blocker.
+The controller and model manager support authenticated Community-1 acquisition
+for the pinned `pyannote/speaker-diarization-community-1` revision. When no
+complete local snapshot exists, runtime setup waits for a user token. The
+authenticated controller endpoint sends that credential only over a private
+stdin pipe to the fixed model-manager helper. The helper checks identity and
+gated file access separately. Credentials are discarded after the attempt and
+are not persisted. A bundled CC0 two-voice synthetic dialogue is available to
+the offline pyannote inference probe; it does not replace validation on human
+multi-speaker recordings. An authorized snapshot is still required to execute
+the probe.
+
+The checked-in Linux CPU recipe is validated; CUDA and macOS runtime recipes
+remain unavailable. The trusted FFmpeg/FFprobe artifact bundle and its
+redistribution record are also unavailable. TitaNet release approval remains
+blocked. Consequently dataset processing and `production_ready` remain false.
+Runtime installation can be partial and the API reports each blocker.
 
 Model status distinguishes `files_verified` from `runtime_ready`. A completed
 setup plan is not a production-ready workstation. No synthetic inference
-probes or experimental TitaNet override are used.
+synthetic placeholder inference or experimental TitaNet override are used.
 
 ## Authentication handoff
 

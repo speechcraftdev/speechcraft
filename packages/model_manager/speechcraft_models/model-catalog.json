@@ -8,12 +8,13 @@
       "license": {
         "identifier": "CC-BY-4.0",
         "status": "verified",
-        "source": "https://huggingface.co/pyannote/speaker-diarization-community-1"
+        "source": "https://huggingface.co/pyannote/speaker-diarization-community-1 (model card and pinned repository metadata)"
       },
       "access": {
         "requirements": [
           "Hugging Face account",
-          "Accept model conditions and contact-information sharing terms"
+          "Accept model conditions and contact-information sharing terms",
+          "Explicit Hugging Face read token supplied for this installation operation"
         ],
         "source": "https://huggingface.co/pyannote/speaker-diarization-community-1"
       },
@@ -21,22 +22,44 @@
         {
           "platform": "linux-x86_64",
           "format": "pyannote pipeline snapshot (PyTorch)",
-          "revision": "UNRESOLVED: installed local snapshot has no recorded immutable revision",
-          "availability": "unresolved",
-          "inventory_complete": false,
+          "revision": "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee",
+          "availability": "verified",
+          "inventory_complete": true,
+          "strict_tree": true,
+          "source": {
+            "type": "huggingface",
+            "repo_id": "pyannote/speaker-diarization-community-1",
+            "authentication": "gated"
+          },
           "required_files": [
             {
+              "path": "config.yaml",
+              "size_bytes": 444,
+              "sha256": "5ce2bfa9a938dc132cec1172592d65173cbb8f444ea1e4133f10f9391de155be"
+            },
+            {
               "path": "embedding/pytorch_model.bin",
-              "min_size_bytes": 26646242
+              "size_bytes": 26646242,
+              "sha256": "6f10ff60898a1d185fa22e1d11e0bfa8a92efec811f11bca48cb8cafebefd929"
+            },
+            {
+              "path": "plda/plda.npz",
+              "size_bytes": 133852,
+              "sha256": "9b77bcd840692710dd3496f62ecfeed8d8e5f002fd991b785079b244eab7d255"
+            },
+            {
+              "path": "plda/xvec_transform.npz",
+              "size_bytes": 134376,
+              "sha256": "325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f"
             },
             {
               "path": "segmentation/pytorch_model.bin",
-              "min_size_bytes": 5906507
+              "size_bytes": 5906507,
+              "sha256": "7ad24338d844fb95985486eb1a464e32d229f6d7a03c9abe60f978bacf3f816e"
             }
           ],
-          "release_blockers": [
-            "Pin snapshot commit and verify complete pipeline file list and hashes; current application guard only checks these two minimum-size weights."
-          ]
+          "provenance": "Hugging Face model API at immutable revision 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee; LFS metadata supplies SHA-256 and exact size for four weights. config.yaml SHA-256 was computed from byte-identical public mirror content whose Git blob SHA-1 matches the gated source repository's config.yaml blobId.",
+          "release_blockers": []
         }
       ],
       "runtime_validation": {

@@ -67,7 +67,8 @@ export function initialComponents() {
     silero: component('pending', 'manifest-pinned Silero ONNX'),
     whisper: component('pending', 'Whisper Large-v3; platform-selected format'),
     titanet: component('blocked', null, { code: 'model_release_blocked', message: runtimeManifest.models.blocked_roles.speaker_purity }),
-    pyannote: component('blocked', null, { code: 'model_authorization_unavailable', message: runtimeManifest.models.blocked_roles.diarization }),
+    pyannote: component('waiting_for_token', 'pyannote/speaker-diarization-community-1',
+      { code: 'HF_MODEL_ACCESS_REQUIRED', message: 'Accept the Community-1 conditions and submit a Hugging Face read token to install this model.' }),
     runtime_probes: runtimeManifest.runtime_validation.available === true
       ? component('pending', 'trusted managed-worker inference probes')
       : component('blocked', null, { code: 'runtime_validation_pending', message: runtimeManifest.runtime_validation.reason }),

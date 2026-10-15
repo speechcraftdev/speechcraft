@@ -161,7 +161,9 @@ export class SetupController {
       job.plan_id ||= recordedMode === 'simulated' ? 'simulated-v1' : recordedMode === 'runtime' ? 'speechcraft-runtime-v1' : 'bootstrap-v1';
       job.error = null;
       job.progress = this.initialProgress(stage, 'Queued setup retry.');
-      job.bootstrap_status = this.tasks.initialBootstrapStatus ? this.tasks.initialBootstrapStatus() : job.bootstrap_status;
+      // Keep prior component evidence until each trusted stage revalidates it.
+      // In particular, an interrupted gated acquisition must be able to tell
+      // the user that its ephemeral credential was discarded.
     }, 'job_retried');
     this.launch();
     return { job: this.store.snapshot().job, idempotent: false };
@@ -191,14 +193,47 @@ export class SetupController {
     return { job: this.store.snapshot().job, idempotent: false };
   }
 
-  launch() {
+  authorizeModel(role, credential) {
+    if (role !== 'diarization') throw new ControllerError(404, 'MODEL_ROLE_NOT_FOUND', 'This setup model role is not available for authorization.');
+    if (this.mode !== 'runtime') throw new ControllerError(409, 'RUNTIME_SETUP_REQUIRED', 'Community-1 authorization is available only during runtime setup.');
+    if (typeof credential !== 'string' || !/^hf_[A-Za-z0-9_-]{16,512}$/.test(credential)) {
+      throw new ControllerError(400, 'HF_TOKEN_INVALID', 'Enter a valid Hugging Face read token.');
+    }
+    if (this.activeExecution) throw new ControllerError(409, 'AUTHORIZATION_ALREADY_RUNNING', 'A setup operation is still stopping or running. Wait for its status before submitting a token.');
+    const current = this.store.snapshot().job;
+    if (!current || current.mode !== 'runtime' || current.stage !== 'install_models' || current.state !== 'waiting_for_user') {
+      if (current?.bootstrap_status?.components?.pyannote?.state === 'runtime_ready') {
+        return { job: current, idempotent: true };
+      }
+      throw new ControllerError(409, 'AUTHORIZATION_NOT_REQUESTED', 'Start or resume setup and wait until Community-1 requests authorization.');
+    }
+    assertTransition('waiting_for_user', 'running');
+    const attemptId = randomUUID();
+    this.store.commit((state) => {
+      const job = state.job;
+      job.state = 'running';
+      job.attempt_id = attemptId;
+      job.attempt_count += 1;
+      job.completed_at = null;
+      job.error = null;
+      job.progress = this.initialProgress('install_models', 'Checking Community-1 access.');
+      const component = job.bootstrap_status?.components?.pyannote;
+      if (component) Object.assign(component, { state: 'checking_token', failure_code: null, message: null });
+    }, 'model_authorization_started');
+    this.launch({ startStage: 'install_models', authorizationToken: credential });
+    return { job: this.store.snapshot().job, idempotent: false };
+  }
+
+  launch({ startStage = null, authorizationToken = null } = {}) {
     const job = this.store.snapshot().job;
     const abort = new AbortController();
-    const execution = { jobId: job.id, attemptId: job.attempt_id, abort, promise: null };
+    const execution = { jobId: job.id, attemptId: job.attempt_id, abort, promise: null,
+      startStage, authorizationToken };
     this.activeExecution = execution;
-    execution.promise = this.run(job.id, job.attempt_id, abort.signal)
+    execution.promise = this.run(job.id, job.attempt_id, abort.signal, execution)
       .catch(() => {})
       .finally(() => {
+        execution.authorizationToken = null;
         if (this.activeExecution === execution) this.activeExecution = null;
       });
     this.runner = execution.promise;
@@ -228,9 +263,11 @@ export class SetupController {
     }, uncertain ? 'job_termination_uncertain' : 'job_cancelled');
   }
 
-  async run(jobId, attemptId, signal) {
+  async run(jobId, attemptId, signal, execution = null) {
     try {
-      for (const stage of this.stages) {
+      const firstStage = execution?.startStage ? this.stages.indexOf(execution.startStage) : 0;
+      if (firstStage < 0) throw new ControllerError(500, 'SETUP_STAGE_INVALID', 'The requested setup stage is unavailable.');
+      for (const stage of this.stages.slice(firstStage)) {
         if (signal.aborted) { this.finishCancelled(jobId, attemptId); return; }
         const current = this.store.snapshot().job;
         if (!current || current.id !== jobId || current.attempt_id !== attemptId || current.state !== 'running') {
@@ -248,6 +285,7 @@ export class SetupController {
           attempt: current.attempt_count,
           attemptId,
           bootstrapStatus: current.bootstrap_status,
+          authorizationToken: stage === 'install_models' ? execution?.authorizationToken || null : null,
           onComponentStatus: (status) => {
             const latest = this.store.snapshot().job;
             if (latest?.id !== jobId || latest.attempt_id !== attemptId || !['running', 'completed'].includes(latest.state)) return;
@@ -279,6 +317,16 @@ export class SetupController {
             }
             this.store.commit((state) => { state.job.progress = progress; }, 'task_progress');
           },
+          waitForUser: (componentStatus, message = 'Waiting for model authorization.') => {
+            const latest = this.store.snapshot().job;
+            if (latest?.id !== jobId || latest.attempt_id !== attemptId || latest.state !== 'running') return;
+            this.store.commit((state) => {
+              state.job.state = 'waiting_for_user';
+              state.job.completed_at = null;
+              state.job.progress = { current: null, total: null, percent: null, message };
+              if (componentStatus && state.job.bootstrap_status) state.job.bootstrap_status = componentStatus;
+            }, 'waiting_for_user');
+          },
         });
         const afterStage = this.store.snapshot().job;
         if (afterStage?.id !== jobId || afterStage.attempt_id !== attemptId) return;
@@ -301,6 +349,24 @@ export class SetupController {
       if (current?.id !== jobId || current.attempt_id !== attemptId) return;
       if (current.state === 'cancelling') { this.finishCancelled(jobId, attemptId); return; }
       if (current.state !== 'running') return;
+      const authCode = ['HF_TOKEN_INVALID', 'HF_MODEL_ACCESS_REQUIRED', 'HF_TOKEN_PERMISSION_DENIED',
+        'HF_APPROVAL_PENDING', 'AUTHORIZATION_REQUIRED_AFTER_RESTART'].includes(error?.code);
+      if (authCode && current.stage === 'install_models' && !current.child_process) {
+        const messages = {
+          HF_TOKEN_INVALID: 'Hugging Face rejected the token. Check it and submit a valid read token.',
+          HF_MODEL_ACCESS_REQUIRED: 'Accept the Community-1 conditions on Hugging Face and ensure this account has access, then submit a read token.',
+          HF_TOKEN_PERMISSION_DENIED: 'This token lacks read permission. Create a read token and retry.',
+          HF_APPROVAL_PENDING: 'Hugging Face has not granted Community-1 access yet. Complete its approval steps and retry.',
+          AUTHORIZATION_REQUIRED_AFTER_RESTART: 'The controller restarted before gated acquisition completed. Submit the read token again to continue.',
+        };
+        this.store.commit((state) => {
+          state.job.state = 'waiting_for_user';
+          state.job.completed_at = null;
+          state.job.error = { code: error.code, message: messages[error.code] };
+          state.job.progress = { current: null, total: null, percent: null, message: 'Waiting for valid Community-1 authorization.' };
+        }, 'model_authorization_required');
+        return;
+      }
       const interrupted = Boolean(current.child_process);
       this.store.commit((state) => {
         state.job.state = interrupted ? 'interrupted' : 'failed';
@@ -323,7 +389,10 @@ export class SetupController {
   async shutdown() {
     this.stopping = true;
     const current = this.store.snapshot().job;
-    if (current?.state === 'running' || current?.state === 'waiting_for_user') {
+    // Waiting for user is durable idle state, not active work. Preserve it
+    // across a graceful restart so the next controller can continue asking
+    // for the ephemeral authorization without creating a cancelled job.
+    if (current?.state === 'running') {
       this.cancel('CONTROLLER_SHUTDOWN');
     }
     await this.runner;

@@ -203,7 +203,7 @@ export class RuntimeTasks extends BootstrapTasks {
       return;
     }
     const components = context.componentStatus.components || {};
-    const prerequisites = ['worker_environment', 'ffmpeg', 'silero', 'whisper'];
+    const prerequisites = ['worker_environment', 'ffmpeg', 'silero', 'whisper', 'pyannote'];
     const missing = prerequisites.filter((name) => {
       const item = components[name];
       return name === 'worker_environment' ? item?.state !== 'verified' : item?.state !== 'runtime_ready';
@@ -228,6 +228,7 @@ export class RuntimeTasks extends BootstrapTasks {
     const modelRoot = runtimeRoots(this.dataDirectory).models;
     const asr = components.whisper?.state === 'runtime_ready' ? components.whisper.path : null;
     const silero = components.silero?.state === 'runtime_ready' ? components.silero.path : null;
+    const pyannote = components.pyannote?.state === 'runtime_ready' ? components.pyannote.path : null;
     const modelPlatform = selectRuntimeProfile(this.environment).modelPlatform;
     const ffmpegDir = components.ffmpeg?.state === 'runtime_ready' ? components.ffmpeg.path : null;
     const workerPython = worker?.state === 'verified' ? path.join(worker.path, 'bin', 'python') : null;
@@ -242,6 +243,7 @@ export class RuntimeTasks extends BootstrapTasks {
       SPEECHCRAFT_ASR_MODEL_PATH: asr || '',
       SPEECHCRAFT_SILERO_MODEL_DIR: silero || '',
       SPEECHCRAFT_SILERO_ONNX_PATH: silero ? path.join(silero, 'silero_vad.onnx') : '',
+      SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH: pyannote || '',
       SPEECHCRAFT_FFMPEG_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffmpeg') : '',
       SPEECHCRAFT_FFPROBE_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffprobe') : '',
       SPEECHCRAFT_FFMPEG_DIR: ffmpegDir || '',

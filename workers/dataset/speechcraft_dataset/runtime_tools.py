@@ -21,7 +21,7 @@ def executable(name: str) -> str:
 
 
 def verify_managed_model(role: str, artifact_directory: str | Path, platform: str) -> dict:
-    if role not in {"speech_detection", "asr"}:
+    if role not in {"speech_detection", "asr", "diarization"}:
         raise ValueError(f"Unsupported managed model role: {role}")
     from speechcraft_models.manifest import load_catalog, select_artifact, verify_artifact
 

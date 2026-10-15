@@ -31,7 +31,9 @@
         "platform": { "type": "string", "enum": ["linux-x86_64", "macos-arm64", "all-supported"] },
         "supported_platforms": { "type": "array", "minItems": 1, "items": { "type": "string", "enum": ["linux-x86_64", "macos-arm64"] } },
         "inventory_complete": { "type": "boolean", "description": "True only when the full required file inventory is known." },
+        "strict_tree": { "type": "boolean", "description": "If true, the installed tree contains exactly the cataloged files and implied directories." },
         "source": { "$ref": "#/$defs/source" },
+        "provenance": { "type": "string", "minLength": 1 },
         "format": { "type": "string", "minLength": 1 },
         "revision": { "type": "string", "minLength": 1 },
         "availability": { "enum": ["verified", "unresolved"] },
@@ -45,7 +47,8 @@
       "required": ["type", "repo_id"],
       "properties": {
         "type": { "const": "huggingface" },
-        "repo_id": { "type": "string", "minLength": 3, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$" }
+        "repo_id": { "type": "string", "minLength": 3, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$" },
+        "authentication": { "enum": ["public", "gated"] }
       },
       "additionalProperties": false
     },

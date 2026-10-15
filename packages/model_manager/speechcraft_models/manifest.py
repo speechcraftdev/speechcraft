@@ -94,6 +94,10 @@ def _artifact_semantics(artifact: dict) -> None:
                 or re.fullmatch(r"[0-9a-f]{40}", artifact["revision"]) is None
                 or any("url" in item for item in files)):
             raise ManifestError("Hugging Face artifacts need a full commit revision and catalog paths, not URLs")
+        if source.get("authentication", "public") not in {"public", "gated"}:
+            raise ManifestError("Hugging Face artifact authentication must be public or gated")
+        if source.get("authentication") == "gated" and artifact["availability"] != "verified":
+            raise ManifestError("gated artifacts need a verified immutable identity before installation")
     _unique(files, "path", "artifact.required_files")
     for item in files:
         path = item["path"]
@@ -220,6 +224,7 @@ def verify_artifact(root: str | Path, artifact: dict[str, Any]) -> dict[str, Any
     validate_artifact(artifact)
     details = []
     root_error = None
+    exact = None
     try:
         root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except FileNotFoundError:
@@ -229,18 +234,58 @@ def verify_artifact(root: str | Path, artifact: dict[str, Any]) -> dict[str, Any
     else:
         try:
             details = [_check_file(root_fd, item) for item in artifact["required_files"]]
+            exact = _strict_tree_matches(root_fd, artifact) if artifact.get("strict_tree") else None
         finally:
             os.close(root_fd)
-    return _report(details, artifact, root, root_error)
+    if root_error is not None or details and all(item["status"] == "missing" for item in details):
+        exact = False if artifact.get("strict_tree") else None
+    return _report(details, artifact, root, root_error, exact)
 
 
 def verify_directory_fd(root_fd: int, artifact: dict, root: str = "<directory>") -> dict:
     """Internal store interface: check files beneath an already secured directory."""
     validate_artifact(artifact)
-    return _report([_check_file(root_fd, item) for item in artifact["required_files"]], artifact, root, None)
+    details = [_check_file(root_fd, item) for item in artifact["required_files"]]
+    exact = _strict_tree_matches(root_fd, artifact) if artifact.get("strict_tree") else None
+    return _report(details, artifact, root, None, exact)
 
 
-def _report(details: list, artifact: dict, root: str | Path, root_error: str | None) -> dict:
+def _strict_tree_matches(root_fd: int, artifact: dict) -> bool:
+    """Require only cataloged files and their implied directories, without following links."""
+    expected_files = {item["path"] for item in artifact["required_files"]}
+    expected_dirs = {"/".join(parts[:index]) for name in expected_files
+                     for parts in [name.split("/")] for index in range(1, len(parts))}
+    found_files: set[str] = set()
+
+    def walk(directory_fd: int, prefix: str = "") -> bool:
+        for name in os.listdir(directory_fd):
+            relative = f"{prefix}/{name}" if prefix else name
+            info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                if relative not in expected_dirs:
+                    return False
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd)
+                try:
+                    if not walk(child, relative):
+                        return False
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(info.st_mode):
+                if relative not in expected_files or info.st_nlink != 1:
+                    return False
+                found_files.add(relative)
+            else:
+                return False
+        return True
+
+    try:
+        return walk(root_fd) and found_files == expected_files
+    except OSError:
+        return False
+
+
+def _report(details: list, artifact: dict, root: str | Path, root_error: str | None,
+            inventory_exact: bool | None = None) -> dict:
     states = [item["status"] for item in details]
     present = bool(states) and all(s in ("verified", "present_unverified", "partial", "corrupt") for s in states)
     complete = present and artifact["inventory_complete"] and "partial" not in states
@@ -252,6 +297,9 @@ def _report(details: list, artifact: dict, root: str | Path, root_error: str | N
         blockers.append("complete file inventory is unresolved")
     if any("sha256" not in item for item in artifact["required_files"]):
         blockers.append("trusted SHA-256 metadata is missing")
+    if artifact.get("strict_tree") and inventory_exact is not True:
+        blockers.append("installed file tree does not exactly match the trusted inventory")
+        integrity = False
     install_ready = integrity and not blockers
     if root_error or any(s in ("unsafe", "error") for s in states):
         status = "error"
@@ -266,7 +314,8 @@ def _report(details: list, artifact: dict, root: str | Path, root_error: str | N
     else:
         status = "unverified"
     return {"status": status, "root": str(root), "present": present, "complete": complete,
-            "integrity_verified": integrity, "install_ready": install_ready, "runtime_ready": None,
+            "integrity_verified": integrity, "inventory_exact": inventory_exact,
+            "install_ready": install_ready, "runtime_ready": None,
             "release_blockers": blockers, "error": root_error, "files": details,
             **{f"{state}_files": [item["path"] for item in details if item["status"] == state]
                for state in ("missing", "partial", "corrupt")}}

@@ -72,6 +72,42 @@ Python `experimental=True` option while its provenance/licensing blockers remain
 its report has `integrity_verified: true`, `install_ready: false`, and
 `runtime_ready: null`. Normal installation refuses it.
 
+### Gated Community-1 acquisition
+
+The only gated role accepted is `diarization`, resolved from the trusted catalog
+to `pyannote/speaker-diarization-community-1` revision
+`3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`. Production acquisition is exposed
+through the controller's authenticated authorization operation. The internal
+developer CLI also has `authorize-install diarization --token-stdin`; callers
+must not put the credential in arguments or environment variables. The helper
+uses `HfApi.whoami(token=...)`, then checks the pinned repository and performs
+an authenticated read of the pinned `config.yaml` before downloading only the
+five cataloged files. Public artifacts continue to use unauthenticated Hub
+requests.
+
+The catalog pins exact sizes and SHA-256 for `config.yaml`, the embedding and
+segmentation weights, `plda/plda.npz`, and `plda/xvec_transform.npz`. The four
+weight files use source Hub LFS SHA-256/size metadata. `config.yaml` is 444
+bytes; its digest was independently computed from byte-identical mirror bytes
+whose Git blob SHA-1 matches the source repository's blob ID. Community-1 is
+marked CC-BY-4.0 from its model card. Users must accept the current Hugging Face
+conditions, including the account/contact-data terms shown there. Per-user
+gated access does not grant SpeechCraft a right to redistribute the weights.
+
+Only an explicit token supplied for the current operation is passed to the
+official Hub client. No global Hub login, cached credential lookup, token file,
+or credential database is used. The controller passes the token to the trusted
+manager process via stdin, never argv, environment, persistent state, logs, or
+events. If the controller restarts before acquisition finishes, the user
+submits the token again; already verified snapshots require no token. After the
+complete exact tree is verified and atomically published, inference uses the
+local directory offline without a token.
+
+The user flow adopts the straightforward conditions → read-token → verify/access
+→ download sequence used by VoiceStudio. SpeechCraft differs deliberately in
+not saving a credential in a database or global Hugging Face credential file,
+and does not perform a global Hugging Face login.
+
 ## Storage and recovery
 
 Choose a user data directory outside releases and projects: for example

@@ -114,15 +114,20 @@ def annotation_to_speechcraft_regions(
 
 
 def community1_snapshot_ready(path: Path) -> tuple[bool, str]:
-    if not path.is_dir():
-        return False, f"pyannote Community-1 snapshot is missing or not a directory: {path}"
-    embed = path / "embedding" / "pytorch_model.bin"
-    seg = path / "segmentation" / "pytorch_model.bin"
-    if not embed.is_file() or embed.stat().st_size < COMMUNITY1_EMBED_MIN_BYTES:
-        return False, f"pyannote Community-1 snapshot is incomplete: embedding weights missing or too small at {embed}"
-    if not seg.is_file() or seg.stat().st_size < COMMUNITY1_SEG_MIN_BYTES:
-        return False, f"pyannote Community-1 snapshot is incomplete: segmentation weights missing or too small at {seg}"
-    return True, str(path)
+    if not path.is_dir() or path.is_symlink():
+        return False, f"pyannote Community-1 snapshot is missing or not a safe directory: {path}"
+    try:
+        from speechcraft_models.manifest import load_catalog, select_artifact, verify_artifact
+
+        platform = os.environ.get("SPEECHCRAFT_MODEL_PLATFORM", "linux-x86_64")
+        artifact = select_artifact(load_catalog(), "diarization", platform)
+        report = verify_artifact(path, artifact)
+    except Exception as exc:
+        return False, f"pyannote Community-1 trusted inventory could not be checked ({type(exc).__name__})."
+    if report.get("status") != "verified" or report.get("integrity_verified") is not True \
+            or report.get("install_ready") is not True or report.get("inventory_exact") is not True:
+        return False, f"pyannote Community-1 snapshot is incomplete or failed complete trusted inventory verification: {report.get('status')}"
+    return True, str(path.resolve())
 
 
 def resolve_community1_model_path(config: dict[str, Any]) -> Path:
@@ -211,7 +216,9 @@ def load_community1_pipeline(model_path: Path, device: str) -> Any:
     except Exception as exc:
         raise RuntimeError(f"pyannote.audio is unavailable: {type(exc).__name__}: {exc}") from exc
 
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
     try:
         pipeline = Pipeline.from_pretrained(str(model_path))
     except Exception as exc:

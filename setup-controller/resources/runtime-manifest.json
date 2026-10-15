@@ -94,19 +94,19 @@
       "asr"
     ],
     "blocked_roles": {
-      "diarization": "Pyannote Community-1 acquisition and token authorization are not integrated.",
+      "diarization": "Community-1 installation requires accepted Hugging Face conditions and an explicit ephemeral read token; runtime readiness additionally requires the offline inference probe.",
       "speaker_purity": "TitaNet provenance and redistribution approval remain blocked."
     }
   },
   "runtime_validation": {
     "available": true,
     "protocol": "speechcraft-runtime-probe-v1",
-    "reason": "Trusted, hashed CC0 speech fixtures are bundled for FFmpeg, Silero, Whisper and TitaNet probes. Pyannote remains blocked until a legitimately authorized local Community-1 snapshot is configured.",
+    "reason": "Trusted, hashed CC0 speech fixtures are bundled for FFmpeg, Silero, Whisper, TitaNet, and a two-voice Community-1 probe. Gated diarization remains blocked until an authorized local snapshot is installed and offline inference succeeds.",
     "probes": [
       {
         "component": "ffmpeg",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+      "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
         "environment_role": "worker",
         "arguments": [
           "ffmpeg"
@@ -117,7 +117,7 @@
       {
         "component": "silero",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+      "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
         "environment_role": "worker",
         "arguments": [
           "silero"
@@ -128,7 +128,7 @@
       {
         "component": "whisper",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+      "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
         "environment_role": "worker",
         "arguments": [
           "whisper"
@@ -139,7 +139,7 @@
       {
         "component": "titanet",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+      "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
         "environment_role": "worker",
         "arguments": [
           "titanet"
@@ -150,18 +150,18 @@
       {
         "component": "pyannote",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+        "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
         "environment_role": "worker",
         "arguments": [
           "pyannote"
         ],
         "timeout_ms": 600000,
-        "fixture": "speech"
+        "fixture": "community1_two_voice"
       },
       {
         "component": "cuda",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+      "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
         "environment_role": "worker_cuda_candidate",
         "fixture": "speech",
         "arguments": [
@@ -171,6 +171,11 @@
       }
     ],
     "fixtures": {
+      "community1_two_voice": {
+        "path": "workers/dataset/runtime-fixtures/community1-two-voice.wav",
+        "size_bytes": 768078,
+        "sha256": "981721582d5a7524cd8e825d8331d433b9e06a346de76f99855b026ca4216e7d"
+      },
       "speech": {
         "path": "workers/dataset/runtime-fixtures/speech.wav",
         "size_bytes": 576078,

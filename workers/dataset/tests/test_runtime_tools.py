@@ -47,5 +47,5 @@ def test_model_verification_uses_catalog_and_rejects_nonverified_report(tmp_path
     monkeypatch.setattr(manifest, "verify_artifact", lambda directory, artifact: {"status": "corrupt", "integrity_verified": False, "install_ready": False})
     with pytest.raises(RuntimeError, match="failed manifest integrity"):
         verify_managed_model("asr", tmp_path, "linux-x86_64")
-    with pytest.raises(ValueError, match="Unsupported managed model role"):
+    with pytest.raises(RuntimeError, match="failed manifest integrity"):
         verify_managed_model("diarization", tmp_path, "linux-x86_64")

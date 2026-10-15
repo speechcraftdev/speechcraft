@@ -94,13 +94,13 @@ small bootstrap plan below. `runtime` mode uses this ordered plan:
 10. `start_services`
 11. `verify_services`
 
-Runtime mode installs approved Silero and platform-selected Whisper files
-through `speechcraft_models`, installs backend dependencies from the trusted
-lock and starts the backend only after loopback health succeeds. Worker
-profiles, FFmpeg/FFprobe artifacts, the pyannote authorization consumer,
-TitaNet release approval, and inference helpers are unavailable and stay
-blocked. `completed` means the selected controller plan finished, not that
-every component is ready.
+Runtime mode installs approved Silero and platform-selected Whisper files and
+checks Community-1 through `speechcraft_models`. If no complete verified local
+snapshot exists, setup pauses in `waiting_for_user` until the authenticated
+authorization endpoint receives a token. Backend dependencies are installed
+from the trusted lock. `completed` means the selected controller plan finished,
+not that every component is ready; pyannote inference must still pass its
+offline runtime probe.
 
 The controller can consume a worker profile only when its trusted runtime
 manifest entry has `available: true` and `validated: true`, pinned project and
@@ -183,9 +183,11 @@ every persisted state or progress update.
 
 ## Operations
 
-All POST operations require `Content-Type: application/json`, a JSON object (up
-to 16 KiB), the session cookie, allowed Origin, and the CSRF header. The current
-API accepts only `{}`; commands, paths, URLs, and arbitrary options are rejected.
+All POST operations require `Content-Type: application/json`, a session cookie,
+allowed Origin, and the CSRF header. Parameterless operations accept only `{}`
+(up to 16 KiB). The pyannote authorization operation is the single exception:
+it accepts exactly one token field in a body capped at 4 KiB. Commands, paths,
+URLs, and arbitrary options remain rejected.
 
 ### `POST /setup-api/start`
 
@@ -222,19 +224,100 @@ Runtime mode includes a `components` map in status and SSE snapshots. Each item
 reports identity, state, verification method, last verified time, failure code
 and a safe message. Components include uv, managed Python, model manager,
 backend/worker environments, FFmpeg, Silero, Whisper, TitaNet, pyannote,
-runtime probes, backend service and dataset processing. States include
-`pending`, `downloading`, `files_verified`, `verified`, `stopped`, `failed`,
-and `blocked`. A healthy backend or verified model files do not imply inference
-readiness. `partial_ready` is a development indicator only.
+runtime probes, backend service and dataset processing. Pyannote component states
+include `waiting_for_token`, `checking_token`, `checking_model_access`,
+`access_denied`, `downloading`, `files_verified`, `validating_inference`,
+`runtime_ready`, `interrupted`, and `failed`. File verification and actual
+inference readiness remain distinct. A healthy backend or verified model files
+do not imply inference readiness. `partial_ready` is a development indicator
+only.
 
-The future gated-model operation will use `waiting_for_user` and an
-authenticated same-origin submission scoped to the active attempt. A trusted
-helper must consume the credential through protected stdin/descriptor data;
-it must never appear in persistent job state, events, URLs, process arguments,
-logs or diagnostics. It will be discarded after the helper exits. This release
-has no gated-model consumer and accepts no token.
+### `GET /setup-api/models`
 
-Operation response example:
+Requires the session cookie. Returns public state for Silero, Whisper, TitaNet,
+and Community-1; it excludes local credential material and file-level reports.
+
+```json
+{
+  "schema_version": 1,
+  "models": [{
+    "role": "diarization",
+    "model_id": "pyannote/speaker-diarization-community-1",
+    "display_name": "pyannote Community-1",
+    "state": "waiting_for_token",
+    "progress": null,
+    "files_verified": false,
+    "runtime_ready": false,
+    "action_required": true,
+    "failure_code": null,
+    "message": "Accept Community-1 conditions and submit a Hugging Face read token to install this model.",
+    "release_blockers": []
+  }]
+}
+```
+
+### `POST /setup-api/models/pyannote/authorize`
+
+Requires the session cookie, allowed Host and Origin, JSON content type, and
+`X-SpeechCraft-CSRF`. It accepts only `{"token":"hf_…"}` in a body no larger
+than 4 KiB. Query-string credentials, unknown fields, duplicate fields, escaped
+tokens, and malformed token shapes are rejected. The response never reflects
+the credential.
+
+```http
+POST /setup-api/models/pyannote/authorize
+Content-Type: application/json
+Origin: http://127.0.0.1:4317
+Cookie: speechcraft_setup=…
+X-SpeechCraft-CSRF: …
+
+{"token":"hf_example_token_value_not_real"}
+```
+
+Returns `202` when the same runtime setup job begins an authorization attempt,
+or `200` if the component is already runtime-ready. Concurrent token operations
+return `409 AUTHORIZATION_ALREADY_RUNNING`. The caller should observe `/status`
+or `/events`; it should not wait for the download in the HTTP request.
+
+```json
+{
+  "state": "running",
+  "job_id": "a676d84c-341a-4eae-9bd7-8b71dd149647",
+  "stage": "install_models",
+  "attempt_id": "953f50e6-ec29-4fe9-a5b6-0d0b15d8ed8c",
+  "idempotent": false,
+  "state_revision": 24,
+  "component": { "role": "diarization", "state": "checking_token" }
+}
+```
+
+The controller accepts the token only while the existing runtime setup job is
+`waiting_for_user` at `install_models`. It scopes the credential to that
+attempt, sends it to the fixed manager helper over stdin, and releases the
+reference when the attempt exits. It is absent from job state, event history,
+SSE, diagnostics, logs, subprocess argv/environment, and temporary files. The
+helper checks token identity separately from access to the exact pinned gated
+repository and required file, downloads only the trusted inventory, and
+verifies every file before publication. Public models remain unauthenticated.
+
+An invalid token or missing accepted model access returns the job to
+`waiting_for_user` with a safe action message. Network/integrity failures are
+failed or retryable without infinite access retries. Cancellation waits for the
+owned helper to stop. If the controller restarts while waiting, the waiting
+state remains durable. If it restarts during acquisition, process ownership is
+reconciled, the token is discarded, and a later retry asks for it again. A
+complete verified local snapshot is reused without token submission.
+
+Stable authorization error codes include `HF_TOKEN_INVALID`,
+`HF_MODEL_ACCESS_REQUIRED`, `HF_TOKEN_PERMISSION_DENIED`, `HF_APPROVAL_PENDING`
+(only if upstream distinguishes it), `HF_NETWORK_ERROR`, `HF_RATE_LIMITED`,
+`HF_SNAPSHOT_INCOMPLETE`, `HF_SNAPSHOT_INTEGRITY_FAILED`,
+`MODEL_STORAGE_INSUFFICIENT`, `PYANNOTE_RUNTIME_VALIDATION_FAILED`,
+`AUTHORIZATION_ALREADY_RUNNING`, and `AUTHORIZATION_REQUIRED_AFTER_RESTART`.
+When Hugging Face does not distinguish approval from access denial, the API
+asks the user to accept conditions and check account access instead of guessing.
+
+Parameterless operation response example:
 
 ```json
 {

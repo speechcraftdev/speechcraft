@@ -22,7 +22,8 @@ import uuid
 from .manifest import (ManifestError, load_catalog, select_artifact,
                        verify_artifact, verify_directory_fd)
 from .huggingface_source import (HuggingFaceAcquisitionError, PUBLIC_REPOSITORIES,
-                                 acquire_public_snapshot, validate_request)
+                                 acquire_gated_snapshot, acquire_public_snapshot,
+                                 validate_gated_catalog_request, validate_request)
 
 CHUNK = 64 * 1024
 CHECKPOINT_BYTES = 4 * 1024 * 1024
@@ -267,7 +268,7 @@ class _Installer:
     """Internal trusted-catalog seam for tests; public API never accepts URLs/catalogs."""
     def __init__(self, root, catalog, *, progress=None, attempts=3, timeout=15,
                  lock_timeout=60, allow_test_http=False, retry_delay=0.25,
-                 test_hf_endpoint=None):
+                 test_hf_endpoint=None, gated_token=None, gated_hub_client=None):
         self.root = Path(root).expanduser().absolute()
         self.catalog = catalog
         self.progress = progress or (lambda event: None)
@@ -277,6 +278,8 @@ class _Installer:
         self.allow_test_http = allow_test_http
         self.retry_delay = retry_delay
         self.test_hf_endpoint = test_hf_endpoint
+        self.gated_token = gated_token
+        self.gated_hub_client = gated_hub_client
         self._event_context = ContextVar(f"speechcraft_model_event_{id(self)}", default={})
         if test_hf_endpoint is not None and not allow_test_http:
             raise ValueError('test Hugging Face endpoint requires the internal test transport flag')
@@ -320,8 +323,11 @@ class _Installer:
         source = artifact.get('source')
         if source is not None:
             try:
-                validate_request(source['repo_id'], artifact['revision'],
-                                 [item['path'] for item in artifact['required_files']])
+                filenames = [item['path'] for item in artifact['required_files']]
+                if source.get('authentication') == 'gated':
+                    validate_gated_catalog_request(source['repo_id'], artifact['revision'], filenames)
+                else:
+                    validate_request(source['repo_id'], artifact['revision'], filenames)
             except HuggingFaceAcquisitionError as exc:
                 raise InstallError(str(exc)) from exc
         else:
@@ -588,13 +594,22 @@ class _Installer:
                           transferred_bytes=None, current_file=None)
                 try:
                     event_context = self._event_context.get()
-                    acquire_public_snapshot(
-                        source['repo_id'], artifact['revision'],
-                        [item['path'] for item in artifact['required_files']],
-                        source_path,
-                        lambda event: self.emit_source(event, context=event_context),
-                        test_endpoint=self.test_hf_endpoint,
-                        total_bytes=sum(item['size_bytes'] for item in artifact['required_files']))
+                    files = [item['path'] for item in artifact['required_files']]
+                    if source.get('authentication') == 'gated':
+                        if not self.gated_token:
+                            raise InstallError('AUTHORIZATION_REQUIRED_AFTER_RESTART: enter a read token to continue Community-1 installation.')
+                        acquire_gated_snapshot(
+                            source['repo_id'], artifact['revision'], files, self.gated_token,
+                            source_path, lambda event: self.emit_source(event, context=event_context),
+                            total_bytes=sum(item['size_bytes'] for item in artifact['required_files']),
+                            hub_client=self.gated_hub_client)
+                    else:
+                        acquire_public_snapshot(
+                            source['repo_id'], artifact['revision'], files,
+                            source_path,
+                            lambda event: self.emit_source(event, context=event_context),
+                            test_endpoint=self.test_hf_endpoint,
+                            total_bytes=sum(item['size_bytes'] for item in artifact['required_files']))
                 except HuggingFaceAcquisitionError as exc:
                     if not exc.transient or attempt == self.attempts:
                         raise InstallError(str(exc)) from exc
@@ -632,6 +647,8 @@ class _Installer:
             raise InstallError(str(exc)) from exc
         finally:
             self._event_context.reset(token)
+            if self.gated_token is not None:
+                self.gated_token = None
 
     def _install(self, role, platform, *, experimental=False):
         model_id, key, artifact = self.resolve(role, platform, experimental=experimental)
@@ -706,7 +723,8 @@ class _Installer:
                 report = verify_directory_fd(payload, artifact, str(path))
                 if (not report['integrity_verified']
                         or not report['install_ready'] and not experimental):
-                    raise InstallError('staged artifact failed verification')
+                    code = 'HF_SNAPSHOT_INTEGRITY_FAILED' if artifact.get('source', {}).get('authentication') == 'gated' else 'MODEL_FILES_NOT_VERIFIED'
+                    raise InstallError(f'{code}: staged artifact failed trusted file verification')
                 if artifact.get('source', {}).get('type') == 'huggingface':
                     _sync_tree(payload)
                 else:
@@ -926,6 +944,29 @@ def install_model(root, role, platform, *, progress=None, experimental=False):
     """
     return _Installer(root, load_catalog(), progress=progress).install(
         role, platform, experimental=experimental)
+
+
+def install_gated_model(root, role, platform, token, *, progress=None,
+                        gated_hub_client=None):
+    """Install the single cataloged gated role with an explicitly supplied token.
+
+    Public model installation never accepts a credential. This function does
+    not persist it and exists only for the allowlisted diarization snapshot.
+    """
+    if role != 'diarization':
+        raise InstallError('gated acquisition is available only for the diarization role')
+    from .huggingface_source import validate_gated_request
+    artifact = select_artifact(load_catalog(), role, platform)
+    source = artifact.get('source', {})
+    if source.get('authentication') != 'gated':
+        raise InstallError('the selected artifact is not a gated model')
+    try:
+        validate_gated_request(source['repo_id'], artifact['revision'],
+            [item['path'] for item in artifact['required_files']], token)
+    except HuggingFaceAcquisitionError as exc:
+        raise InstallError(str(exc)) from None
+    return _Installer(root, load_catalog(), progress=progress,
+                      gated_token=token, gated_hub_client=gated_hub_client).install(role, platform)
 
 
 def check_installation(root, role, platform, *, experimental=False):

@@ -250,7 +250,7 @@ export async function reconcileOwnedProcess(store) {
   }
 }
 
-export function runOwnedProcess(executable, args, { signal, cwd, env, onChildProcess, onOutput,
+export function runOwnedProcess(executable, args, { signal, cwd, env, stdinData, onChildProcess, onOutput,
   graceMs = CHILD_TERMINATE_GRACE_MS, maxOutputBytes = OUTPUT_CAPTURE_LIMIT } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new BootstrapError('BOOTSTRAP_CANCELLED', 'Bootstrap was cancelled.')); return; }
@@ -259,7 +259,7 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, onChildPro
     try {
       child = spawn(executable, args, { cwd,
         env: { ...(env || process.env), SPEECHCRAFT_OWNED_PROCESS_NONCE: launchNonce }, shell: false, detached: process.platform !== 'win32',
-        windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        windowsHide: true, stdio: [stdinData === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
     } catch (error) {
       reject(new BootstrapError('BOOTSTRAP_PROCESS_START_FAILED', 'Could not start a trusted bootstrap operation.', { cause: error }));
       return;
@@ -349,6 +349,11 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, onChildPro
     child.once('spawn', () => {
       childRecord = { pid: child.pid, process_group_id: child.pid, identity: ownedProcessIdentity(child.pid, launchNonce),
         nonce: launchNonce, attempt_id: null, termination_status: 'active' };
+      if (stdinData !== undefined) {
+        const secretInput = Buffer.isBuffer(stdinData) ? stdinData : Buffer.from(String(stdinData));
+        child.stdin.once('error', () => {});
+        child.stdin.end(secretInput, () => secretInput.fill(0));
+      }
       ownershipUpdate = Promise.resolve(onChildProcess?.(childRecord))
         .then(() => { if (cancelled) void stop(); })
         .catch(() => { ownershipWriteFailed = true; void stop(); });
@@ -611,16 +616,27 @@ export class BootstrapTasks {
           this.setComponent(context, 'backend_environment', { state: 'pending', verification: 'revalidation_failed', failure_code: error.code || 'BACKEND_ENVIRONMENT_INVALID', message: 'The managed backend environment must be repaired before use.' });
         }
         const runtime = selectRuntimeProfile(this.environment);
-        for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper']]) {
+        for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper'], ['diarization', 'pyannote']]) {
           try {
             const managerPython = path.join(this.paths.environmentRoot, 'bin', 'python');
             const result = await this.runProcess(managerPython, ['-I', '-m', 'speechcraft_models', 'status', role,
               '--platform', runtime.modelPlatform, '--root', path.join(this.dataDirectory, 'models')], context, { allowFailure: true });
             const report = JSON.parse(result.stdout);
-            const installed = report.install_ready === true && report.integrity_verified === true;
+            const installed = report.install_ready === true && report.integrity_verified === true
+              && (role !== 'diarization' || report.inventory_exact === true);
             this.setComponent(context, component, installed
-              ? { state: 'files_verified', verification: 'manifest_size_and_sha256', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Files are verified; inference readiness is not established.', runtime_ready: false, report }
-              : { state: ['missing', 'partial', 'corrupt', 'error', 'unverified'].includes(report.status) ? report.status : 'error', verification: 'manifest_check', failure_code: 'MODEL_FILES_NOT_VERIFIED', message: 'Model files need repair before use.', runtime_ready: false, report });
+              ? { state: 'files_verified', identity: role === 'diarization' ? 'pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee' : undefined,
+                verification: role === 'diarization' ? 'complete_manifest_size_sha256_and_exact_tree' : 'manifest_size_and_sha256',
+                last_verified_at: new Date().toISOString(), failure_code: null,
+                message: role === 'diarization' ? 'Community-1 files are verified; offline inference must be revalidated.' : 'Files are verified; inference readiness is not established.',
+                runtime_ready: false, path: report.root, report }
+              : { state: role === 'diarization' ? 'waiting_for_token' : ['missing', 'partial', 'corrupt', 'error', 'unverified'].includes(report.status) ? report.status : 'error',
+                verification: 'manifest_check', failure_code: role === 'diarization' && job.state !== 'waiting_for_user'
+                  ? 'AUTHORIZATION_REQUIRED_AFTER_RESTART' : role === 'diarization' ? null : 'MODEL_FILES_NOT_VERIFIED',
+                message: role === 'diarization' && job.state !== 'waiting_for_user'
+                  ? 'The controller restarted before gated acquisition completed. Its token was discarded; submit a read token to resume.'
+                  : role === 'diarization' ? 'Community-1 is not completely verified. Submit a read token to acquire the pinned local snapshot.'
+                    : 'Model files need repair before use.', runtime_ready: false, report });
           } catch {
             this.setComponent(context, component, { state: 'pending', verification: 'revalidation_failed', failure_code: 'MODEL_STATUS_UNAVAILABLE', message: 'Model files must be rechecked before use.', runtime_ready: false });
           }
@@ -712,7 +728,8 @@ export class BootstrapTasks {
     return env;
   }
 
-  async runProcess(executable, args, context, { cwd = this.dataDirectory, env = this.makeEnvironment(this.paths), onOutput, allowFailure = false } = {}) {
+  async runProcess(executable, args, context, { cwd = this.dataDirectory, env = this.makeEnvironment(this.paths), onOutput,
+    allowFailure = false, stdinData } = {}) {
     const childCallback = (record) => {
       if (!context.onChildProcess) return;
       if (record?.clear) return context.onChildProcess(null, 'termination_confirmed');
@@ -723,7 +740,7 @@ export class BootstrapTasks {
     // subsequent PID write therefore fails closed instead of losing ownership.
     await context.onChildProcess?.({ attempt_id: context.attemptId, state: 'starting', pid: null,
       identity: null, termination_status: 'active', created_at: new Date().toISOString() }, 'active');
-    const result = await this.processRunner(executable, args, { signal: context.signal, cwd, env,
+    const result = await this.processRunner(executable, args, { signal: context.signal, cwd, env, stdinData,
       onChildProcess: childCallback, onOutput });
     if (result.code !== 0 && !allowFailure) {
       throw new BootstrapError('BOOTSTRAP_COMMAND_FAILED', `A trusted bootstrap operation failed (exit code ${result.code ?? 'unknown'}).`);
@@ -1219,6 +1236,105 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       if (report.install_ready !== true || report.status !== 'verified') throw new BootstrapError('MODEL_FILES_NOT_VERIFIED', `Model files for ${role} did not pass the trusted manifest checks.`);
       this.setComponent(context, component, { state: 'files_verified', verification: 'manifest_size_and_sha256', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Files are verified; runtime inference has not been tested.', runtime_ready: false, path: report.root, report });
     }
+
+    // Community-1 is the only credential-gated role. Check the local trusted
+    // catalog report first, so verified snapshots never require another token.
+    const managerPython = this.getManagerPython();
+    const modelStatus = await this.runProcess(managerPython, ['-I', '-m', 'speechcraft_models', 'status', 'diarization',
+      '--platform', profile.modelPlatform, '--root', root], context, { cwd: this.dataDirectory,
+      env: { ...this.makeEnvironment(this.paths), SPEECHCRAFT_MODELS_ROOT: root }, allowFailure: true });
+    let localReport;
+    try { localReport = JSON.parse(modelStatus.stdout); }
+    catch { throw new BootstrapError('MODEL_MANAGER_RESPONSE_INVALID', 'The model manager returned an invalid Community-1 status report.'); }
+    if (modelStatus.code === 0 && localReport.install_ready === true && localReport.integrity_verified === true) {
+      this.setComponent(context, 'pyannote', { state: 'files_verified', identity: 'pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee',
+        verification: 'complete_manifest_size_sha256_and_exact_tree', last_verified_at: new Date().toISOString(),
+        path: localReport.root, report: localReport, runtime_ready: false, failure_code: null,
+        message: 'Community-1 files are verified; offline inference validation is pending.' });
+      return;
+    }
+    if (!context.authorizationToken) {
+      const previous = context.bootstrapStatus?.components?.pyannote;
+      const afterRestart = previous?.failure_code === 'AUTHORIZATION_REQUIRED_AFTER_RESTART'
+        || ['downloading', 'checking_token', 'checking_model_access', 'verifying_files', 'interrupted'].includes(previous?.state)
+        || context.bootstrapStatus?.recovery?.authorization_interrupted === true;
+      const status = { ...context.bootstrapStatus, components: { ...(context.bootstrapStatus?.components || {}) } };
+      status.components.pyannote = { state: 'waiting_for_token', identity: 'pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee',
+        verification: 'pending', runtime_ready: false, failure_code: afterRestart ? 'AUTHORIZATION_REQUIRED_AFTER_RESTART' : null,
+        message: afterRestart ? 'The controller restarted during gated acquisition. Its token was discarded; submit a read token to resume.'
+          : 'Accept Community-1 conditions and submit a Hugging Face read token to install this model.' };
+      this.setComponent(context, 'pyannote', status.components.pyannote);
+      context.onComponentStatus?.(status);
+      context.waitForUser?.(status, 'Community-1 needs Hugging Face authorization.');
+      return;
+    }
+
+    this.setComponent(context, 'pyannote', { state: 'checking_token', identity: 'pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee',
+      verification: 'pending', runtime_ready: false, failure_code: null, message: 'Checking token identity and Community-1 access.' });
+    let progressBuffer = '';
+    const acquired = await this.runProcess(managerPython, ['-I', '-m', 'speechcraft_models', 'authorize-install', 'diarization',
+      '--platform', profile.modelPlatform, '--root', root, '--token-stdin'], context, {
+      cwd: this.dataDirectory,
+      env: { ...this.makeEnvironment(this.paths), SPEECHCRAFT_MODELS_ROOT: root },
+      stdinData: `${context.authorizationToken}\n`, allowFailure: true,
+      onOutput: (stream, chunk) => {
+        if (stream !== 'stderr') return;
+        progressBuffer = `${progressBuffer}${chunk.toString('utf8')}`.slice(-16_384);
+        const lines = progressBuffer.split(/\r?\n/); progressBuffer = lines.pop() || '';
+        for (const line of lines) {
+          try {
+            const event = JSON.parse(line);
+            if (event.event === 'authorization_status' && ['checking_token', 'checking_model_access', 'downloading'].includes(event.state)) {
+              this.setComponent(context, 'pyannote', { state: event.state, failure_code: null,
+                message: event.state === 'checking_token' ? 'Checking Hugging Face token identity.'
+                  : event.state === 'checking_model_access' ? 'Checking access to the pinned Community-1 repository.'
+                    : 'Downloading the pinned Community-1 snapshot.' });
+              continue;
+            }
+            if (!['progress', 'downloading', 'source_progress', 'source_file_acquired'].includes(event.event)) continue;
+            this.setComponent(context, 'pyannote', { state: event.state === 'source_progress' ? 'downloading' : 'downloading',
+              failure_code: null, message: 'Downloading the pinned Community-1 snapshot.', progress_indeterminate: event.transfer_indeterminate === true });
+            this.emit(context, { phase: 'downloading', current: null, total: null, percent: null,
+              message: `Community-1: ${event.current_file || 'snapshot transfer'}` });
+          } catch {}
+        }
+      },
+    });
+    let gatedReport;
+    try { gatedReport = JSON.parse(acquired.stdout); }
+    catch { throw new BootstrapError('MODEL_MANAGER_RESPONSE_INVALID', 'The model manager returned an invalid Community-1 authorization result.'); }
+    if (acquired.code !== 0 || gatedReport.status === 'error') {
+      const allowedCodes = new Set(['HF_TOKEN_INVALID', 'HF_MODEL_ACCESS_REQUIRED', 'HF_TOKEN_PERMISSION_DENIED',
+        'HF_APPROVAL_PENDING', 'HF_NETWORK_ERROR', 'HF_RATE_LIMITED', 'HF_SNAPSHOT_INCOMPLETE',
+        'HF_SNAPSHOT_INTEGRITY_FAILED', 'MODEL_STORAGE_INSUFFICIENT']);
+      const code = allowedCodes.has(gatedReport.error_code) ? gatedReport.error_code : 'MODEL_INSTALL_FAILED';
+      const safeMessages = {
+        HF_TOKEN_INVALID: 'Hugging Face rejected this token. Check it and submit a valid read token.',
+        HF_MODEL_ACCESS_REQUIRED: 'Accept the Community-1 conditions and confirm account access on Hugging Face, then retry.',
+        HF_TOKEN_PERMISSION_DENIED: 'This token lacks read permission. Create a read token and retry.',
+        HF_APPROVAL_PENDING: 'Community-1 access is pending on Hugging Face. Complete its approval steps and retry.',
+        HF_NETWORK_ERROR: 'Hugging Face could not complete the request. Check the connection and retry.',
+        HF_RATE_LIMITED: 'Hugging Face is rate limiting this request. Wait briefly and retry.',
+        HF_SNAPSHOT_INCOMPLETE: 'The pinned Community-1 snapshot is missing a required file. Retry later or contact support.',
+        HF_SNAPSHOT_INTEGRITY_FAILED: 'A downloaded Community-1 file failed integrity verification. Retry the installation.',
+        MODEL_STORAGE_INSUFFICIENT: 'There is not enough free storage for Community-1. Free disk space and retry.',
+        MODEL_INSTALL_FAILED: 'Community-1 could not be installed. Review the sanitized diagnostics and retry.',
+      };
+      const waiting = ['HF_TOKEN_INVALID', 'HF_MODEL_ACCESS_REQUIRED', 'HF_TOKEN_PERMISSION_DENIED', 'HF_APPROVAL_PENDING'].includes(code);
+      this.setComponent(context, 'pyannote', { state: waiting ? 'access_denied' : 'failed', failure_code: code,
+        message: safeMessages[code], runtime_ready: false });
+      const error = new BootstrapError(code, safeMessages[code]);
+      throw error;
+    }
+    if (gatedReport.install_ready !== true || gatedReport.integrity_verified !== true || gatedReport.inventory_exact !== true) {
+      this.setComponent(context, 'pyannote', { state: 'failed', failure_code: 'HF_SNAPSHOT_INTEGRITY_FAILED',
+        message: 'The complete Community-1 snapshot did not pass its trusted exact-tree checks.', runtime_ready: false });
+      throw new BootstrapError('HF_SNAPSHOT_INTEGRITY_FAILED', 'The complete Community-1 snapshot did not pass trusted exact-tree verification.');
+    }
+    this.setComponent(context, 'pyannote', { state: 'files_verified', identity: 'pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee',
+      verification: 'complete_manifest_size_sha256_and_exact_tree', last_verified_at: new Date().toISOString(),
+      path: gatedReport.root, report: gatedReport, runtime_ready: false, failure_code: null,
+      message: 'Community-1 files are verified; offline inference validation is pending.' });
   }
 
   async validateRuntime(context) {

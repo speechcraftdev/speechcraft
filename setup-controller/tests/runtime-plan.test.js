@@ -45,7 +45,7 @@ test('checked-in backend recipe identity is verified and unsupported components 
   assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cpu'].validated, true);
   assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cuda'].validated, true);
   assert.equal(runtimeManifest.worker.profiles['macos-arm64'].available, false);
-  assert.equal(initialComponents().pyannote.state, 'blocked');
+  assert.equal(initialComponents().pyannote.state, 'waiting_for_token');
   assert.equal(initialComponents().titanet.state, 'blocked');
   assert.equal(initialComponents().runtime_probes.state, 'pending');
   assert.equal(runtimeManifest.runtime_validation.available, true);
@@ -301,9 +301,11 @@ test('model stage invokes the existing model-manager contract for platform-selec
   const tasks = new RuntimeTasks({ dataDirectory: root, availableBytes: 32 * 1024 ** 3,
     processRunner: async (_python, args) => {
       calls.push(args);
-      const role = args[args.indexOf('install') + 1];
+      const action = args.findIndex((value) => value === 'install' || value === 'status');
+      const role = args[action + 1];
       return { code: 0, stdout: JSON.stringify({ status: 'verified', install_ready: true, integrity_verified: true,
-        role, files: [{ path: 'tiny-fixture', status: 'verified' }] }), stderr: '' };
+        inventory_exact: role === 'diarization' ? true : null,
+        root: path.join(root, 'models', role), role, files: [{ path: 'tiny-fixture', status: 'verified' }] }), stderr: '' };
     } });
   tasks.environment = { profile: 'linux-x86_64', wsl: true, os: 'linux', architecture: 'x86_64' };
   tasks.paths = { home: root, uvCache: root, hfHome: path.join(root, 'hf'), hfHub: path.join(root, 'hf', 'hub'),
@@ -312,10 +314,49 @@ test('model stage invokes the existing model-manager contract for platform-selec
   const context = { attemptId: '00000000-0000-4000-8000-000000000101', signal: new AbortController().signal,
     componentStatus: tasks.initialBootstrapStatus(), onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };
   await tasks.run('install_models', context);
-  assert.deepEqual(calls.map((args) => args[args.indexOf('install') + 1]), ['speech_detection', 'asr']);
+  assert.deepEqual(calls.map((args) => args[args.findIndex((value) => value === 'install' || value === 'status') + 1]),
+    ['speech_detection', 'asr', 'diarization']);
   assert.ok(calls.every((args) => args.includes('--platform') && args[args.indexOf('--platform') + 1] === 'windows-wsl2'));
   assert.equal(context.componentStatus.components.silero.state, 'files_verified');
   assert.equal(context.componentStatus.components.whisper.state, 'files_verified');
+  assert.equal(context.componentStatus.components.pyannote.state, 'files_verified');
+  assert.equal(context.componentStatus.production_ready, false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('gated controller acquisition uses only the trusted role and sends token through stdin', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-gated-model-stage-'));
+  const token = `hf_${'fixtureSecretMarker'.repeat(2)}`;
+  const calls = [];
+  const tasks = new RuntimeTasks({ dataDirectory: root, availableBytes: 32 * 1024 ** 3,
+    processRunner: async (python, args, options) => {
+      calls.push({ python, args, env: options.env, stdinData: options.stdinData });
+      const actionAt = args.findIndex((value) => ['install', 'status', 'authorize-install'].includes(value));
+      const action = args[actionAt];
+      const role = args[actionAt + 1];
+      if (action === 'status' && role === 'diarization') return { code: 1,
+        stdout: JSON.stringify({ status: 'missing', install_ready: false }), stderr: '' };
+      const report = { status: 'verified', install_ready: true, integrity_verified: true,
+        inventory_exact: role === 'diarization' ? true : null, root: path.join(root, 'models', role), role };
+      return { code: 0, stdout: JSON.stringify(report), stderr: '' };
+    } });
+  tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
+  tasks.paths = { home: root, uvCache: root, hfHome: path.join(root, 'hf'), hfHub: path.join(root, 'hf', 'hub'),
+    hfXet: path.join(root, 'hf', 'xet'), temporary: root, pythonRoot: root };
+  tasks.getManagerPython = () => '/trusted/model-manager/bin/python';
+  const componentStatus = tasks.initialBootstrapStatus();
+  const context = { attemptId: '00000000-0000-4000-8000-000000000102', authorizationToken: token,
+    signal: new AbortController().signal, componentStatus, bootstrapStatus: componentStatus,
+    onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };
+  await tasks.run('install_models', context);
+  const gated = calls.find((call) => call.args.includes('authorize-install'));
+  assert.ok(gated);
+  assert.equal(gated.args[gated.args.indexOf('authorize-install') + 1], 'diarization');
+  assert.equal(gated.args.includes(token), false);
+  assert.equal(JSON.stringify(gated.env).includes(token), false);
+  assert.equal(gated.stdinData, `${token}\n`);
+  assert.equal(context.componentStatus.components.pyannote.state, 'files_verified');
+  assert.equal(context.componentStatus.components.pyannote.runtime_ready, false);
   assert.equal(context.componentStatus.production_ready, false);
   fs.rmSync(root, { recursive: true, force: true });
 });

@@ -109,7 +109,8 @@ def load_config(config_path: Path | None, source_wavs: list[Path], *, single_spe
         model_platform = os.environ.get("SPEECHCRAFT_MODEL_PLATFORM", "").strip()
         if model_platform not in {"linux-x86_64", "windows-wsl2", "macos-arm64"}:
             raise RuntimeError("Managed runtime is missing its controller-selected model platform.")
-        for role, key in (("speech_detection", "silero_model_directory"), ("asr", "faster_whisper_model_path")):
+        for role, key in (("speech_detection", "silero_model_directory"), ("asr", "faster_whisper_model_path"),
+                          ("diarization", "diarization_model_path")):
             directory = config.get(key)
             if not directory:
                 raise RuntimeError(f"Managed runtime is missing the verified {role} model directory.")

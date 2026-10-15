@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 import io
+import shutil
+import stat
 from pathlib import Path
 
 # This is an explicit filename allowlist in addition to the packaged catalog.
@@ -18,6 +20,19 @@ PUBLIC_REPOSITORIES = {
     "mlx-community/whisper-large-v3-mlx": frozenset({
         "config.json", "weights.npz",
     }),
+}
+
+# Gated downloads are deliberately narrower: only this repository, immutable
+# revision and complete catalog inventory can consume an explicit credential.
+GATED_REPOSITORIES = {
+    "pyannote/speaker-diarization-community-1": {
+        "revision": "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee",
+        "files": frozenset({
+            "config.yaml", "embedding/pytorch_model.bin", "plda/plda.npz",
+            "plda/xvec_transform.npz", "segmentation/pytorch_model.bin",
+        }),
+        "access_file": "config.yaml",
+    },
 }
 
 
@@ -36,6 +51,130 @@ def validate_request(repo_id: str, revision: str, filenames: list[str]) -> None:
         raise HuggingFaceAcquisitionError("Hugging Face revision must be a full immutable commit hash")
     if len(set(filenames)) != len(filenames):
         raise HuggingFaceAcquisitionError("duplicate Hugging Face file path")
+
+
+def validate_gated_catalog_request(repo_id: str, revision: str, filenames: list[str]) -> None:
+    approved = GATED_REPOSITORIES.get(repo_id)
+    if approved is None or revision != approved["revision"] or set(filenames) != approved["files"]:
+        raise HuggingFaceAcquisitionError("gated Hugging Face repository, revision, or inventory is not allowlisted")
+
+
+def validate_gated_request(repo_id: str, revision: str, filenames: list[str], token: str) -> None:
+    validate_gated_catalog_request(repo_id, revision, filenames)
+    if not isinstance(token, str) or not re.fullmatch(r"hf_[A-Za-z0-9_-]{16,512}", token):
+        raise HuggingFaceAcquisitionError("HF_TOKEN_INVALID: credential format is invalid")
+
+
+def _safe_hf_code(exc: Exception) -> tuple[str, str, bool]:
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    name = type(exc).__name__
+    if status == 401 or name in {"InvalidTokenError", "LocalTokenNotFoundError"}:
+        return "HF_TOKEN_INVALID", "Hugging Face rejected this token. Create a valid read token and try again.", False
+    if status in (403, 404):
+        return "HF_MODEL_ACCESS_REQUIRED", "Accept the Community-1 model conditions and ensure this token has read access, then retry.", False
+    if status == 429:
+        return "HF_RATE_LIMITED", "Hugging Face is rate limiting this request. Wait briefly and retry.", True
+    if status in (408, 500, 502, 503, 504) or name in {
+        "ConnectionError", "ConnectError", "ReadError", "Timeout", "TimeoutException",
+        "RemoteProtocolError", "ConnectTimeout", "ReadTimeout",
+    }:
+        return "HF_NETWORK_ERROR", "Could not reach Hugging Face. Check the network connection and retry.", True
+    return "HF_NETWORK_ERROR", "The Hugging Face authorization request failed safely. Check the connection and retry.", False
+
+
+def _official_gated_client(endpoint: str | None = None):
+    from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+
+    api = HfApi(endpoint=endpoint) if endpoint else HfApi()
+    return api, hf_hub_download, snapshot_download
+
+
+def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], token: str,
+                           local_dir: Path, progress, *, total_bytes: int,
+                           hub_client=None) -> None:
+    """Validate identity and actual file read access, then fetch allowlisted files.
+
+    ``hub_client`` is an internal deterministic fake-Hub seam used by offline
+    integration tests. Production always uses the official Hub client above.
+    The token is never placed in process environment, URLs, or progress events.
+    """
+    validate_gated_request(repo_id, revision, filenames, token)
+    progress({"event": "authorization_status", "state": "checking_token", "source": "huggingface"})
+    try:
+        api, download_file, download_snapshot = hub_client or _official_gated_client()
+        identity = api.whoami(token=token)
+        if not isinstance(identity, dict) or not identity.get("name"):
+            raise HuggingFaceAcquisitionError("HF_TOKEN_INVALID: Hugging Face did not validate this credential.")
+    except HuggingFaceAcquisitionError:
+        raise
+    except Exception as exc:
+        code, message, transient = _safe_hf_code(exc)
+        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient) from None
+
+    progress({"event": "authorization_status", "state": "checking_model_access", "source": "huggingface"})
+    try:
+        info = api.model_info(repo_id, revision=revision, token=token, files_metadata=True)
+        if getattr(info, "sha", revision) != revision:
+            raise HuggingFaceAcquisitionError("HF_SNAPSHOT_INCOMPLETE: Hugging Face did not resolve the pinned revision.")
+        siblings = {getattr(item, "rfilename", None) for item in getattr(info, "siblings", [])}
+        if not set(filenames) <= siblings:
+            raise HuggingFaceAcquisitionError("HF_SNAPSHOT_INCOMPLETE: The pinned repository is missing required model files.")
+        # Metadata is not the access check: read the actual pinned small config
+        # through the authenticated Hub endpoint before starting the snapshot.
+        local_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        download_file(repo_id=repo_id, filename=GATED_REPOSITORIES[repo_id]["access_file"],
+                      revision=revision, token=token, local_dir=str(local_dir), force_download=False)
+    except HuggingFaceAcquisitionError:
+        raise
+    except Exception as exc:
+        code, message, transient = _safe_hf_code(exc)
+        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient) from None
+
+    class _FileProgress:
+        # snapshot_download's supported tqdm hook reports file completion. Byte
+        # values remain unknown rather than fabricating a percentage.
+        def __init__(self, *args, **kwargs):
+            from tqdm.auto import tqdm
+            self._bar = tqdm(*args, **kwargs, disable=True)
+
+        def update(self, n=1):
+            result = self._bar.update(n)
+            progress({"event": "source_progress", "source": "huggingface",
+                      "state": "downloading", "current_file": None,
+                      "transferred_bytes": None, "total_bytes": total_bytes,
+                      "transfer_indeterminate": True,
+                      "files_completed": int(self._bar.n),
+                      "files_total": int(self._bar.total) if self._bar.total is not None else None})
+            return result
+
+        def __getattr__(self, name):
+            return getattr(self._bar, name)
+
+    try:
+        progress({"event": "authorization_status", "state": "downloading", "source": "huggingface"})
+        download_snapshot(repo_id=repo_id, repo_type="model", revision=revision,
+                          token=token, local_dir=str(local_dir), allow_patterns=filenames,
+                          max_workers=1, tqdm_class=_FileProgress)
+        # huggingface_hub's local_dir mode maintains resumability metadata under
+        # .cache/huggingface. Keep it while transfers can be retried, then remove
+        # only that generated directory before exact-tree verification/publication.
+        root_info = local_dir.lstat()
+        if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+            raise HuggingFaceAcquisitionError("HF_SNAPSHOT_INTEGRITY_FAILED: staging directory became unsafe.")
+        metadata = local_dir / ".cache"
+        try:
+            metadata_info = metadata.lstat()
+        except FileNotFoundError:
+            metadata_info = None
+        if metadata_info is not None:
+            if stat.S_ISLNK(metadata_info.st_mode) or not stat.S_ISDIR(metadata_info.st_mode):
+                raise HuggingFaceAcquisitionError("HF_SNAPSHOT_INTEGRITY_FAILED: Hugging Face staging metadata path is unsafe.")
+            shutil.rmtree(metadata)
+    except HuggingFaceAcquisitionError:
+        raise
+    except Exception as exc:
+        code, message, transient = _safe_hf_code(exc)
+        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient) from None
 
 
 def acquire_public_snapshot(repo_id: str, revision: str, filenames: list[str],

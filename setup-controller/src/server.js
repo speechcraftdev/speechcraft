@@ -43,12 +43,13 @@ async function readJson(request) {
   const chunks = [];
   for await (const chunk of request) {
     size += chunk.length;
-    if (size <= BODY_LIMIT) chunks.push(chunk);
+    if (size > BODY_LIMIT) throw new HttpError(413, 'BODY_TOO_LARGE', 'Request body exceeds the 16 KiB limit.');
+    chunks.push(chunk);
   }
-  if (size > BODY_LIMIT) throw new HttpError(413, 'BODY_TOO_LARGE', 'Request body exceeds the 16 KiB limit.');
   if (size === 0) return {};
+  const raw = Buffer.concat(chunks).toString('utf8');
   let value;
-  try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  try { value = JSON.parse(raw); }
   catch { throw new HttpError(400, 'INVALID_JSON', 'Request body must contain valid JSON.'); }
   if (!value || Array.isArray(value) || typeof value !== 'object') {
     throw new HttpError(400, 'INVALID_REQUEST', 'Request body must be a JSON object.');
@@ -57,6 +58,52 @@ async function readJson(request) {
     throw new HttpError(400, 'UNSUPPORTED_FIELDS', 'This endpoint does not accept caller-supplied commands, paths, or options.');
   }
   return value;
+}
+
+async function readAuthorizationJson(request) {
+  const type = (request.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+  if (type !== 'application/json') throw new HttpError(415, 'JSON_REQUIRED', 'Send a JSON request body.');
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 4096) throw new HttpError(413, 'BODY_TOO_LARGE', 'Authorization request exceeds the 4 KiB limit.');
+    chunks.push(chunk);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8');
+  let value;
+  try { value = JSON.parse(raw); }
+  catch { throw new HttpError(400, 'INVALID_JSON', 'Request body must contain valid JSON.'); }
+  if (!value || Array.isArray(value) || typeof value !== 'object'
+      || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'token')) {
+    throw new HttpError(400, 'UNSUPPORTED_FIELDS', 'Send only the documented token field.');
+  }
+  if (!/^\s*\{\s*"token"\s*:\s*"hf_[A-Za-z0-9_-]{16,512}"\s*\}\s*$/.test(raw)) {
+    throw new HttpError(400, 'INVALID_REQUEST', 'Send one unescaped ASCII token value in the documented JSON shape.');
+  }
+  if (typeof value.token !== 'string' || !/^hf_[A-Za-z0-9_-]{16,512}$/.test(value.token)) {
+    throw new HttpError(400, 'HF_TOKEN_INVALID', 'Enter a valid Hugging Face read token.');
+  }
+  return value.token;
+}
+
+function publicModels(controller) {
+  const components = controller.status().components || {};
+  const records = [
+    ['silero', 'speech_detection', 'silero-vad-onnx', 'Silero VAD ONNX'],
+    ['whisper', 'asr', 'whisper-large-v3', 'Whisper Large-v3'],
+    ['titanet', 'speaker_purity', 'titanet-large-onnx-fp32', 'TitaNet-Large ONNX FP32'],
+    ['pyannote', 'diarization', 'pyannote/speaker-diarization-community-1', 'pyannote Community-1'],
+  ];
+  return { schema_version: 1, models: records.map(([key, role, model_id, display_name]) => {
+    const value = components[key] || {};
+    return { role, model_id, display_name, state: value.state || 'pending',
+      progress: value.progress || null, files_verified: ['files_verified', 'validating_inference', 'runtime_ready'].includes(value.state),
+      runtime_ready: value.runtime_ready === true || value.state === 'runtime_ready',
+      action_required: value.state === 'waiting_for_token' || value.state === 'access_denied',
+      failure_code: value.failure_code || null, message: value.message || null,
+      release_blockers: key === 'titanet' ? value.release_blockers || [value.message || 'Experimental provenance and license review remains unresolved.'] : [] };
+  }) };
 }
 
 function parseCsv(value) {
@@ -281,6 +328,11 @@ export async function createSetupController({
         json(response, 200, controller.status());
         return;
       }
+      if (url.pathname === '/setup-api/models') {
+        if (request.method !== 'GET') throw new HttpError(405, 'METHOD_NOT_ALLOWED', 'Use GET for model status.');
+        json(response, 200, publicModels(controller));
+        return;
+      }
       if (url.pathname === '/setup-api/diagnostics') {
         if (request.method !== 'GET') throw new HttpError(405, 'METHOD_NOT_ALLOWED', 'Use GET for diagnostics.');
         json(response, 200, diagnostics(store, controller.mode));
@@ -299,6 +351,17 @@ export async function createSetupController({
       }
       validateHostOrigin(request, { originRequired: true });
       requireCsrf(request, session);
+      if (url.pathname === '/setup-api/models/pyannote/authorize') {
+        const token = await readAuthorizationJson(request);
+        const result = controller.authorizeModel('diarization', token);
+        const job = result.job;
+        json(response, result.idempotent ? 200 : 202, {
+          state: job.state, job_id: job.id, stage: job.stage, attempt_id: job.attempt_id,
+          idempotent: result.idempotent, state_revision: store.snapshot().revision,
+          component: publicModels(controller).models.find((model) => model.role === 'diarization'),
+        });
+        return;
+      }
       await readJson(request);
       if (url.pathname === '/setup-api/start') {
         const result = controller.start();

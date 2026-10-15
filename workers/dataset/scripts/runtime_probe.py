@@ -21,7 +21,7 @@ PROBE_FIXTURES = {
     "silero": ("speech-silence.wav", "65afa781f190dd7e6ee3b719e0b200b1224d057d4ae4c5077cd1b125685cda06", 640078),
     "whisper": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
     "titanet": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
-    "pyannote": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
+    "pyannote": ("community1-two-voice.wav", "981721582d5a7524cd8e825d8331d433b9e06a346de76f99855b026ca4216e7d", 768078),
     "cuda": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
 }
 
@@ -151,12 +151,13 @@ def run(component: str) -> dict:
         device = os.environ.get("SPEECHCRAFT_PROBE_DEVICE", "cpu")
         pipeline = load_community1_pipeline(snapshot, device)
         turns = run_community1_pipeline(pipeline, np.ascontiguousarray(samples.T), int(rate))
-        if not turns or any(float(row["start_sec"]) < 0 or float(row["end_sec"]) <= float(row["start_sec"])
+        speaker_count = len({row["speaker_id"] for row in turns})
+        if not turns or speaker_count < 2 or any(float(row["start_sec"]) < 0 or float(row["end_sec"]) <= float(row["start_sec"])
                             or not row.get("speaker_id") for row in turns):
-            raise RuntimeError("Community-1 inference returned no diarization turns.")
-        result.update(identity=f"pyannote-community-1-local:{snapshot.name}", backend="pyannote.audio",
-                      device=device, inference_completed=True,
-                      measurements={"turn_count": len(turns), "speaker_count": len({row["speaker_id"] for row in turns}),
+            raise RuntimeError("Community-1 inference did not return valid turns for both speakers in the pinned two-voice fixture.")
+        result.update(identity="pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee",
+                      backend="pyannote.audio", device=str(getattr(pipeline, "device", device)), inference_completed=True,
+                      measurements={"turn_count": len(turns), "speaker_count": speaker_count,
                                     "recording_duration_seconds": round(len(samples) / int(rate), 4)})
     elif component == "ffmpeg":
         import soundfile as sf

@@ -28,7 +28,16 @@ The model manager's verified files are authoritative under the persistent Speech
 
 The frozen VR O0_4 slicer retains its existing Silero ONNX wrapper, thresholds, segmentation and packing math. In managed mode it loads the model manager's ONNX file directly. It does not add a new VAD pass to the production pipeline. TitaNet runs through sherpa-onnx on CPU only when the explicit experimental opt-in is set; scores identify `sherpa-onnx` and `pending_evaluation`, and old NeMo-calibrated rejection thresholds are not used. Its artifact remains blocked for public release pending checkpoint provenance, use rights and redistribution/attribution evidence.
 
-Community-1 still requires a legitimate, authorized local snapshot. This stage does not download the gated model, bypass access terms, or substitute a diarizer. Full production processing/readiness remains blocked until the authorization milestone and genuine Community-1 inference are complete.
+The controller supports the legitimate gated flow for Community-1: accept the
+current Hugging Face conditions, submit a read token through the authenticated
+setup API, verify token identity and repository access separately, then install
+the pinned snapshot through the model manager. The token is ephemeral and is
+never stored or used during inference. The included two-voice CC0 synthetic
+fixture exercises offline inference when an authorized snapshot is available;
+it does not establish quality on human multi-speaker speech. No diarization
+fallback is used. Full production processing remains blocked until an
+authorized snapshot has passed the offline probe and other release blockers
+are resolved.
 
 ## Probe fixtures and protocol
 

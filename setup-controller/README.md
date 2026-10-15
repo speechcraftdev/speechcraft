@@ -35,11 +35,20 @@ reserve before dependency acquisition. Older verified environment versions
 are not removed when a new version is created.
 
 The runtime plan invokes `python -m speechcraft_models install` for Silero and
-the platform-selected Whisper Large-v3 artifact. The persistent model root is
+the platform-selected Whisper Large-v3 artifact. During `install_models`, it
+also checks the pinned Community-1 inventory. If no complete verified snapshot
+exists, setup pauses in `waiting_for_user`. After accepting the model
+conditions, the user submits a Hugging Face read token through the authenticated
+`POST /setup-api/models/pyannote/authorize` endpoint. Token identity and gated
+repository access are checked separately. The controller passes the token to
+the fixed model-manager helper over stdin and discards it when the attempt ends;
+it is not stored in state, events, logs, argv, environment, or temporary files.
+An already verified snapshot is reused without another token. The persistent
+model root is
 `<controller-data>/models`; Hugging Face home, Hub and Xet caches are under
 `<controller-data>/cache/bootstrap/huggingface`. The model manager retains
-ownership of transfers, resumability, integrity checks and publication. These
-files are file-verified only; no inference result is implied.
+ownership of transfers, resumability, integrity checks and publication. File
+verification and offline inference validation are separate readiness states.
 
 Worker installation is implemented as a trusted recipe consumer. A profile is
 installable only when its manifest entry is marked both `available` and
@@ -51,12 +60,14 @@ complete recipe. Trusted worker inference probes are checked in for FFmpeg,
 Silero, Whisper, experimental TitaNet, Community-1, and CUDA. The controller
 checks their digests, runs them through the managed worker interpreter with a
 bounded timeout and process ownership, and accepts readiness only from a
-structured result confirming inference completed. Failed probes leave their
-components blocked and do not imply full readiness. Pyannote authorization is
-not integrated and TitaNet's release blocker remains. No FFmpeg/FFprobe bundle
-is installed until its exact source, digest, and redistribution obligations
-are approved. These components appear as blocked in status, while an
-eligible backend can still be started and checked at `/healthz`.
+structured result confirming inference completed. The Community-1 probe uses a
+bundled CC0 two-voice synthetic dialogue fixture; it performs real inference
+but does not qualify performance on human conversation. Failed probes leave
+their components blocked and do not imply full readiness. TitaNet's release
+blocker remains. No FFmpeg/FFprobe bundle is installed until its exact source,
+digest, and redistribution obligations are approved. These components appear
+as blocked in status, while an eligible backend can still be started and
+checked at `/healthz`.
 `production_ready` remains false.
 
 Backend service launch uses a durable ownership gate. The child blocks on
@@ -259,6 +270,38 @@ python-build-standalone metadata; `uv python install` verifies the actual
 archive against that metadata. This establishes content integrity, not
 byte-for-byte reproducible runtime construction.
 
+## Community-1 authenticated smoke check
+
+For a live smoke test, use a Hugging Face account that has accepted the current
+Community-1 conditions and a read token. Start the runtime controller with an
+isolated data directory as above, establish its session using the developer
+session steps below, and `POST /setup-api/start`. Wait until status reports
+`waiting_for_user` at `install_models`. Submit the token without putting it in
+shell history, argv, or environment:
+
+```bash
+read -rsp 'Hugging Face read token: ' HF_TOKEN; printf '\n'
+printf '{"token":"%s"}' "$HF_TOKEN" | curl --fail-with-body -sS \
+  -b /tmp/speechcraft-setup-cookies.txt \
+  -H 'Origin: http://127.0.0.1:4317' \
+  -H "X-SpeechCraft-CSRF: $CSRF" \
+  -H 'Content-Type: application/json' \
+  --data-binary @- \
+  http://127.0.0.1:4317/setup-api/models/pyannote/authorize
+unset HF_TOKEN
+```
+
+`read` does not echo the token, and Bash's `printf` is a builtin. The token is
+sent only in the request body. Poll `GET /setup-api/status` or observe SSE until
+the Community-1 file verification and offline inference probe finish. Success
+requires `components.pyannote.state == "runtime_ready"`; file verification
+alone is insufficient. Then stop and restart the controller with the same data
+directory, start setup again and confirm the verified snapshot is reused with
+no token prompt. Record the pinned revision, safe status/error codes, and
+probe measurements, but never record the token or raw request. This live gated
+smoke was not run in the current development environment because no authorized
+account/token or Community-1 snapshot was available.
+
 Managed files live below the persistent data directory:
 
 ```text
@@ -356,15 +399,17 @@ fixtures, safe archive extraction, backend service lifecycle and bootstrap with
 offline stand-in tools. Default tests make no network requests or managed
 Python/model installations. Real network smoke tests are opt-in.
 
-## Next PR
+## Remaining runtime blockers
 
 The Linux x86-64 CPU worker recipe is pinned, controller-installable, and
 validated for environment imports plus actual Silero ONNX and offline Whisper
 Large-v3 inference. This host has an RTX 4060, but its CTranslate2 Whisper GPU
 attempt failed because `libcublas.so.12` is unavailable; the installed Torch
-is CPU-only, so CUDA remains unvalidated and unselectable. Controller-run probes
-confirmed Silero and Whisper readiness while retaining FFmpeg, TitaNet, and
-Community-1 blockers. The complete dataset job remains blocked without a
-trusted managed FFmpeg build and authorized Community-1 snapshot. TitaNet's
-licensing/provenance and score calibration remain release gates. Mac and WSL2
-were not tested.
+is CPU-only, so CUDA remains unvalidated and unselectable. Earlier controller
+smoke probes confirmed Silero and Whisper readiness. This Stage 6 change adds
+the gated acquisition path, but no authorized token or Community-1 snapshot was
+available to exercise live download or diarization here. The Community-1 probe
+uses synthetic two-voice TTS audio, not human conversation. The complete
+dataset job remains blocked until authorized local inference and the other
+runtime release blockers pass. TitaNet's licensing/provenance and score
+calibration remain release gates. Mac and WSL2 were not tested.
