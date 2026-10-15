@@ -25,6 +25,18 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, SQLModel, create_engine, delete, select
 
+
+def _speechcraft_ffmpeg_executable() -> str:
+    configured = os.environ.get("SPEECHCRAFT_FFMPEG_BIN", "").strip()
+    if os.environ.get("SPEECHCRAFT_MANAGED_RUNTIME") == "1":
+        if not configured:
+            raise FileNotFoundError("Managed runtime has no verified FFmpeg executable configured.")
+        candidate = Path(configured).expanduser()
+        if candidate.is_symlink() or not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise FileNotFoundError(f"Configured managed FFmpeg executable is missing or unsafe: {candidate}")
+        return str(candidate.resolve())
+    return configured or shutil.which("ffmpeg") or "ffmpeg"
+
 from .reference_acoustic_signature import (
     ACOUSTIC_SIGNATURE_V2_ID,
     hdbscan_min_cluster_size_for_count,

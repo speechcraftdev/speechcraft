@@ -200,9 +200,10 @@ def _threshold_status(
     speaker_check: float | None,
     transcript_threshold: float,
     speaker_threshold: float,
+    speaker_calibrated: bool = True,
     audio_missing: bool = False,
 ) -> Literal["accepted", "rejected"]:
-    if audio_missing or transcript_match is None or speaker_check is None:
+    if audio_missing or transcript_match is None or speaker_check is None or not speaker_calibrated:
         return "rejected"
     if transcript_match >= transcript_threshold and speaker_check >= speaker_threshold:
         return "accepted"
@@ -230,6 +231,7 @@ def _failed_checks(
     speaker_check: float | None,
     transcript_threshold: float,
     speaker_threshold: float,
+    speaker_calibrated: bool = True,
     audio_missing: bool = False,
 ) -> list[str]:
     failed: list[str] = []
@@ -239,7 +241,9 @@ def _failed_checks(
         failed.append("missing_transcript_qc")
     elif transcript_match < transcript_threshold:
         failed.append("low_transcript_match")
-    if speaker_check is None:
+    if not speaker_calibrated:
+        failed.append("speaker_score_uncalibrated")
+    elif speaker_check is None:
         failed.append("missing_speaker_qc")
     elif speaker_check < speaker_threshold:
         failed.append("low_speaker_similarity_window")
@@ -634,6 +638,11 @@ def finalize_dataset_qc(repository: Any, run_id: str, request: DatasetQcFinalize
             _index_rows_by_clip_id(transcript_rows, artifact_name=TRANSCRIPT_QC_REL),
             _index_rows_by_clip_id(speaker_rows, artifact_name=SPEAKER_PURITY_REL),
         )
+        speaker_calibrated_by_id = {
+            str(row.get("clip_id")): row.get("speaker_score_calibrated") is not False
+            for row in speaker_rows
+            if isinstance(row.get("clip_id"), str)
+        }
 
     now = utc_now().isoformat()
     clip_rows: list[dict[str, Any]] = []
@@ -650,11 +659,13 @@ def finalize_dataset_qc(repository: Any, run_id: str, request: DatasetQcFinalize
     for clip in payload.clips:
         manual_override = overrides.get(clip.clip_id)
         audio_missing = "missing_audio_file" in clip.qc_reason_codes
+        speaker_calibrated = speaker_calibrated_by_id.get(clip.clip_id, True)
         threshold_status = _threshold_status(
             transcript_match=clip.transcript_match,
             speaker_check=clip.speaker_check,
             transcript_threshold=transcript_threshold,
             speaker_threshold=speaker_threshold,
+            speaker_calibrated=speaker_calibrated,
             audio_missing=audio_missing,
         )
         hard_failed = audio_missing
@@ -668,6 +679,7 @@ def finalize_dataset_qc(repository: Any, run_id: str, request: DatasetQcFinalize
             speaker_check=clip.speaker_check,
             transcript_threshold=transcript_threshold,
             speaker_threshold=speaker_threshold,
+            speaker_calibrated=speaker_calibrated,
             audio_missing=audio_missing,
         )
         if status == "accepted":

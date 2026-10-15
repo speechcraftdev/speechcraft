@@ -86,4 +86,7 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+    if command and command[0] in {"ffmpeg", "ffprobe"}:
+        from .runtime_tools import executable
+        command = [executable(command[0]), *command[1:]]
     return subprocess.run(command, check=True, capture_output=True, text=True)

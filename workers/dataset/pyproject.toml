@@ -3,51 +3,11 @@ name = "speechcraft-dataset-worker"
 version = "0.1.0"
 description = "Heavy audio dataset pipeline worker for SpeechCraft"
 requires-python = ">=3.11,<3.13"
-dependencies = [
-  "speechcraft-model-manager==0.1.0",
-  "filelock>=3.28.0,<4.0.0",
-  "ctranslate2==4.7.2",
-  "faster-whisper==1.2.1",
-  "hydra-core==1.3.2",
-  "librosa==0.11.0",
-  "nemo-toolkit[asr]==2.7.3",
-  "numba==0.65.1",
-  "numpy==2.4.6",
-  "omegaconf==2.3.0",
-  "onnxruntime==1.26.0",
-  "pyannote.audio==4.0.3",
-  "scipy==1.17.1",
-  "silero-vad==6.2.1",
-  "soundfile==0.13.1",
-  "torch==2.11.0+cu128",
-  "torchaudio==2.11.0+cu128",
-  "transformers==4.57.6",
-]
-
-[tool.uv]
-# pyannote.audio 4.0.3 declares torchaudio==2.8.0 and uv cannot resolve that
-# against the existing CUDA Torch pin on Windows. Lock this worker to the
-# current Linux x86_64 CUDA runtime; cross-platform packaging is Phase 2.
-environments = [
-  "sys_platform == 'linux' and platform_machine == 'x86_64'",
-]
-override-dependencies = [
-  "torch==2.11.0+cu128",
-  "torchaudio==2.11.0+cu128",
-]
-
-[tool.uv.sources]
-speechcraft-model-manager = { path = "../../packages/model_manager" }
-torch = { index = "pytorch-cu128" }
-torchaudio = { index = "pytorch-cu128" }
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
+# Runtime dependencies are declared in runtime-profiles/*, each with its own
+# immutable uv lock. This package is the shared worker code only.
 
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools==80.9.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

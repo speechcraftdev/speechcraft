@@ -4,6 +4,7 @@ import argparse
 import gc
 import json
 import signal
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -57,12 +58,18 @@ def faster_whisper_repo_id(model_name: str) -> str:
 
 
 def resolve_asr_model_reference(config: dict[str, Any]) -> str:
+    managed = os.environ.get("SPEECHCRAFT_MANAGED_RUNTIME") == "1"
     model_path = str(config.get("faster_whisper_model_path") or "").strip()
     if model_path:
         path = Path(model_path).expanduser()
-        if not path.exists():
-            raise FileNotFoundError(f"faster_whisper_model_path does not exist: {path}")
+        if not path.is_dir() or path.is_symlink():
+            raise FileNotFoundError(f"faster_whisper_model_path is not a safe local model directory: {path}")
+        if managed and str(config.get("faster_whisper_model") or "large-v3") != "large-v3":
+            raise RuntimeError("Managed SpeechCraft runtime permits only the verified Whisper Large-v3 artifact.")
         return str(path.resolve())
+
+    if managed:
+        raise FileNotFoundError("Managed SpeechCraft runtime has no controller-verified local Whisper Large-v3 path; model downloads are disabled during processing.")
 
     model_name = str(config.get("faster_whisper_model") or "small.en")
     cache_dir = str(config.get("faster_whisper_cache_dir") or "").strip() or None

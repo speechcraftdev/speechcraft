@@ -152,7 +152,8 @@ class EvalSpeakerPurityTests(unittest.TestCase):
             clip = artifact["clips"][0]
             self.assertEqual(clip["speaker_check_score"], 74.0)
             self.assertEqual(clip["speaker_score_method"], "min_valid_window_similarity")
-            self.assertEqual(clip["bucket_hint"], "pass")
+            self.assertEqual(clip["bucket_hint"], "review")
+            self.assertFalse(clip["speaker_score_calibrated"])
             self.assertEqual(clip["suspicious_spans"][0]["similarity"], 0.74)
             summary_artifact = json.loads((artifacts / "speaker_purity_summary.json").read_text(encoding="utf-8"))
             self.assertTrue(0.0 <= summary_artifact["score_p10"] <= 100.0)

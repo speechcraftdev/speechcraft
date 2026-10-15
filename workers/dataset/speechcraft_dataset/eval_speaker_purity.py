@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +16,7 @@ from .audio import map_analysis_sample_to_source, read_mono_source_span
 from .buffers import read_analysis_audio, sec_to_sample, write_pcm16_mono
 from .io import read_json, read_json_value, read_jsonl, resolve_under_root, sha256_file, write_json
 
-DEFAULT_MODEL = "nvidia/speakerverification_en_titanet_large"
+DEFAULT_MODEL = "titanet-large-speaker-purity"
 TARGET_SAMPLE_RATE = 16000
 SPEAKER_PURITY_SCHEMA_VERSION = 1
 SPEAKER_SCORE_METHOD = "min_valid_window_similarity"
@@ -96,11 +97,9 @@ def _score_0_100(value: Any) -> float | None:
 def _speaker_bucket_hint(score: float | None) -> str:
     if score is None:
         return "unscored"
-    if score >= 70:
-        return "pass"
-    if score >= 55:
-        return "review"
-    return "fail"
+    # These cutoffs were associated with NeMo scores and are not calibrated for
+    # the sherpa-onnx TitaNet export. Preserve continuous scores for review.
+    return "review"
 
 
 def resolve_device(device_arg: str) -> str:
@@ -115,17 +114,49 @@ def resolve_device(device_arg: str) -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def load_titanet_model(model_name: str, device_arg: str) -> Any:
-    import torch
-    from nemo.collections.asr.models import EncDecSpeakerLabelModel
+class SherpaTitanet:
+    """Local-only CPU adapter for the catalogued TitaNet ONNX artifact."""
 
-    device = resolve_device(device_arg)
-    log(f"loading TitaNet model {model_name!r} on {device}")
-    model = EncDecSpeakerLabelModel.from_pretrained(model_name)
-    model.eval()
-    model.to(device)
-    log("TitaNet model ready")
-    return model
+    backend = "sherpa-onnx"
+    calibration_status = "uncalibrated"
+
+    def __init__(self, model_path: Path, extractor: Any):
+        self.model_path = model_path
+        self.extractor = extractor
+        self.dimension = int(extractor.dim)
+
+    def infer_segment(self, samples: np.ndarray) -> tuple[np.ndarray, None]:
+        audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+        if audio.size < TARGET_SAMPLE_RATE // 2:
+            raise ValueError("TitaNet requires at least 0.5 seconds of audio at 16 kHz.")
+        stream = self.extractor.create_stream()
+        stream.accept_waveform(sample_rate=TARGET_SAMPLE_RATE, waveform=audio)
+        stream.input_finished()
+        if not self.extractor.is_ready(stream):
+            raise RuntimeError("sherpa-onnx did not produce enough frames for a speaker embedding.")
+        embedding = np.asarray(self.extractor.compute(stream), dtype=np.float64).reshape(-1)
+        if embedding.size != self.dimension or not np.all(np.isfinite(embedding)):
+            raise RuntimeError("sherpa-onnx returned an invalid TitaNet embedding shape or non-finite values.")
+        if float(np.linalg.norm(embedding)) <= 1e-12:
+            raise RuntimeError("sherpa-onnx returned an empty TitaNet embedding.")
+        return embedding, None
+
+
+def load_titanet_model(model_name: str, device_arg: str, model_path: str | Path | None = None) -> Any:
+    if device_arg not in {"auto", "cpu"}:
+        raise RuntimeError("The local sherpa-onnx TitaNet adapter is CPU-only.")
+    if os.environ.get("SPEECHCRAFT_EXPERIMENTAL_TITANET") != "1":
+        raise RuntimeError("TitaNet is blocked from production use pending checkpoint provenance and licensing approval.")
+    raw_path = model_path or os.environ.get("SPEECHCRAFT_TITANET_ONNX_PATH")
+    if not raw_path:
+        raise RuntimeError("A locally acquired TitaNet ONNX file is required; network model loading is disabled.")
+    path = Path(raw_path).expanduser()
+    if not path.is_file() or path.is_symlink() or path.name != "nemo_en_titanet_large.onnx":
+        raise FileNotFoundError(f"Expected the approved local TitaNet-Large ONNX filename, found no safe file at {path}.")
+    from .titanet_runtime import create_sherpa_titanet
+
+    log(f"loading local experimental TitaNet ONNX {path.resolve()} on cpu ({model_name})")
+    return SherpaTitanet(path.resolve(), create_sherpa_titanet(path.resolve()))
 
 
 def embedding_vector(raw: Any) -> np.ndarray:
@@ -441,13 +472,8 @@ def score_candidate_clip(
     similarities = [float(row["similarity"]) for row in scored]
     min_similarity = min(similarities)
     worst = min(scored, key=lambda row: float(row["similarity"]))
-    intruder_count = sum(similarity < config.purity_threshold for similarity in similarities)
-    if min_similarity >= config.purity_threshold:
-        bucket = "clean"
-    elif min_similarity >= config.suspicious_threshold:
-        bucket = "suspicious"
-    else:
-        bucket = "contaminated"
+    intruder_count = None
+    bucket = "review_pending_calibration"
 
     return {
         "purity_score": round(min_similarity, 6),
@@ -558,7 +584,7 @@ def evaluate_speaker_purity(
             "channel_mode": str(recipe.get("channel_mode") or "downmix"),
         }
 
-    model = load_titanet_model(model_name, device)
+    model = load_titanet_model(model_name, device, config.get("speaker_purity_model_path"))
     voiceprint, chunk_rows = build_sanitized_target_voiceprint(
         model,
         speaker_regions,
@@ -761,6 +787,9 @@ def _build_phase3_clip_row(candidate: dict[str, Any], metrics: dict[str, Any]) -
         "duration_sec": candidate.get("duration_sec"),
         "speaker_check_score": speaker_check_score,
         "speaker_score_method": SPEAKER_SCORE_METHOD,
+        "speaker_embedding_backend": "sherpa-onnx",
+        "speaker_score_calibration": "pending_evaluation",
+        "speaker_score_calibrated": False,
         "min_window_similarity": metrics.get("min_window_similarity"),
         "mean_window_similarity": metrics.get("mean_window_similarity"),
         "p10_window_similarity": metrics.get("p10_window_similarity"),
@@ -871,6 +900,8 @@ def run_speaker_purity(
         "stage": "speaker_purity",
         "model": model,
         "score_method": SPEAKER_SCORE_METHOD,
+        "embedding_backend": "sherpa-onnx",
+        "score_calibration": "pending_evaluation",
         "clips": clips,
     }
     artifact_path = resolve_under_root(run_root, "artifacts/speaker_purity.json")

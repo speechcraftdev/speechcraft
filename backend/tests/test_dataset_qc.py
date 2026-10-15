@@ -20,6 +20,8 @@ from app.dataset_qc import (
     TRANSCRIPT_QC_REL,
     finalize_dataset_qc,
     get_dataset_qc,
+    _failed_checks,
+    _threshold_status,
 )
 from app.dataset_runs import create_dataset_run, get_dataset_run, refresh_dataset_run
 from app.models import (
@@ -40,6 +42,13 @@ if str(WORKER_ROOT) not in sys.path:
 
 
 class DatasetQcTests(TestCase):
+    def test_uncalibrated_speaker_scores_are_never_autoaccepted_by_legacy_cutoffs(self) -> None:
+        self.assertEqual(_threshold_status(transcript_match=95, speaker_check=99,
+            transcript_threshold=90, speaker_threshold=70, speaker_calibrated=False), "rejected")
+        self.assertIn("speaker_score_uncalibrated", _failed_checks(transcript_match=95,
+            speaker_check=99, transcript_threshold=90, speaker_threshold=70,
+            speaker_calibrated=False))
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)
@@ -267,7 +276,7 @@ class DatasetQcTests(TestCase):
         self.assertGreaterEqual(clip.transcript_match or 0.0, 0.0)
         self.assertLessEqual(clip.transcript_match or 0.0, 100.0)
 
-    def test_worker_written_qc_artifacts_make_backend_ready_and_finalizeable(self) -> None:
+    def test_worker_written_uncalibrated_qc_artifacts_cannot_autoaccept(self) -> None:
         from speechcraft_dataset.analyze_whisper_b1_transcript_qc import run_transcript_qc
         from speechcraft_dataset.eval_speaker_purity import run_speaker_purity
 
@@ -366,7 +375,8 @@ class DatasetQcTests(TestCase):
                 thresholds=DatasetQcThresholdsRequest(transcript_match_min=70, speaker_check_min=70),
             ),
         )
-        self.assertEqual(response.summary.accepted_count, 2)
+        self.assertEqual(response.summary.accepted_count, 0)
+        self.assertEqual(response.summary.rejected_count, 4)
         self.assertTrue((artifacts / "dataset_qc.json").exists())
 
     def test_missing_audio_file_is_reported_and_rejected_on_finalize(self) -> None:

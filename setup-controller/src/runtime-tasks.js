@@ -1,5 +1,5 @@
 import { BootstrapTasks } from './bootstrap.js';
-import { PRODUCTION_STAGES } from './runtime-plan.js';
+import { PRODUCTION_STAGES, runtimeRoots, selectRuntimeProfile } from './runtime-plan.js';
 import { BackendService, reconcileOwnedService } from './backend-service.js';
 import path from 'node:path';
 
@@ -43,12 +43,35 @@ export class RuntimeTasks extends BootstrapTasks {
       await reconcileOwnedService(this.store);
     }
     const target = this.backendEnvironmentPath();
+    const components = context.componentStatus.components || {};
+    const worker = components.worker_environment;
+    const modelRoot = runtimeRoots(this.dataDirectory).models;
+    const asr = components.whisper?.path;
+    const silero = components.silero?.path;
+    const modelPlatform = selectRuntimeProfile(this.environment).modelPlatform;
+    const ffmpegDir = components.ffmpeg?.state === 'verified' ? components.ffmpeg.path : null;
+    const workerPython = worker?.state === 'verified' ? path.join(worker.path, 'bin', 'python') : null;
+    const appEnvironment = {
+      ...this.makeEnvironment(this.paths),
+      SPEECHCRAFT_MANAGED_RUNTIME: '1',
+      HF_HUB_OFFLINE: '1',
+      TRANSFORMERS_OFFLINE: '1',
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: '1',
+      SPEECHCRAFT_MODEL_ROOT: modelRoot,
+      SPEECHCRAFT_MODEL_PLATFORM: modelPlatform,
+      SPEECHCRAFT_ASR_MODEL_PATH: asr || '',
+      SPEECHCRAFT_SILERO_MODEL_DIR: silero || '',
+      SPEECHCRAFT_SILERO_ONNX_PATH: silero ? path.join(silero, 'silero_vad.onnx') : '',
+      SPEECHCRAFT_FFMPEG_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffmpeg') : '',
+      SPEECHCRAFT_FFPROBE_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffprobe') : '',
+      SPEECHCRAFT_FFMPEG_DIR: ffmpegDir || '',
+    };
     this.service = new BackendService({ store: this.store, dataDirectory: this.dataDirectory,
       applicationRoot: this.applicationRoot, environment: this.environment,
-      pythonPath: path.join(target, 'bin', 'python'), environmentVars: this.makeEnvironment(this.paths),
+      pythonPath: path.join(target, 'bin', 'python'), environmentVars: appEnvironment,
       attemptId: context.attemptId,
       workerRoot: path.join(this.applicationRoot, 'workers', 'dataset'),
-      workerPython: path.join(this.dataDirectory, 'environments', 'worker', 'unavailable', 'bin', 'python'),
+      workerPython,
       onStatus: (status, record) => this.updateServiceStatus(status, record),
     });
     try {

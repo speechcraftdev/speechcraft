@@ -18,6 +18,7 @@ import hashlib
 import json
 import math
 import statistics
+import os
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -222,7 +223,20 @@ def compute_vad_frames(
     audio = np.asarray(samples, dtype=np.float32)
     if audio.ndim != 1:
         audio = audio[:, 0]
-    model = load_silero_vad(onnx=True)
+    managed_model_path = os.environ.get("SPEECHCRAFT_SILERO_ONNX_PATH", "").strip()
+    if os.environ.get("SPEECHCRAFT_MANAGED_RUNTIME") == "1":
+        if not managed_model_path:
+            raise RuntimeError("Managed runtime is missing the verified Silero ONNX model path.")
+        model_path = Path(managed_model_path).expanduser()
+        if not model_path.is_file() or model_path.is_symlink():
+            raise FileNotFoundError(f"Verified Silero ONNX model is unavailable: {model_path}")
+        # Same official wrapper and inference call as load_silero_vad(onnx=True),
+        # but point it at the model manager's verified artifact.
+        from silero_vad.utils_vad import OnnxWrapper
+
+        model = OnnxWrapper(str(model_path.resolve()), force_onnx_cpu=True)
+    else:
+        model = load_silero_vad(onnx=True)
     rows: list[dict[str, Any]] = []
     try:
         for offset in geometry.offsets:

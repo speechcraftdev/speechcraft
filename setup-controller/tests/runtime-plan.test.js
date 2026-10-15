@@ -16,16 +16,21 @@ test('platform selection keeps WSL storage host identity separate from model art
 test('checked-in backend recipe identity is verified and unsupported components remain blocked', () => {
   const root = path.resolve('..');
   assert.ok(assertTrustedBackendRecipe(root).lock.endsWith(path.join('backend', 'uv.lock')));
-  assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cpu'].available, false);
+  assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cpu'].available, true);
+  assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cpu'].validated, true);
+  assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cuda'].validated, false);
   assert.equal(runtimeManifest.worker.profiles['macos-arm64'].available, false);
   assert.equal(initialComponents().pyannote.state, 'blocked');
   assert.equal(initialComponents().titanet.state, 'blocked');
   assert.equal(initialComponents().runtime_probes.failure_code, 'runtime_validation_pending');
 });
 
-test('runtime executor reports the absent CPU worker recipe without pretending it was installed', async () => {
+test('runtime executor reports an explicitly unavailable worker recipe without pretending it was installed', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-runtime-plan-'));
-  const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root });
+  const recipe = structuredClone(runtimeManifest);
+  recipe.worker.profiles['linux-x86_64-cpu'].available = false;
+  recipe.worker.profiles['linux-x86_64-cpu'].reason = 'fixture blocked';
+  const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, runtimeRecipe: recipe });
   tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
   const context = { componentStatus: tasks.initialBootstrapStatus(), onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };
   await tasks.run('install_worker_environment', context);
@@ -39,10 +44,14 @@ test('worker installer consumes only a complete trusted profile recipe and valid
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-worker-recipe-'));
   const project = path.join(root, 'worker_fixture');
   fs.mkdirSync(project);
+  const sourceProject = path.join(root, 'workers', 'dataset');
+  fs.mkdirSync(sourceProject, { recursive: true });
+  fs.writeFileSync(path.join(sourceProject, 'pyproject.toml'), '[project]\nname="source-fixture"\n');
   const lock = path.join(project, 'uv.lock'); const manifestFile = path.join(project, 'pyproject.toml');
   fs.writeFileSync(lock, 'fixture lock'); fs.writeFileSync(manifestFile, '[project]\nname="worker-fixture"\n');
   const sha = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   const runtimeRecipe = structuredClone(runtimeManifest);
+  runtimeRecipe.worker.source_manifest_sha256 = sha(path.join(sourceProject, 'pyproject.toml'));
   runtimeRecipe.worker.profiles['linux-x86_64-cpu'] = { available: true, validated: true,
     project: 'worker_fixture', lockfile: 'uv.lock', lock_sha256: sha(lock), project_manifest_sha256: sha(manifestFile),
     environment_version: 1, python_version: '3.12.15', estimated_bytes: 1, validation_modules: ['json'] };
@@ -83,7 +92,10 @@ test('runtime probe runner requires a trusted helper and explicit completed infe
   tasks.paths = { home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
   const context = { attemptId: '00000000-0000-4000-8000-000000000099', signal: new AbortController().signal,
     componentStatus: tasks.initialBootstrapStatus(), onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };
-  tasks.getManagerPython = () => '/managed/python';
+  const managerPython = path.join(root, 'environments', 'model-manager', 'bin', 'python');
+  fs.mkdirSync(path.dirname(managerPython), { recursive: true });
+  fs.writeFileSync(managerPython, 'fixture interpreter');
+  tasks.getManagerPython = () => managerPython;
   await tasks.run('validate_runtime', context);
   assert.equal(context.componentStatus.components.silero.state, 'runtime_ready');
   assert.equal(context.componentStatus.production_ready, false);

@@ -37,7 +37,9 @@ export function initialComponents() {
     uv: component('pending', 'uv 0.12.23'), managed_python: component('pending', 'CPython 3.12.15'),
     model_manager: component('pending', 'speechcraft-model-manager 0.1.0'),
     backend_environment: component('pending', 'speechcraft-backend + backend/uv.lock'),
-    worker_environment: component('blocked', null, { code: 'runtime_profile_unavailable', message: runtimeManifest.worker.profiles['linux-x86_64-cpu'].reason }),
+    worker_environment: runtimeManifest.worker.profiles['linux-x86_64-cpu'].available === true
+      ? component('pending', `${runtimeManifest.worker.distribution}/linux-x86_64-cpu locked recipe`)
+      : component('blocked', null, { code: 'runtime_profile_unavailable', message: runtimeManifest.worker.profiles['linux-x86_64-cpu'].reason }),
     ffmpeg: component('blocked', null, { code: 'runtime_tool_unavailable', message: runtimeManifest.ffmpeg.reason }),
     silero: component('pending', 'manifest-pinned Silero ONNX'),
     whisper: component('pending', 'Whisper Large-v3; platform-selected format'),

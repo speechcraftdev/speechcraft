@@ -12,22 +12,44 @@ Runtime boundary:
   export.
 - Production slicing does not invoke MFA, Whisper, or word-alignment QC.
 
-Initial check:
+Runtime profiles and managed installation:
+
+```text
+RUNTIME_PROFILES.md
+runtime-profiles/linux-cpu/{pyproject.toml,uv.lock}
+runtime-profiles/linux-cuda/{pyproject.toml,uv.lock}
+```
+
+The controller is the supported installer for worker environments. The CPU
+lock is pinned to CPython 3.12.15 and was installed and exercised on Linux
+x86-64. The CUDA lock is pinned but remains unavailable until actual driver,
+package and inference validation succeeds. The root `pyproject.toml` describes
+the shared worker source only; it is not an install recipe. macOS has no
+validated worker lock yet.
+
+Initial developer preflight (after preparing a profile environment):
 
 ```bash
 cd workers/dataset
-uv sync
-uv run python scripts/preflight.py --json --artifact-root /tmp/speechcraft-dataset-preflight
+uv run --locked --project runtime-profiles/linux-cpu python scripts/preflight.py \
+  --json --artifact-root /tmp/speechcraft-dataset-preflight
 ```
 
 The script prints a single JSON object suitable for backend/UI consumption.
 
-ASR model setup/check:
+Do not use the development model download examples below in a managed
+processing runtime. There, the controller passes a verified local Silero and
+Whisper Large-v3 model path; the worker verifies catalog hashes and runs
+offline. It will not search an unrelated Hugging Face cache or acquire weights
+during a dataset run. Runtime model files live outside app releases and worker
+environments.
+
+Development-only ASR model setup/check:
 
 ```bash
 cd workers/dataset
-uv run python -m speechcraft_dataset.models download-asr --model tiny.en --json
-uv run python -m speechcraft_dataset.models check-asr --model tiny.en --load-model --json
+uv run --locked --project runtime-profiles/linux-cpu python -m speechcraft_dataset.models \
+  check-asr --model large-v3 --load-model --json
 ```
 
 For fully local/offline runs, pass a converted faster-whisper model directory in
@@ -39,7 +61,7 @@ the worker config:
 }
 ```
 
-faster-whisper remains a later Transcript Correctness dependency, not a slicer
+faster-whisper remains an ASR/Transcript Correctness dependency, not a slicer
 dependency. Preflight reports local ASR model availability for stages that
 actually transcribe.
 
@@ -89,8 +111,11 @@ source WAV sample rate using the analysis-to-native sample mapping. Native
 exports write `export_manifest.json`, `export_audit.json`, `export_summary.json`,
 and `native_export_clips/*.wav`.
 
-Community-1 diarization, speaker-purity QC, dataset QC, review-decision persistence,
-and VoxCPM manifest export remain after this stage contract is stable.
+Community-1 requires an authorized local snapshot. The controller does not
+download gated weights yet, and this checkout has no authorized snapshot.
+Managed processing also requires an approved, verified FFmpeg/FFprobe install;
+that artifact is not yet provisioned. Until both inputs exist, the controller
+correctly keeps full dataset processing blocked.
 
 ## Transcript confidence QC (Whisper B1-LJ)
 

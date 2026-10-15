@@ -1137,6 +1137,11 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     if (!trustedFileMatches(lock, recipe.lock_sha256) || !trustedFileMatches(projectManifest, recipe.project_manifest_sha256)) {
       throw new BootstrapError('WORKER_RECIPE_INTEGRITY_FAILED', 'The worker lock or project manifest differs from its trusted recipe.');
     }
+    const workerSourceManifest = path.join(this.applicationRoot, this.runtimeRecipe.worker.project, 'pyproject.toml');
+    if (this.runtimeRecipe.worker.source_manifest_sha256
+        && !trustedFileMatches(workerSourceManifest, this.runtimeRecipe.worker.source_manifest_sha256)) {
+      throw new BootstrapError('WORKER_SOURCE_INTEGRITY_FAILED', 'The worker source package manifest differs from its trusted runtime recipe.');
+    }
     const target = this.workerEnvironmentPath(recipe);
     const python = path.join(target, 'bin', 'python');
     const probe = `import importlib.util,json,os,platform,sys\nassert sys.version.split()[0]==${JSON.stringify(recipe.python_version)},sys.version\nassert os.path.realpath(sys.prefix)==os.path.realpath(${JSON.stringify(target)})\nbase=os.path.realpath(sys.base_prefix); runtime=os.path.realpath(${JSON.stringify(this.paths.pythonRoot)})\nassert base==runtime or base.startswith(runtime+os.sep),base\nassert platform.machine().lower() in ('x86_64','amd64','arm64','aarch64')\nmodules=${JSON.stringify(recipe.validation_modules)}\nmissing=[name for name in modules if importlib.util.find_spec(name) is None]\nassert not missing,missing\nprint(json.dumps({'kind':'SPEECHCRAFT_WORKER_ENV_PROBE','profile':${JSON.stringify(selection.workerProfile)},'version':sys.version.split()[0],'missing':missing,'python':sys.executable}))`;
@@ -1201,7 +1206,7 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       let report;
       try { report = JSON.parse(result.stdout); } catch { throw new BootstrapError('MODEL_MANAGER_RESPONSE_INVALID', `The model manager returned an invalid verification report for ${role}.`); }
       if (report.install_ready !== true || report.status !== 'verified') throw new BootstrapError('MODEL_FILES_NOT_VERIFIED', `Model files for ${role} did not pass the trusted manifest checks.`);
-      this.setComponent(context, component, { state: 'files_verified', verification: 'manifest_size_and_sha256', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Files are verified; runtime inference has not been tested.', runtime_ready: false, report });
+      this.setComponent(context, component, { state: 'files_verified', verification: 'manifest_size_and_sha256', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Files are verified; runtime inference has not been tested.', runtime_ready: false, path: report.root, report });
     }
   }
 
@@ -1213,7 +1218,6 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       this.status(context, { runtime_validation_pending: true, production_ready: false });
       return;
     }
-    const python = this.getManagerPython();
     const validated = [];
     for (const probe of probes) {
       if (!/^[a-z][a-z0-9_]*$/.test(probe.component || '') || !/^[a-f0-9]{64}$/.test(probe.sha256 || '')
@@ -1227,6 +1231,18 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         throw new BootstrapError('RUNTIME_PROBE_INTEGRITY_FAILED', 'A runtime-validation helper is outside the application or failed its trusted digest check.');
       }
       this.setComponent(context, probe.component, { state: 'validating', failure_code: null, message: null });
+      const role = probe.environment_role || 'model_manager';
+      if (!['model_manager', 'backend', 'worker'].includes(role)) throw new BootstrapError('RUNTIME_PROBE_RECIPE_INVALID', 'A runtime probe references an unapproved interpreter role.');
+      const components = context.componentStatus.components || {};
+      const environmentRoot = path.resolve(this.dataDirectory, 'environments');
+      const python = role === 'model_manager' ? this.getManagerPython()
+        : role === 'backend' ? (components.backend_environment?.state === 'verified' && components.backend_environment.path
+          ? path.join(components.backend_environment.path, 'bin', 'python') : null)
+          : (components.worker_environment?.state === 'verified' && components.worker_environment.path
+            ? path.join(components.worker_environment.path, 'bin', 'python') : null);
+      if (!python || !path.resolve(python).startsWith(`${environmentRoot}${path.sep}`)) {
+        throw new BootstrapError('RUNTIME_PROBE_ENVIRONMENT_UNAVAILABLE', `The managed ${role} environment is not verified for this probe.`);
+      }
       const timer = AbortSignal.timeout(probe.timeout_ms);
       const signal = context.signal ? AbortSignal.any([context.signal, timer]) : timer;
       let result;

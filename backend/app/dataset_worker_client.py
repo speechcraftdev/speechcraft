@@ -25,7 +25,12 @@ def dataset_worker_root() -> Path:
 def dataset_worker_python() -> Path:
     configured = os.getenv("SPEECHCRAFT_DATASET_WORKER_PYTHON")
     if configured and configured.strip():
-        return Path(configured).expanduser().resolve()
+        # Preserve the venv's lexical bin/python path. CPython follows its
+        # adjacent pyvenv.cfg to select site-packages; resolving this symlink
+        # to the managed base interpreter silently bypasses the environment.
+        return Path(os.path.abspath(os.path.expanduser(configured)))
+    if os.getenv("SPEECHCRAFT_MANAGED_RUNTIME") == "1":
+        raise RuntimeError("Managed SpeechCraft runtime has no verified dataset-worker interpreter configured.")
     return dataset_worker_root() / ".venv" / "bin" / "python"
 
 

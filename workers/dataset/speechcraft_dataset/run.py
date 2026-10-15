@@ -5,6 +5,7 @@ import hashlib
 import json
 import platform
 import sys
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from .export import export_native_candidate_clips
 from .io import read_json, resolve_under_root, write_json
 from .qc_score_stages import run_speaker_purity_stage, run_transcript_qc_stage
 from .vr_slicer import TRUSTED_GEOMETRY_FINGERPRINT, VR_O0_4
+from .runtime_tools import verify_managed_model
 
 
 PIPELINE_VERSION = "pretraining_rfc_v1"
@@ -77,6 +79,29 @@ def load_config(config_path: Path | None, source_wavs: list[Path], *, single_spe
     if config_path is not None:
         overrides = read_json(config_path)
         config.update(overrides)
+    if os.environ.get("SPEECHCRAFT_MANAGED_RUNTIME") == "1":
+        # Managed paths come from controller-verified component status, never
+        # from project JSON or a user Hugging Face cache.
+        for key, env_key in (
+            ("faster_whisper_model_path", "SPEECHCRAFT_ASR_MODEL_PATH"),
+            ("silero_onnx_model_path", "SPEECHCRAFT_SILERO_ONNX_PATH"),
+            ("silero_model_directory", "SPEECHCRAFT_SILERO_MODEL_DIR"),
+            ("diarization_model_path", "SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH"),
+            ("speaker_purity_model_path", "SPEECHCRAFT_TITANET_ONNX_PATH"),
+        ):
+            value = os.environ.get(env_key, "").strip()
+            if value:
+                config[key] = value
+        config["faster_whisper_model"] = "large-v3"
+        config["asr_local_files_only"] = True
+        model_platform = os.environ.get("SPEECHCRAFT_MODEL_PLATFORM", "").strip()
+        if model_platform not in {"linux-x86_64", "windows-wsl2", "macos-arm64"}:
+            raise RuntimeError("Managed runtime is missing its controller-selected model platform.")
+        for role, key in (("speech_detection", "silero_model_directory"), ("asr", "faster_whisper_model_path")):
+            directory = config.get(key)
+            if not directory:
+                raise RuntimeError(f"Managed runtime is missing the verified {role} model directory.")
+            verify_managed_model(role, directory, model_platform)
     if not config.get("source_wavs"):
         raise ValueError("At least one source WAV is required")
     config["slicer"] = "VR"

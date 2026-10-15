@@ -106,9 +106,9 @@ or persists HF tokens.
 
 | Profile | Artifact selection | Bootstrap implementation | Full worker/runtime status |
 |---|---|---|---|
-| Linux x86-64 CPU | Linux artifacts | Shared | Blocked: worker recipe/tools/probes unavailable |
-| Linux x86-64 NVIDIA | Linux artifacts | Shared | GPU may be detected; CUDA worker recipe is not validated |
-| Ubuntu WSL2 x86-64 | Linux runtime, WSL model label | Shared with native-filesystem enforcement | Blocked as above; WSL hardware validation pending |
+| Linux x86-64 CPU | Linux artifacts | Shared; CPU worker lock is available | Environment and Silero/Whisper CPU inference exercised; full worker blocked by managed FFmpeg and Community-1 snapshot |
+| Linux x86-64 NVIDIA | Linux artifacts | Shared; CUDA 12.8 lock is pinned | Not validated: no working driver or real CUDA inference on this host |
+| Ubuntu WSL2 x86-64 | Linux runtime, WSL model label | Shared with native-filesystem enforcement | Uses CPU recipe today; actual WSL filesystem/device validation pending |
 | macOS ARM64 | macOS artifacts | Shared | Backend/model route implemented; worker/inference compatibility pending Apple Silicon validation |
 
 These are implementation and blocker descriptions, not claims of host testing.

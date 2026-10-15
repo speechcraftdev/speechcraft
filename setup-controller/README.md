@@ -356,9 +356,12 @@ Python/model installations. Real network smoke tests are opt-in.
 
 ## Next PR
 
-Next Linux runtime work must validate a CPU worker recipe, validate the
-CUDA-specific recipe or explicitly defer it, provide managed FFmpeg/FFprobe
-artifacts, and implement real inference helpers before production readiness is
-possible. Pyannote authorization/source and TitaNet licensing remain separate
-gates. Launcher and same-origin proxy integration plus Kavin's Preparing UI
-follow after those runtime contracts are settled.
+The Linux x86-64 CPU worker recipe is now pinned, controller-installable and
+validated on this host for environment imports, Silero ONNX, offline Whisper
+Large-v3, and experimental local TitaNet inference. CUDA remains unvalidated
+because this host has no working NVIDIA driver. Managed FFmpeg/FFprobe and
+trusted inference-probe recipes are still unavailable. Full dataset processing
+therefore remains blocked until a trusted FFmpeg package and authorized local
+Community-1 snapshot are available. TitaNet's licensing/provenance and score
+calibration remain separate release gates. The Mac worker runtime still needs
+Kavin's M4 Pro validation.

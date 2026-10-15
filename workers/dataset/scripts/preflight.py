@@ -99,7 +99,10 @@ def torch_check() -> dict[str, Any]:
 
 
 def ffmpeg_check() -> dict[str, Any]:
-    ffmpeg = shutil.which("ffmpeg")
+    configured = os.environ.get("SPEECHCRAFT_FFMPEG_BIN", "").strip()
+    ffmpeg = configured if configured else shutil.which("ffmpeg")
+    if os.environ.get("SPEECHCRAFT_MANAGED_RUNTIME") == "1" and not configured:
+        return {"ok": False, "path": None, "version": None, "error": "managed FFmpeg is not configured"}
     if ffmpeg is None:
         return {"ok": False, "path": None, "version": None, "error": "ffmpeg not found on PATH"}
     version = run_command([ffmpeg, "-version"])
@@ -185,7 +188,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     modules = [
         torch_check(),
         module_check("torchaudio"),
-        module_check("nemo", "nemo"),
+        module_check("sherpa-onnx", "sherpa_onnx"),
         module_check("pyannote.audio", "pyannote.audio"),
         module_check("faster_whisper"),
         module_check("ctranslate2"),
@@ -223,7 +226,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SpeechCraft dataset worker preflight")
     parser.add_argument("--json", action="store_true", help="Print JSON output")
     parser.add_argument("--artifact-root", default=None)
-    parser.add_argument("--asr-model", default=os.environ.get("SPEECHCRAFT_ASR_MODEL", "small.en"))
+    parser.add_argument("--asr-model", default=os.environ.get("SPEECHCRAFT_ASR_MODEL", "large-v3"))
     parser.add_argument("--asr-model-path", default=os.environ.get("SPEECHCRAFT_ASR_MODEL_PATH"))
     parser.add_argument("--asr-cache-dir", default=os.environ.get("SPEECHCRAFT_ASR_CACHE_DIR"))
     parser.add_argument("--asr-device", default=os.environ.get("SPEECHCRAFT_ASR_DEVICE"))

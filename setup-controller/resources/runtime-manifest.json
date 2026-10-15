@@ -15,12 +15,38 @@
   "worker": {
     "distribution": "speechcraft-dataset-worker",
     "project": "workers/dataset",
-    "lockfile": "workers/dataset/uv.lock",
-    "lock_sha256": "fd1dc080556d013c90850acea97458b3a0765f7f00c0d3a3380d8b17539a0feb",
-    "project_manifest_sha256": "6d14728d89ed22100802c8f1bc0e51a4d5535a3a321879fc7156d4b956a9feb6",
+    "source_manifest_sha256": "744943608746abe33d20df27f06b3a455f8e15934b29ca25d1ede2cdac70f8e3",
     "profiles": {
-      "linux-x86_64-cpu": {"available": false, "reason": "No validated CPU dependency lock is checked in."},
-      "linux-x86_64-cuda": {"available": false, "reason": "The repository lock is CUDA 12.8-specific but has no validated installation and inference recipe yet."},
+      "linux-x86_64-cpu": {
+        "available": true,
+        "validated": true,
+        "validated_scope": "Locked Linux CPU environment installed with managed CPython 3.12.15; genuine Silero, Whisper Large-v3 CPU, and experimental local TitaNet inference exercised. Pyannote inference and full worker pipeline remain blocked by absent authorized snapshot and managed FFmpeg.",
+        "project": "workers/dataset/runtime-profiles/linux-cpu",
+        "lockfile": "uv.lock",
+        "lock_sha256": "b5e17aed011c1dc06f4546592c3f67c268e32ff9dde5e7e2785d3b458db5f3d5",
+        "project_manifest_sha256": "4b59e7afd0e02d27407a35a5fd3cfc2292237838ebff915b449b58c749251800",
+        "environment_version": 1,
+        "python_version": "3.12.15",
+        "installation": "uv-sync-locked",
+        "expected_interpreter": "bin/python",
+        "estimated_bytes": 10737418240,
+        "validation_modules": ["speechcraft_dataset", "speechcraft_models", "torch", "torchaudio", "pyannote.audio", "faster_whisper", "ctranslate2", "onnxruntime", "silero_vad", "sherpa_onnx", "soundfile", "av"]
+      },
+      "linux-x86_64-cuda": {
+        "available": false,
+        "validated": false,
+        "reason": "A pinned CUDA 12.8 recipe is checked in, but this host has no working NVIDIA driver; CUDA package installation and real CUDA inference have not been validated.",
+        "project": "workers/dataset/runtime-profiles/linux-cuda",
+        "lockfile": "uv.lock",
+        "lock_sha256": "d2c260758ad5bdbf646129a25dc906e5e3cf3bf92fa10ac6924aa2a71609e253",
+        "project_manifest_sha256": "9b9c94b62817a36d76429472a4b80ddfe8ee33c17bbb0aacf0ceb40d9a81a607",
+        "environment_version": 1,
+        "python_version": "3.12.15",
+        "installation": "uv-sync-locked",
+        "expected_interpreter": "bin/python",
+        "estimated_bytes": 17179869184,
+        "validation_modules": ["speechcraft_dataset", "speechcraft_models", "torch", "torchaudio", "pyannote.audio", "faster_whisper", "ctranslate2", "onnxruntime", "silero_vad", "sherpa_onnx", "soundfile", "av"]
+      },
       "macos-arm64": {"available": false, "reason": "No validated Apple Silicon worker dependency lock is checked in."}
     },
     "required_tool": "ffmpeg",
