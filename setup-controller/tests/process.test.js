@@ -315,16 +315,35 @@ test('credential is delivered only after durable process ownership acknowledgeme
   const result = await runOwnedProcess(process.execPath, ['-e',
     `let s='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>process.stdout.write(s===${JSON.stringify(marker)}?'received':'empty'))`], {
     cwd: os.tmpdir(), env: { PATH: process.env.PATH }, stdinData: Buffer.from(marker),
-    onChildProcess: async (record) => {
-      if (record?.pid) { order.push('persisting'); await new Promise((resolve) => setTimeout(resolve, 25)); persisted = true; order.push('persisted'); }
+    onChildProcess: async (record, phase) => {
+      if (record?.pid && phase === 'persist') { order.push('persisting'); await new Promise((resolve) => setTimeout(resolve, 25)); persisted = true; order.push('persisted'); }
+      if (phase === 'credential_release') { assert.equal(persisted, true); order.push('release-checked'); return true; }
+      if (record?.clear) return true;
+      if (record?.pid) return true;
     },
     onOutput: (_stream, chunk) => { if (chunk.toString() === 'received') { assert.equal(persisted, true); order.push('consumed'); } },
   });
   assert.equal(result.stdout, 'received');
   assert.ok(order.indexOf('persisting') < order.indexOf('persisted'));
-  assert.ok(order.indexOf('persisted') < order.indexOf('consumed'));
+  assert.ok(order.indexOf('persisted') < order.indexOf('release-checked'));
+  assert.ok(order.indexOf('release-checked') < order.indexOf('consumed'));
   assert.ok(order.filter((value) => value === 'persisting').length >= 1);
   assert.equal(JSON.stringify(result).includes(marker), false);
+});
+
+test('undefined ownership acknowledgement cannot release credential stdin', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-secret-no-ack-'));
+  const received = path.join(directory, 'received');
+  const marker = 'hf_SECRET_MARKER_no_ack_1234567890';
+  const childCode = `const fs=require('node:fs');let s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{if(s)fs.writeFileSync(${JSON.stringify(received)},s)});`;
+  let pid;
+  await assert.rejects(runOwnedProcess(process.execPath, ['-e', childCode], {
+    cwd: directory, env: { PATH: process.env.PATH }, stdinData: Buffer.from(marker), graceMs: 100,
+    onChildProcess: (record, phase) => { if (phase === 'persist') pid = record.pid; },
+  }), (error) => ['BOOTSTRAP_OWNERSHIP_PERSIST_FAILED', 'BOOTSTRAP_CANCELLED'].includes(error.code));
+  assert.equal(fs.existsSync(received), false);
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  fs.rmSync(directory, { recursive: true, force: true });
 });
 
 test('failed ownership persistence or unavailable process identity withholds credentials', async () => {
@@ -333,13 +352,14 @@ test('failed ownership persistence or unavailable process identity withholds cre
     const received = path.join(directory, 'received');
     const exited = path.join(directory, 'exited');
     const marker = 'hf_SECRET_MARKER_must_not_be_consumed_123456';
-    const childCode = `const fs=require('node:fs');let s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{if(s)fs.writeFileSync(${JSON.stringify(received)},s);fs.writeFileSync(${JSON.stringify(exited)},'closed')});`;
+    const childCode = `const fs=require('node:fs');let s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{if(s)fs.writeFileSync(${JSON.stringify(received)},s)});process.on('exit',()=>fs.writeFileSync(${JSON.stringify(exited)},'closed'));`;
     let writes = 0;
     let childPid = null;
     const options = { cwd: directory, env: { PATH: process.env.PATH }, stdinData: Buffer.from(marker), graceMs: 100,
       ...(identityResolver ? { identityResolver } : {}),
       onChildProcess: async (record) => { writes += 1; if (record?.pid) childPid = record.pid;
-        if (record?.pid && writes === 1 && !identityResolver) throw new Error('state write failed'); } };
+        if (record?.pid && writes === 1 && !identityResolver) throw new Error('state write failed');
+        return true; } };
     await assert.rejects(runOwnedProcess(process.execPath, ['-e', childCode], options),
       (error) => ['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN', 'BOOTSTRAP_OWNERSHIP_PERSIST_FAILED'].includes(error.code));
     const deadline = Date.now() + 2_000;

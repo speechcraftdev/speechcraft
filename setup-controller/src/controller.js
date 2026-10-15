@@ -353,14 +353,21 @@ export class SetupController {
             if (latest?.id !== jobId || latest.attempt_id !== attemptId || !['running', 'completed'].includes(latest.state)) return;
             this.store.commit((state) => { state.job.bootstrap_status = status; }, 'component_status');
           },
-          onChildProcess: (record) => {
+          onChildProcess: (record, phase) => {
             const latest = this.store.snapshot().job;
             if (latest?.id !== jobId || latest.attempt_id !== attemptId) return false;
-            return this.store.commit((state) => {
+            if (phase === 'credential_release') {
+              const owned = latest.child_process;
+              return Boolean(record && owned && owned.pid === record.pid && owned.nonce === record.nonce
+                && owned.identity === record.identity && owned.attempt_id === attemptId
+                && latest.state === 'running' && latest.stage === 'install_models');
+            }
+            this.store.commit((state) => {
               state.job.child_process = record;
               if (!record) state.job.termination_status = 'termination_confirmed';
               else if (record.termination_status === 'termination_uncertain') state.job.termination_status = 'termination_uncertain';
             }, record ? 'child_process_started' : 'child_process_stopped');
+            return true;
           },
           onProgress: (progress) => {
             const latest = this.store.snapshot().job;

@@ -374,11 +374,11 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, stdinData,
         if (secretInput && typeof onChildProcess !== 'function') {
           throw new BootstrapError('BOOTSTRAP_OWNERSHIP_PERSIST_FAILED', 'A credential-bearing process requires durable ownership acknowledgement.');
         }
-        return onChildProcess?.(childRecord);
+        return onChildProcess?.(childRecord, 'persist');
       });
-      ownershipUpdate.then((ownershipAcknowledged) => {
-        if (ownershipAcknowledged === false) {
-          throw new BootstrapError('BOOTSTRAP_OWNERSHIP_PERSIST_FAILED', 'The setup attempt is no longer current; no credential was released.');
+      ownershipUpdate.then(async (ownershipAcknowledged) => {
+        if (secretInput ? ownershipAcknowledged !== true : ownershipAcknowledged === false) {
+          throw new BootstrapError('BOOTSTRAP_OWNERSHIP_PERSIST_FAILED', 'The setup attempt did not explicitly acknowledge durable process ownership; no credential was released.');
         }
         if (!childRecord.identity) {
           discardSecret();
@@ -393,6 +393,21 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, stdinData,
           return;
         }
         if (secretInput) {
+          // Persistence alone is not enough: the job may have been cancelled
+          // or superseded while the durable write was in flight. Require the
+          // owner to positively confirm the same process/attempt immediately
+          // before releasing private stdin.
+          const releaseAcknowledged = await onChildProcess(childRecord, 'credential_release');
+          if (releaseAcknowledged !== true || cancelled || signal?.aborted
+              || child.exitCode !== null || child.signalCode !== null) {
+            throw new BootstrapError('BOOTSTRAP_OWNERSHIP_PERSIST_FAILED', 'The setup attempt could not confirm current process ownership; no credential was released.');
+          }
+          if (!matchesProcessIdentity(childRecord, identityResolver(childRecord.pid, childRecord.nonce))) {
+            discardSecret();
+            closeCredentialPipe();
+            void markTerminationUncertain('The process identity changed before credential release; no credential was sent.');
+            return;
+          }
           child.stdin.once('error', () => {});
           child.stdin.end(secretInput, () => secretInput.fill(0));
         }
@@ -780,11 +795,11 @@ export class BootstrapTasks {
     if (this.processRunner === runOwnedProcess && typeof context.onChildProcess !== 'function') {
       throw new BootstrapError('BOOTSTRAP_OWNERSHIP_PERSIST_FAILED', 'A trusted subprocess requires a durable setup ownership callback.');
     }
-    const childCallback = (record) => {
+    const childCallback = (record, phase) => {
       if (!context.onChildProcess) return;
       if (record?.clear) return context.onChildProcess(null, 'termination_confirmed');
       return context.onChildProcess(record ? { ...record, attempt_id: context.attemptId } : null,
-        record?.termination_status || 'active');
+        phase || record?.termination_status || 'active');
     };
     // Persist a launch intent before spawning. A crash between spawn and the
     // subsequent PID write therefore fails closed instead of losing ownership.

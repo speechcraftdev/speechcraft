@@ -10,6 +10,7 @@ export default function Home() {
       <nav className="flex gap-4 text-sm underline">
         <Link href="/login">/login (wizard)</Link>
         <Link href="/lab">/lab (workstation)</Link>
+        <Link href="/setup">Prepare / manage models</Link>
       </nav>
     </main>
   );

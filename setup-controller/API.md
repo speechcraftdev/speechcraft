@@ -41,6 +41,20 @@ controller/proxy bound to remote loopback and configure the forwarded Host and
 Origin explicitly. This proxy handoff still requires launcher integration
 testing.
 
+The temporary Next.js `/setup` page implements this bridge in a server-only
+`POST /setup-api/session` route. It is disabled unless
+`SPEECHCRAFT_SETUP_SESSION_BRIDGE=1`, an absolute
+`SPEECHCRAFT_SETUP_BOOTSTRAP_FILE`, a loopback
+`SPEECHCRAFT_SETUP_CONTROLLER_URL`, and explicit
+`SPEECHCRAFT_SETUP_ALLOWED_APP_ORIGINS` are configured. The bridge rejects
+non-loopback controller URLs, unlisted Host/Origin values, cross-site requests,
+symlinked or group/world-readable bootstrap files, and nonempty request
+options. Its matching `GET /setup-api/session` route forwards only the
+HTTP-only session cookie to the controller and returns the in-memory CSRF
+token. All other `/setup-api/*` browser calls use the same-origin Next.js
+rewrite. Development setup commands and the future launcher contract are in
+`frontend/SETUP_FRONTEND.md`.
+
 Every route except `/health` requires the session cookie. Mutations also require
 an allowed `Origin` and `X-SpeechCraft-CSRF`. Host and Origin are allowlisted;
 there is no CORS response. Credentials are never accepted in query parameters.

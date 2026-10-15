@@ -31,15 +31,20 @@ function gatedTestTasks({ entered, release } = {}) {
   let calls = 0;
   let invocation = null;
   return {
-    stages: ['install_models'],
+    stages: ['install_models', 'validate_runtime'],
     taskId: () => 'runtime:install_models',
     initialBootstrapStatus: () => ({ components: initialComponents(), production_ready: false }),
     initialProgress: (_stage, message) => ({ phase: 'queued', current: null, total: null, percent: null, message }),
     completionProgress: () => ({ phase: 'complete', current: null, total: null, percent: null, message: 'plan completed' }),
     get calls() { return calls; },
     get invocation() { return invocation; },
-    async run(_stage, context) {
+    async run(stage, context) {
       calls += 1;
+      if (stage === 'validate_runtime') {
+        assert.equal(context.authorizationToken, null, 'later setup stages receive no authorization credential');
+        assert.ok(invocation.tokenBuffer.every((byte) => byte === 0), 'the controller buffer is cleared before the next stage');
+        return;
+      }
       if (!context.authorizationToken) {
         const status = structuredClone(context.bootstrapStatus);
         status.components.pyannote = { ...status.components.pyannote, state: 'waiting_for_token', runtime_ready: false };
@@ -57,7 +62,8 @@ function gatedTestTasks({ entered, release } = {}) {
       invocation = { args, env, tokenBuffer: context.authorizationToken };
       const child = await runOwnedProcess(process.execPath, args, { cwd: os.tmpdir(), env,
         stdinData: `${token}\n`, signal: context.signal,
-        onChildProcess: context.onChildProcess,
+        onChildProcess: (record, phase) => context.onChildProcess(
+          record && !record.clear ? { ...record, attempt_id: context.attemptId } : record, phase),
         onOutput: (_stream, chunk) => { output += chunk.toString('utf8'); },
       });
       const report = JSON.parse(child.stdout);
@@ -124,7 +130,7 @@ test('token waits ephemerally, is piped to an actual child, and never appears in
   status = await f.request('/setup-api/status').then((r) => r.json());
   assert.equal(status.job.state, 'completed');
   assert.equal(status.production_ready, false);
-  assert.equal(tasks.calls, 2);
+  assert.equal(tasks.calls, 3);
   assert.equal(tasks.invocation.args.includes(token), false);
   assert.equal(JSON.stringify(tasks.invocation.env).includes(token), false);
   assert.ok(tasks.invocation.tokenBuffer.every((byte) => byte === 0), 'controller clears its mutable token buffer after install_models settles');
