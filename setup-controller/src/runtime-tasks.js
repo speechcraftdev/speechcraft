@@ -1,7 +1,30 @@
-import { BootstrapTasks } from './bootstrap.js';
-import { PRODUCTION_STAGES, runtimeRoots, selectRuntimeProfile } from './runtime-plan.js';
+import { BootstrapError, BootstrapTasks, ensureManagedDirectory, fetchArtifact } from './bootstrap.js';
+import { PRODUCTION_STAGES, hashMatches, runtimeRoots, selectRuntimeProfile } from './runtime-plan.js';
 import { BackendService, reconcileOwnedService } from './backend-service.js';
+import fs from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+
+async function trustedFileHash(file) {
+  const info = fs.lstatSync(file);
+  if (!info.isFile() || info.isSymbolicLink()) throw new BootstrapError('BOOTSTRAP_FILE_UNSAFE', 'A managed FFmpeg file is not a regular file.');
+  const hash = createHash('sha256');
+  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+  return { size: info.size, sha256: hash.digest('hex') };
+}
+
+function managedDirectoryExists(directory) {
+  try {
+    const info = fs.lstatSync(directory);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'A versioned runtime environment path is unsafe.');
+    }
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
 
 /** Full setup orchestration. Unsupported recipes are represented as blockers, not successful installs. */
 export class RuntimeTasks extends BootstrapTasks {
@@ -10,6 +33,77 @@ export class RuntimeTasks extends BootstrapTasks {
     this.stages = PRODUCTION_STAGES;
     this.service = null;
     this.store = options.store;
+  }
+
+  async installCudaCandidate(context) {
+    const host = this.environment;
+    const recipe = this.runtimeRecipe.worker?.profiles?.['linux-x86_64-cuda'];
+    if (host?.profile !== 'linux-x86_64' || context.componentStatus.host_details?.cuda_candidate !== true) return;
+    if (recipe?.available !== true) {
+      this.setComponent(context, 'worker_cuda_candidate', { state: 'blocked', failure_code: 'cuda_recipe_unavailable',
+        message: recipe?.reason || 'No trusted CUDA worker recipe is available; CPU remains selected.' });
+      return;
+    }
+    const project = path.resolve(this.applicationRoot, recipe.project);
+    const lock = path.resolve(project, recipe.lockfile);
+    const manifest = path.join(project, 'pyproject.toml');
+    if (!hashMatches(lock, recipe.lock_sha256) || !hashMatches(manifest, recipe.project_manifest_sha256)) {
+      this.setComponent(context, 'worker_cuda_candidate', { state: 'blocked', failure_code: 'cuda_recipe_integrity_failed',
+        message: 'The pinned CUDA worker lock or project manifest did not match the trusted runtime catalog.' });
+      return;
+    }
+    const target = path.join(this.dataDirectory, 'environments', 'worker',
+      `v${recipe.environment_version}-${recipe.lock_sha256.slice(0, 16)}-linux-x86_64-cuda`);
+    const python = path.join(target, 'bin', 'python');
+    const environmentProbe = `import importlib.util,json,sys\nmodules=('torch','torchaudio','ctranslate2','faster_whisper')\nmissing=[name for name in modules if importlib.util.find_spec(name) is None]\nassert not missing,missing\nprint(json.dumps({'kind':'SPEECHCRAFT_CUDA_PACKAGE_ENV_PROBE','version':sys.version.split()[0],'modules':modules}))`;
+    const libraryQuery = `import pathlib,sys; r=pathlib.Path(sys.prefix)/'lib'/f'python{sys.version_info.major}.{sys.version_info.minor}'/'site-packages'; print(':'.join(str(p) for p in sorted(r.glob('nvidia/*/lib')) if p.is_dir()))`;
+    const probe = `import ctypes,ctypes.util,json,torch,torchaudio,ctranslate2\nlibs={name:ctypes.util.find_library(name) for name in ('cublas','cudnn','cudart')}\nctypes.CDLL('libcublas.so.12')\nok=torch.cuda.is_available()\nif ok:\n x=torch.ones((32,32),device='cuda'); y=x@x; torch.cuda.synchronize(); assert float(y[0,0])==32.0\nassert ctranslate2.get_cuda_device_count()>0\nprint(json.dumps({'kind':'SPEECHCRAFT_CUDA_ENV_PROBE','torch':torch.__version__,'torchaudio':torchaudio.__version__,'cuda':torch.version.cuda,'gpu':torch.cuda.get_device_name(0),'ctranslate2':ctranslate2.__version__,'ctranslate2_devices':ctranslate2.get_cuda_device_count(),'libraries':libs,'torch_cuda_success':ok}))`;
+    try {
+      let needsInstallation = !managedDirectoryExists(target);
+      if (!needsInstallation) {
+        try {
+          const existing = await this.runProcess(python, ['-I', '-c', environmentProbe], context, { cwd: project });
+          parseProbe(existing, 'SPEECHCRAFT_CUDA_PACKAGE_ENV_PROBE', 'CUDA_ENVIRONMENT_INVALID');
+        } catch (error) {
+          if (['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN'].includes(error.code)) throw error;
+          await this.quarantine(target, 'invalid-cuda-env');
+          needsInstallation = true;
+        }
+      }
+      if (needsInstallation) {
+        this.requireSpace((recipe.estimated_bytes || 0) + (this.runtimeRecipe.disk_space.safety_margin_bytes || 0));
+        ensureManagedDirectory(this.dataDirectory, target);
+        const env = { ...this.makeEnvironment(this.paths), UV_PROJECT_ENVIRONMENT: target };
+        this.emit(context, { phase: 'installing', current: null, total: null, percent: null,
+          message: 'Installing the pinned CUDA worker candidate; CPU environment remains available.' });
+        await this.runProcess(this.paths.uvExecutable,
+          ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', project],
+          context, { cwd: project, env });
+      }
+      const libraryResult = await this.runProcess(python, ['-I', '-c', libraryQuery], context, { cwd: project });
+      const libraryPaths = libraryResult.stdout.trim().split(':').filter((entry) => entry && path.resolve(entry).startsWith(`${path.resolve(target)}${path.sep}`));
+      const required = ['libcublas.so.12', 'libcudnn.so.9', 'libcudart.so.12'];
+      if (!required.every((name) => libraryPaths.some((directory) => fs.existsSync(path.join(directory, name))))) {
+        throw new BootstrapError('CUDA_LIBRARIES_MISSING', 'The pinned CUDA environment is missing a required cuBLAS, cuDNN or CUDA runtime library.');
+      }
+      const candidateEnv = { ...this.makeEnvironment(this.paths), LD_LIBRARY_PATH: libraryPaths.join(path.delimiter),
+        HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', PYTHONNOUSERSITE: '1' };
+      const result = await this.runProcess(python, ['-I', '-c', probe], context, { cwd: project, env: candidateEnv });
+      const report = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+      if (report.kind !== 'SPEECHCRAFT_CUDA_ENV_PROBE' || report.torch_cuda_success !== true
+          || report.ctranslate2_devices < 1 || !String(report.gpu || '').trim()) {
+        throw new BootstrapError('CUDA_ENVIRONMENT_PROBE_FAILED', 'The managed CUDA environment did not pass its PyTorch and CTranslate2 device checks.');
+      }
+      this.setComponent(context, 'worker_cuda_candidate', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${recipe.environment_version}/linux-x86_64-cuda`,
+        verification: 'torch_cuda_and_ctranslate2_device_probe', last_verified_at: new Date().toISOString(),
+        path: target, library_paths: libraryPaths, device: report.gpu, cuda_runtime: report.cuda,
+        pytorch: report.torch, torchaudio: report.torchaudio, ctranslate2: report.ctranslate2,
+        failure_code: null, message: 'Candidate libraries and device discovery passed; CUDA remains unselected until actual local Whisper inference passes.' });
+    } catch (error) {
+      if (['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN'].includes(error.code)) throw error;
+      this.setComponent(context, 'worker_cuda_candidate', { state: 'blocked', failure_code: error.code || 'cuda_candidate_failed',
+        message: `${error instanceof BootstrapError ? error.message : `Managed CUDA candidate check failed (${error?.name || 'unexpected error'}).`} The validated CPU worker remains selected.`.slice(0, 320) });
+    }
   }
 
   updateServiceStatus(status, record) {
@@ -26,10 +120,97 @@ export class RuntimeTasks extends BootstrapTasks {
     }, 'backend_service_status');
   }
 
+  async verifyFfmpegDirectory(directory, context) {
+    const artifact = this.runtimeRecipe.ffmpeg;
+    try {
+      const identities = [];
+      for (const key of ['ffmpeg', 'ffprobe']) {
+        const file = path.join(directory, key);
+        const expected = artifact.executables[key];
+        const identity = await trustedFileHash(file);
+        const info = fs.lstatSync(file);
+        if ((info.mode & 0o111) === 0 || identity.size !== expected.size_bytes || identity.sha256 !== expected.sha256) return false;
+        const result = await this.runProcess(file, ['-version'], context, { cwd: directory });
+        const first = result.stdout.split(/\r?\n/)[0] || '';
+        const version = first.match(/^ff(?:mpeg|probe) version ([^\s]+)/)?.[1];
+        if (!version || version !== artifact.version_identity) return false;
+        const config = result.stdout.split(/\r?\n/).find((line) => line.startsWith('configuration:')) || '';
+        if (/--enable-(gpl|nonfree)(?:\s|$)/.test(config)) return false;
+        identities.push(version);
+      }
+      return identities[0] === identities[1];
+    } catch (error) {
+      if (['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN'].includes(error.code)) throw error;
+      return false;
+    }
+  }
+
+  async installManagedFfmpeg(context) {
+    const artifact = this.runtimeRecipe.ffmpeg;
+    if (artifact?.available !== true || !artifact.url || !/^[a-f0-9]{64}$/.test(artifact.sha256 || '')
+        || !Number.isSafeInteger(artifact.size_bytes) || artifact.size_bytes < 1
+        || !artifact.executables?.ffmpeg || !artifact.executables?.ffprobe) {
+      this.setComponent(context, 'ffmpeg', { state: 'blocked', failure_code: 'runtime_tool_unavailable',
+        message: artifact?.reason || 'No verified Linux FFmpeg artifact is configured.' });
+      return false;
+    }
+    const target = path.join(this.dataDirectory, 'tools', 'ffmpeg', `${artifact.version}-${artifact.sha256.slice(0, 16)}`);
+    if (fs.existsSync(target) && await this.verifyFfmpegDirectory(target, context)) {
+      this.setComponent(context, 'ffmpeg', { state: 'files_verified', identity: `ffmpeg:${artifact.version}:${artifact.sha256}`,
+        verification: 'archive_and_executable_sha256', last_verified_at: new Date().toISOString(), path: target,
+        runtime_ready: false, failure_code: null, message: 'FFmpeg and FFprobe binaries are verified; audio decode probe is pending.' });
+      return true;
+    }
+    if (fs.existsSync(target)) await this.quarantine(target, 'invalid-ffmpeg');
+    this.requireSpace(artifact.size_bytes + (artifact.estimated_install_bytes || artifact.size_bytes * 4)
+      + (this.runtimeRecipe.disk_space.safety_margin_bytes || 0));
+    const attempt = this.attemptDirectory(context);
+    const archive = path.join(attempt, artifact.file);
+    const stage = path.join(attempt, `ffmpeg-${artifact.sha256.slice(0, 12)}-${context.attemptId}-${randomUUID()}`);
+    if (fs.existsSync(archive)) {
+      const info = fs.lstatSync(archive);
+      if (!info.isFile() || info.isSymbolicLink()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'The staged FFmpeg archive path is unsafe.');
+      fs.unlinkSync(archive);
+    }
+    ensureManagedDirectory(this.dataDirectory, stage);
+    this.setComponent(context, 'ffmpeg', { state: 'downloading', identity: `ffmpeg:${artifact.version}`,
+      failure_code: null, message: null, runtime_ready: false });
+    await fetchArtifact(artifact.url, archive, artifact, { signal: context.signal, fetchImpl: this.fetchImpl,
+      maxBytes: artifact.size_bytes, onProgress: (progress) => this.emit(context,
+        { ...progress, component: 'ffmpeg', message: 'Downloading the pinned FFmpeg/FFprobe archive.' }) });
+    // fetchArtifact streams and verifies the complete digest before returning.
+    this.setComponent(context, 'ffmpeg', { state: 'verifying', verification: 'archive_sha256', failure_code: null, message: null });
+    const python = context.managedPython || await this.findPython(context);
+    const extractor = `import pathlib,sys,tarfile,shutil\na=pathlib.Path(sys.argv[1]); d=pathlib.Path(sys.argv[2]); prefix=${JSON.stringify(artifact.tar_root + '/')}; root=prefix.rstrip('/'); allow={prefix+'bin/ffmpeg':'ffmpeg',prefix+'bin/ffprobe':'ffprobe',prefix+'LICENSE.txt':'COPYING.LGPLv3.txt'}; found=set(); total=0\nwith tarfile.open(a, 'r:xz') as t:\n for m in t:\n  p=pathlib.PurePosixPath(m.name)\n  if p.is_absolute() or '..' in p.parts or (m.name!=root and not m.name.startswith(prefix)) or not (m.isdir() or m.isfile()): raise SystemExit('unsafe archive member')\n  if not m.isdir() and m.size>250000000: raise SystemExit('archive member too large')\n  total+=m.size\n  if total>500000000: raise SystemExit('archive expansion exceeds limit')\n  if m.name in allow:\n   if m.name in found or not m.isfile() or m.size<=0: raise SystemExit('invalid duplicate payload')\n   f=t.extractfile(m)\n   if f is None: raise SystemExit('missing payload')\n   with (d/allow[m.name]).open('xb') as out: shutil.copyfileobj(f,out,1024*1024)\n   found.add(m.name)\nif found!=set(allow): raise SystemExit('archive is incomplete')\n`;
+    await this.runProcess(python, ['-I', '-c', extractor, archive, stage], context, { cwd: attempt });
+    for (const key of ['ffmpeg', 'ffprobe']) fs.chmodSync(path.join(stage, key), 0o755);
+    if (!await this.verifyFfmpegDirectory(stage, context)) throw new BootstrapError('FFMPEG_EXECUTABLE_INVALID', 'Extracted FFmpeg and FFprobe did not match the pinned executable identities.');
+    fs.writeFileSync(path.join(stage, 'speechcraft-artifact.json'), JSON.stringify({ schema_version: 1,
+      version: artifact.version, source: artifact.release, archive_sha256: artifact.sha256,
+      license: artifact.license, source_revision: artifact.source_revision }, null, 2), { mode: 0o600, flag: 'wx' });
+    ensureManagedDirectory(this.dataDirectory, path.dirname(target));
+    fs.renameSync(stage, target);
+    this.setComponent(context, 'ffmpeg', { state: 'files_verified', identity: `ffmpeg:${artifact.version}:${artifact.sha256}`,
+      verification: 'archive_and_executable_sha256', last_verified_at: new Date().toISOString(), path: target,
+      runtime_ready: false, failure_code: null, message: 'FFmpeg and FFprobe are verified; audio decode probe is pending.' });
+    return true;
+  }
+
   async startServices(context) {
     const backend = context.componentStatus.components?.backend_environment;
     if (backend?.state !== 'verified') {
       this.setComponent(context, 'backend_service', { state: 'blocked', failure_code: 'backend_environment_unavailable', message: 'The verified backend environment is unavailable; service startup was skipped.' });
+      return;
+    }
+    const components = context.componentStatus.components || {};
+    const prerequisites = ['worker_environment', 'ffmpeg', 'silero', 'whisper'];
+    const missing = prerequisites.filter((name) => {
+      const item = components[name];
+      return name === 'worker_environment' ? item?.state !== 'verified' : item?.state !== 'runtime_ready';
+    });
+    if (missing.length) {
+      this.setComponent(context, 'backend_service', { state: 'blocked', failure_code: 'runtime_prerequisite_unavailable',
+        message: `Backend startup is blocked until these verified runtime components pass: ${missing.join(', ')}.` });
       return;
     }
     if (this.service?.record && this.service.child?.exitCode === null
@@ -43,13 +224,12 @@ export class RuntimeTasks extends BootstrapTasks {
       await reconcileOwnedService(this.store);
     }
     const target = this.backendEnvironmentPath();
-    const components = context.componentStatus.components || {};
     const worker = components.worker_environment;
     const modelRoot = runtimeRoots(this.dataDirectory).models;
-    const asr = components.whisper?.path;
-    const silero = components.silero?.path;
+    const asr = components.whisper?.state === 'runtime_ready' ? components.whisper.path : null;
+    const silero = components.silero?.state === 'runtime_ready' ? components.silero.path : null;
     const modelPlatform = selectRuntimeProfile(this.environment).modelPlatform;
-    const ffmpegDir = components.ffmpeg?.state === 'verified' ? components.ffmpeg.path : null;
+    const ffmpegDir = components.ffmpeg?.state === 'runtime_ready' ? components.ffmpeg.path : null;
     const workerPython = worker?.state === 'verified' ? path.join(worker.path, 'bin', 'python') : null;
     const appEnvironment = {
       ...this.makeEnvironment(this.paths),
@@ -65,6 +245,8 @@ export class RuntimeTasks extends BootstrapTasks {
       SPEECHCRAFT_FFMPEG_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffmpeg') : '',
       SPEECHCRAFT_FFPROBE_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffprobe') : '',
       SPEECHCRAFT_FFMPEG_DIR: ffmpegDir || '',
+      SPEECHCRAFT_ASR_DEVICE: context.componentStatus.runtime_profile?.accelerator === 'cuda' ? 'cuda' : 'cpu',
+      LD_LIBRARY_PATH: worker?.library_paths?.join(path.delimiter) || '',
     };
     this.service = new BackendService({ store: this.store, dataDirectory: this.dataDirectory,
       applicationRoot: this.applicationRoot, environment: this.environment,
@@ -91,16 +273,23 @@ export class RuntimeTasks extends BootstrapTasks {
     const result = await this.service.verify();
     this.setComponent(context, 'backend_service', { state: 'verified', verification: 'loopback_healthz', last_verified_at: new Date().toISOString(), failure_code: null, message: null, port: result.port });
     const components = context.componentStatus.components;
-    const mandatoryVerified = ['uv', 'managed_python', 'backend_environment', 'backend_service', 'silero', 'whisper']
-      .every((name) => ['verified', 'files_verified'].includes(components?.[name]?.state));
+    const bootstrapVerified = ['uv', 'managed_python', 'backend_environment', 'worker_environment', 'backend_service']
+      .every((name) => components?.[name]?.state === 'verified');
+    const inferenceVerified = ['ffmpeg', 'silero', 'whisper']
+      .every((name) => components?.[name]?.state === 'runtime_ready');
     this.status(context, { bootstrap_ready: Boolean(context.componentStatus.uv_verified && context.componentStatus.python_verified && context.componentStatus.model_manager_verified),
-      partial_ready: mandatoryVerified, production_ready: false });
+      partial_ready: bootstrapVerified && inferenceVerified, production_ready: false });
   }
 
   async run(stage, context) {
     context.componentStatus = context.bootstrapStatus || this.initialBootstrapStatus();
     if (stage === 'start_services') return this.startServices(context);
     if (stage === 'verify_services') return this.verifyServices(context);
+    if (stage === 'install_worker_environment') {
+      await super.run(stage, context);
+      await this.installCudaCandidate(context);
+      return;
+    }
     return super.run(stage, context);
   }
 

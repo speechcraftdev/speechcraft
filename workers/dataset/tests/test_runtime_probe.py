@@ -17,10 +17,11 @@ assert SPEC and SPEC.loader
 SPEC.loader.exec_module(runtime_probe)
 
 
-def test_probe_audio_requires_explicit_local_input(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_probe_audio_uses_integrity_pinned_bundled_fixture_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SPEECHCRAFT_RUNTIME_PROBE_AUDIO", raising=False)
-    with pytest.raises(RuntimeError, match="local intelligible probe recording is required"):
-        runtime_probe.audio_file()
+    assert runtime_probe.audio_file("whisper").name == "speech.wav"
+    assert runtime_probe.audio_file("silero").name == "speech-silence.wav"
+    assert runtime_probe.audio_file("ffmpeg").name == "speech-compressed.mp3"
 
 
 def test_probe_audio_rejects_symlinks_and_oversized_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -30,9 +31,19 @@ def test_probe_audio_rejects_symlinks_and_oversized_inputs(tmp_path: Path, monke
     link.symlink_to(target)
     monkeypatch.setenv("SPEECHCRAFT_RUNTIME_PROBE_AUDIO", str(link))
     with pytest.raises(RuntimeError, match="missing, unsafe"):
-        runtime_probe.audio_file()
+        runtime_probe.audio_file("whisper")
     monkeypatch.setenv("SPEECHCRAFT_RUNTIME_PROBE_AUDIO", str(target))
-    assert runtime_probe.audio_file() == target
+    assert runtime_probe.audio_file("whisper") == target
+
+
+def test_probe_fixture_digest_mismatch_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture_root = tmp_path / "runtime-fixtures"
+    fixture_root.mkdir()
+    (fixture_root / "speech.wav").write_bytes(b"changed but same tiny file")
+    monkeypatch.setattr(runtime_probe, "WORKER_ROOT", tmp_path)
+    monkeypatch.delenv("SPEECHCRAFT_RUNTIME_PROBE_AUDIO", raising=False)
+    with pytest.raises(RuntimeError, match="failed its pinned integrity check"):
+        runtime_probe.audio_file("whisper")
 
 
 def test_cli_emits_one_safe_json_blocker_for_missing_managed_ffmpeg(tmp_path: Path) -> None:

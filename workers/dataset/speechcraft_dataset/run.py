@@ -93,7 +93,19 @@ def load_config(config_path: Path | None, source_wavs: list[Path], *, single_spe
             if value:
                 config[key] = value
         config["faster_whisper_model"] = "large-v3"
+        # Both ASR stages share the one controller-verified model snapshot.
+        # Do not let Transcript QC resolve a second copy from a user HF cache.
+        config["transcript_qc_model"] = "large-v3"
+        config["transcript_qc_model_path"] = config["faster_whisper_model_path"]
         config["asr_local_files_only"] = True
+        selected_device = os.environ.get("SPEECHCRAFT_ASR_DEVICE", "cpu").strip().lower()
+        if selected_device not in {"cpu", "cuda"}:
+            raise RuntimeError("Managed runtime received an unsupported Whisper execution device.")
+        compute_type = "float16" if selected_device == "cuda" else "int8"
+        config["faster_whisper_device"] = selected_device
+        config["faster_whisper_compute_type"] = compute_type
+        config["transcript_qc_device"] = selected_device
+        config["transcript_qc_compute_type"] = compute_type
         model_platform = os.environ.get("SPEECHCRAFT_MODEL_PLATFORM", "").strip()
         if model_platform not in {"linux-x86_64", "windows-wsl2", "macos-arm64"}:
             raise RuntimeError("Managed runtime is missing its controller-selected model platform.")

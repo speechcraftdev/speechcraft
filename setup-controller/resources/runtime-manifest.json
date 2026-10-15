@@ -7,11 +7,17 @@
     "project_manifest_sha256": "e8f626273ec912d72b9f276874427921defb6f4376312cbe9a9bcab4bc648ea7",
     "lockfile": "backend/uv.lock",
     "lock_sha256": "a5815e29cc2a89fb952bbee64c7d69be5a7c791f98cbad0ecae25d1221c734b8",
-    "profiles": ["linux-x86_64", "macos-arm64"],
+    "profiles": [
+      "linux-x86_64",
+      "macos-arm64"
+    ],
     "installation": "uv-sync-locked",
     "validation_helper": null
   },
-  "disk_space": {"backend_environment_estimate_bytes": 4294967296, "safety_margin_bytes": 536870912},
+  "disk_space": {
+    "backend_environment_estimate_bytes": 4294967296,
+    "safety_margin_bytes": 536870912
+  },
   "worker": {
     "distribution": "speechcraft-dataset-worker",
     "project": "workers/dataset",
@@ -20,7 +26,7 @@
       "linux-x86_64-cpu": {
         "available": true,
         "validated": true,
-        "validated_scope": "Locked Linux CPU environment installed with managed CPython 3.12.15; genuine Silero, Whisper Large-v3 CPU, and experimental local TitaNet inference exercised. Pyannote inference and full worker pipeline remain blocked by absent authorized snapshot and managed FFmpeg.",
+        "validated_scope": "Locked Linux CPU environment installed with managed CPython 3.12.15; genuine local Silero, Whisper Large-v3 CPU, experimental TitaNet, managed FFmpeg/FFprobe, and post-diarization worker pipeline using explicit test-only reference speaker regions exercised. Pyannote authorization and production diarization remain blocked.",
         "project": "workers/dataset/runtime-profiles/linux-cpu",
         "lockfile": "uv.lock",
         "lock_sha256": "b5e17aed011c1dc06f4546592c3f67c268e32ff9dde5e7e2785d3b458db5f3d5",
@@ -30,12 +36,25 @@
         "installation": "uv-sync-locked",
         "expected_interpreter": "bin/python",
         "estimated_bytes": 10737418240,
-        "validation_modules": ["speechcraft_dataset", "speechcraft_models", "torch", "torchaudio", "pyannote.audio", "faster_whisper", "ctranslate2", "onnxruntime", "silero_vad", "sherpa_onnx", "soundfile", "av"]
+        "validation_modules": [
+          "speechcraft_dataset",
+          "speechcraft_models",
+          "torch",
+          "torchaudio",
+          "pyannote.audio",
+          "faster_whisper",
+          "ctranslate2",
+          "onnxruntime",
+          "silero_vad",
+          "sherpa_onnx",
+          "soundfile",
+          "av"
+        ]
       },
       "linux-x86_64-cuda": {
-        "available": false,
-        "validated": false,
-        "reason": "A pinned CUDA 12.8 recipe is checked in, but this host has no working NVIDIA driver; CUDA package installation and real CUDA inference have not been validated.",
+        "available": true,
+        "validated": true,
+        "reason": "Validated on Linux x86-64 with NVIDIA GeForce RTX 4060 Laptop GPU, driver 610.57.04, managed PyTorch/torchaudio 2.8.0+cu128, and CTranslate2 4.7.2. PyTorch CUDA matrix execution, pinned CUDA library checks, CTranslate2 device discovery, and actual local Whisper Large-v3 CUDA transcription passed. Other GPU/driver combinations are still revalidated at install time.",
         "project": "workers/dataset/runtime-profiles/linux-cuda",
         "lockfile": "uv.lock",
         "lock_sha256": "d2c260758ad5bdbf646129a25dc906e5e3cf3bf92fa10ac6924aa2a71609e253",
@@ -45,16 +64,35 @@
         "installation": "uv-sync-locked",
         "expected_interpreter": "bin/python",
         "estimated_bytes": 17179869184,
-        "validation_modules": ["speechcraft_dataset", "speechcraft_models", "torch", "torchaudio", "pyannote.audio", "faster_whisper", "ctranslate2", "onnxruntime", "silero_vad", "sherpa_onnx", "soundfile", "av"]
+        "validation_modules": [
+          "speechcraft_dataset",
+          "speechcraft_models",
+          "torch",
+          "torchaudio",
+          "pyannote.audio",
+          "faster_whisper",
+          "ctranslate2",
+          "onnxruntime",
+          "silero_vad",
+          "sherpa_onnx",
+          "soundfile",
+          "av"
+        ]
       },
-      "macos-arm64": {"available": false, "reason": "No validated Apple Silicon worker dependency lock is checked in."}
+      "macos-arm64": {
+        "available": false,
+        "reason": "No validated Apple Silicon worker dependency lock is checked in."
+      }
     },
     "required_tool": "ffmpeg",
     "validation_helper": "workers/dataset/scripts/preflight.py"
   },
   "models": {
     "manager_interface": "python -m speechcraft_models",
-    "approved_roles": ["speech_detection", "asr"],
+    "approved_roles": [
+      "speech_detection",
+      "asr"
+    ],
     "blocked_roles": {
       "diarization": "Pyannote Community-1 acquisition and token authorization are not integrated.",
       "speaker_purity": "TitaNet provenance and redistribution approval remain blocked."
@@ -63,17 +101,124 @@
   "runtime_validation": {
     "available": true,
     "protocol": "speechcraft-runtime-probe-v1",
-    "reason": "Trusted worker probes are installed. A local intelligible recording is required for Whisper, TitaNet, Community-1, and FFmpeg; Community-1 authorization and managed FFmpeg remain external blockers.",
+    "reason": "Trusted, hashed CC0 speech fixtures are bundled for FFmpeg, Silero, Whisper and TitaNet probes. Pyannote remains blocked until a legitimately authorized local Community-1 snapshot is configured.",
     "probes": [
-      {"component": "ffmpeg", "helper": "workers/dataset/scripts/runtime_probe.py", "sha256": "7210798fa3c74e0a75c092f097ff8f1a0b529b6a38e37fec779934dbdfdbf3e6", "environment_role": "worker", "arguments": ["ffmpeg"], "timeout_ms": 600000},
-      {"component": "silero", "helper": "workers/dataset/scripts/runtime_probe.py", "sha256": "7210798fa3c74e0a75c092f097ff8f1a0b529b6a38e37fec779934dbdfdbf3e6", "environment_role": "worker", "arguments": ["silero"], "timeout_ms": 600000},
-      {"component": "whisper", "helper": "workers/dataset/scripts/runtime_probe.py", "sha256": "7210798fa3c74e0a75c092f097ff8f1a0b529b6a38e37fec779934dbdfdbf3e6", "environment_role": "worker", "arguments": ["whisper"], "timeout_ms": 600000},
-      {"component": "titanet", "helper": "workers/dataset/scripts/runtime_probe.py", "sha256": "7210798fa3c74e0a75c092f097ff8f1a0b529b6a38e37fec779934dbdfdbf3e6", "environment_role": "worker", "arguments": ["titanet"], "timeout_ms": 600000},
-      {"component": "pyannote", "helper": "workers/dataset/scripts/runtime_probe.py", "sha256": "7210798fa3c74e0a75c092f097ff8f1a0b529b6a38e37fec779934dbdfdbf3e6", "environment_role": "worker", "arguments": ["pyannote"], "timeout_ms": 600000}
-    ]
+      {
+        "component": "ffmpeg",
+        "helper": "workers/dataset/scripts/runtime_probe.py",
+        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+        "environment_role": "worker",
+        "arguments": [
+          "ffmpeg"
+        ],
+        "timeout_ms": 600000,
+        "fixture": "compressed_speech"
+      },
+      {
+        "component": "silero",
+        "helper": "workers/dataset/scripts/runtime_probe.py",
+        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+        "environment_role": "worker",
+        "arguments": [
+          "silero"
+        ],
+        "timeout_ms": 600000,
+        "fixture": "speech_silence"
+      },
+      {
+        "component": "whisper",
+        "helper": "workers/dataset/scripts/runtime_probe.py",
+        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+        "environment_role": "worker",
+        "arguments": [
+          "whisper"
+        ],
+        "timeout_ms": 600000,
+        "fixture": "speech"
+      },
+      {
+        "component": "titanet",
+        "helper": "workers/dataset/scripts/runtime_probe.py",
+        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+        "environment_role": "worker",
+        "arguments": [
+          "titanet"
+        ],
+        "timeout_ms": 600000,
+        "fixture": "speech"
+      },
+      {
+        "component": "pyannote",
+        "helper": "workers/dataset/scripts/runtime_probe.py",
+        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+        "environment_role": "worker",
+        "arguments": [
+          "pyannote"
+        ],
+        "timeout_ms": 600000,
+        "fixture": "speech"
+      },
+      {
+        "component": "cuda",
+        "helper": "workers/dataset/scripts/runtime_probe.py",
+        "sha256": "50711e217614ef5d8701bc85e70bde787f5e9d8721e8b5ec1c89506590724c40",
+        "environment_role": "worker_cuda_candidate",
+        "fixture": "speech",
+        "arguments": [
+          "cuda"
+        ],
+        "timeout_ms": 600000
+      }
+    ],
+    "fixtures": {
+      "speech": {
+        "path": "workers/dataset/runtime-fixtures/speech.wav",
+        "size_bytes": 576078,
+        "sha256": "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd"
+      },
+      "speech_silence": {
+        "path": "workers/dataset/runtime-fixtures/speech-silence.wav",
+        "size_bytes": 640078,
+        "sha256": "65afa781f190dd7e6ee3b719e0b200b1224d057d4ae4c5077cd1b125685cda06"
+      },
+      "compressed_speech": {
+        "path": "workers/dataset/runtime-fixtures/speech-compressed.mp3",
+        "size_bytes": 144908,
+        "sha256": "e61a459dfc841b060aa2db5119ddd527346177ab965f290986a46c965302c33a"
+      }
+    }
   },
   "ffmpeg": {
-    "available": false,
-    "reason": "Provisioning blocked: no exact prebuilt archive digest, corresponding-source/configuration materials, and redistribution approval have been verified for SpeechCraft. Arbitrary PATH executables are not trusted."
+    "available": true,
+    "validated": true,
+    "validation_scope": "Pinned release archive checksum independently matched; extracted Linux x86-64 FFmpeg and FFprobe executable hashes and identities checked; version matched; FFmpeg decoded an 18-second MP3 to 16 kHz mono WAV and FFprobe reported duration/sample rate/channels. Managed installation and clean-root reuse are covered by controller integration tests.",
+    "version": "n8.1.3-18-g46d899d7a0-20261014",
+    "version_identity": "n8.1.3-18-g46d899d7a0-20261014",
+    "source_revision": "46d899d7a02bc63237472cc4897258d5ddf274ac",
+    "release": "https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-14-13-03",
+    "release_commit": "63ac3265b0789ea16c7b1f8351cd2ad195a28722",
+    "source_url": "https://github.com/FFmpeg/FFmpeg/tree/46d899d7a02bc63237472cc4897258d5ddf274ac",
+    "builder_source_url": "https://github.com/BtbN/FFmpeg-Builds/tree/63ac3265b0789ea16c7b1f8351cd2ad195a28722",
+    "platform": "linux-x86_64",
+    "minimum_glibc": "2.28",
+    "file": "ffmpeg-n8.1.3-18-g46d899d7a0-linux64-lgpl-8.1.tar.xz",
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-14-13-03/ffmpeg-n8.1.3-18-g46d899d7a0-linux64-lgpl-8.1.tar.xz",
+    "size_bytes": 137137324,
+    "sha256": "602ca2985139dbab87e0d7c70f48afc69548060463dcfab44c0e5f50ebe39df8",
+    "tar_root": "ffmpeg-n8.1.3-18-g46d899d7a0-linux64-lgpl-8.1",
+    "estimated_install_bytes": 284099600,
+    "license": "LGPL-3.0-or-later",
+    "license_notice": "The archive includes its LGPLv3 text. No --enable-gpl or --enable-nonfree flags were present; GPL encoder options are disabled. The package uses --enable-version3 and must be accompanied by LGPLv3 notices and access to corresponding source/build configuration.",
+    "redistribution_status": "source_identity_and_notice_documented; product legal review remains required before application release",
+    "executables": {
+      "ffmpeg": {
+        "size_bytes": 142166568,
+        "sha256": "99ca80f681d424d09af9557d3e9cba0280c15e63b058743cc819ba87d3f577ee"
+      },
+      "ffprobe": {
+        "size_bytes": 141933032,
+        "sha256": "20d63f0983ecc952f488fa7ca1e6b20b9ad3e2f655cefd322f5d9cd04b9dbacc"
+      }
+    }
   }
 }

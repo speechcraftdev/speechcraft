@@ -17,21 +17,25 @@ test('platform selection keeps WSL storage host identity separate from model art
 
 test('CUDA remains a candidate until its recipe and independent Torch/CTranslate2 probes pass', () => {
   const host = { os: 'linux', architecture: 'x86_64', profile: 'linux-x86_64', wsl: false };
+  const passingCuda = { schema_version: 1, component: 'cuda', success: true, inference_completed: true,
+    gpu_detected: true, driver_identification: 'fixture driver', actual_execution_device: 'fixture GPU',
+    required_libraries: { cublas: true, cudnn: true, cudart: true },
+    torch_cuda_success: true, ctranslate2_cuda_success: true, measurements: { whisper_segments: 1 } };
   assert.equal(selectRuntimeProfile(host, { gpuDetected: true }).workerProfile, 'linux-x86_64-cpu');
   assert.equal(selectRuntimeProfile(host, { gpuDetected: true, cudaRecipeAvailable: true, cudaValidated: true,
-    cudaProbe: { success: true, torch: true, ctranslate2: true } }).workerProfile, 'linux-x86_64-cpu',
-  'a CUDA profile marked unavailable in the trusted catalog cannot be selected');
+    cudaProbe: passingCuda }).workerProfile, 'linux-x86_64-cuda');
   const fixture = structuredClone(runtimeManifest);
   fixture.worker.profiles['linux-x86_64-cuda'].available = true;
-  fixture.worker.profiles['linux-x86_64-cuda'].validated = true;
+  assert.equal(cudaProfileReady(fixture.worker.profiles['linux-x86_64-cuda'], true, passingCuda), true,
+    'actual inference and both library stacks must pass');
   assert.equal(cudaProfileReady(fixture.worker.profiles['linux-x86_64-cuda'], true,
-    { success: true, torch: true, ctranslate2: true }), true, 'all runtime conditions must be present');
-  assert.equal(cudaProfileReady(fixture.worker.profiles['linux-x86_64-cuda'], true,
-    { success: true, torch: true, ctranslate2: false }), false);
+    { ...passingCuda, ctranslate2_cuda_success: false }), false);
   assert.equal(cudaProfileReady(fixture.worker.profiles['linux-x86_64-cuda'], false,
-    { success: true, torch: true, ctranslate2: true }), false);
+    passingCuda), false);
+  assert.equal(cudaProfileReady(fixture.worker.profiles['linux-x86_64-cuda'], true,
+    { ...passingCuda, required_libraries: { cublas: true, cudnn: false, cudart: true } }), false);
   assert.equal(selectRuntimeProfile(host, { gpuDetected: true, cudaRecipeAvailable: true, cudaValidated: true,
-    cudaProbe: { success: true, torch: true, ctranslate2: false } }).workerProfile, 'linux-x86_64-cpu');
+    cudaProbe: { ...passingCuda, ctranslate2_cuda_success: false } }).workerProfile, 'linux-x86_64-cpu');
 });
 
 test('checked-in backend recipe identity is verified and unsupported components remain blocked', () => {
@@ -39,14 +43,14 @@ test('checked-in backend recipe identity is verified and unsupported components 
   assert.ok(assertTrustedBackendRecipe(root).lock.endsWith(path.join('backend', 'uv.lock')));
   assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cpu'].available, true);
   assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cpu'].validated, true);
-  assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cuda'].validated, false);
+  assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cuda'].validated, true);
   assert.equal(runtimeManifest.worker.profiles['macos-arm64'].available, false);
   assert.equal(initialComponents().pyannote.state, 'blocked');
   assert.equal(initialComponents().titanet.state, 'blocked');
   assert.equal(initialComponents().runtime_probes.state, 'pending');
   assert.equal(runtimeManifest.runtime_validation.available, true);
   for (const probe of runtimeManifest.runtime_validation.probes) {
-    assert.match(probe.environment_role, /^(worker|backend|model_manager)$/);
+    assert.match(probe.environment_role, /^(worker|backend|model_manager|worker_cuda_candidate)$/);
     assert.equal(sha(path.resolve(root, probe.helper)), probe.sha256, `trusted helper hash: ${probe.component}`);
   }
 });
@@ -54,6 +58,7 @@ test('checked-in backend recipe identity is verified and unsupported components 
 test('runtime executor reports an explicitly unavailable worker recipe without pretending it was installed', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-runtime-plan-'));
   const recipe = structuredClone(runtimeManifest);
+  recipe.ffmpeg.available = false;
   recipe.worker.profiles['linux-x86_64-cpu'].available = false;
   recipe.worker.profiles['linux-x86_64-cpu'].reason = 'fixture blocked';
   const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, runtimeRecipe: recipe });
@@ -77,6 +82,7 @@ test('worker installer consumes only a complete trusted profile recipe and valid
   fs.writeFileSync(lock, 'fixture lock'); fs.writeFileSync(manifestFile, '[project]\nname="worker-fixture"\n');
   const sha = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   const runtimeRecipe = structuredClone(runtimeManifest);
+  runtimeRecipe.ffmpeg.available = false;
   runtimeRecipe.worker.source_manifest_sha256 = sha(path.join(sourceProject, 'pyproject.toml'));
   runtimeRecipe.worker.profiles['linux-x86_64-cpu'] = { available: true, validated: true,
     project: 'worker_fixture', lockfile: 'uv.lock', lock_sha256: sha(lock), project_manifest_sha256: sha(manifestFile),
@@ -104,14 +110,68 @@ test('worker installer consumes only a complete trusted profile recipe and valid
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('an interrupted CUDA candidate environment is quarantined and reinstalled from its pinned lock', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-cuda-candidate-repair-'));
+  const applicationRoot = path.resolve('..');
+  const recipe = runtimeManifest.worker.profiles['linux-x86_64-cuda'];
+  const target = path.join(root, 'environments', 'worker',
+    `v${recipe.environment_version}-${recipe.lock_sha256.slice(0, 16)}-linux-x86_64-cuda`);
+  fs.mkdirSync(target, { recursive: true }); // crash left a directory, but no usable interpreter
+  const libraries = path.join(target, 'lib/python3.12/site-packages/nvidia');
+  let installs = 0;
+  const calls = [];
+  const report = { kind: 'SPEECHCRAFT_CUDA_ENV_PROBE', torch: '2.8.0', torchaudio: '2.8.0', cuda: '12.8',
+    gpu: 'NVIDIA RTX fixture', ctranslate2: '4.7.2', ctranslate2_devices: 1,
+    libraries: { cublas: 'libcublas.so.12', cudnn: 'libcudnn.so.9', cudart: 'libcudart.so.12' },
+    torch_cuda_success: true };
+  const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot, availableBytes: 32 * 1024 ** 3,
+    processRunner: async (_executable, args, options) => {
+      calls.push(args[0]);
+      const code = args[2] || '';
+      if (args[0] === 'sync') {
+        installs += 1;
+        fs.mkdirSync(path.join(target, 'bin'), { recursive: true });
+        fs.writeFileSync(path.join(target, 'bin/python'), 'fixture python');
+        for (const [pkg, filename] of [['cublas', 'libcublas.so.12'], ['cudnn', 'libcudnn.so.9'], ['cuda_runtime', 'libcudart.so.12']]) {
+          const lib = path.join(libraries, pkg, 'lib'); fs.mkdirSync(lib, { recursive: true }); fs.writeFileSync(path.join(lib, filename), 'fixture');
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (code.includes('SPEECHCRAFT_CUDA_PACKAGE_ENV_PROBE')) return { code: 1, stdout: '', stderr: '' };
+      if (code.includes('pathlib')) return { code: 0, stdout: [path.join(libraries, 'cublas/lib'), path.join(libraries, 'cudnn/lib'), path.join(libraries, 'cuda_runtime/lib')].join(':'), stderr: '' };
+      if (code.includes('SPEECHCRAFT_CUDA_ENV_PROBE')) {
+        assert.match(options.env.LD_LIBRARY_PATH, /site-packages\/nvidia/);
+        return { code: 0, stdout: JSON.stringify(report), stderr: '' };
+      }
+      throw new Error('unexpected CUDA candidate process');
+    } });
+  tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
+  tasks.paths = { home: root, uvExecutable: '/trusted/uv', uvCache: root, pythonRoot: root,
+    hfHome: root, hfHub: root, hfXet: root, temporary: root,
+    quarantineRoot: path.join(root, 'quarantine') };
+  fs.mkdirSync(tasks.paths.quarantineRoot, { recursive: true });
+  const context = { attemptId: '00000000-0000-4000-8000-000000000142', managedPython: '/managed/python',
+    signal: new AbortController().signal, componentStatus: tasks.initialBootstrapStatus(), onProgress() {} };
+  context.componentStatus.host_details = { cuda_candidate: true };
+  await tasks.installCudaCandidate(context);
+  assert.equal(installs, 1, JSON.stringify({ component: context.componentStatus.components.worker_cuda_candidate, calls }));
+  assert.equal(context.componentStatus.components.worker_cuda_candidate.state, 'verified');
+  assert.equal(fs.existsSync(target), true);
+  assert.equal(fs.readdirSync(path.join(root, 'quarantine')).some((name) => name.includes('invalid-cuda-env')), true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('runtime probe runner requires a trusted helper and explicit completed inference result', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-runtime-probe-'));
   const helper = path.join(root, 'probe.py'); fs.writeFileSync(helper, '# trusted fixture');
   const sha = createHash('sha256').update(fs.readFileSync(helper)).digest('hex');
   const runtimeRecipe = structuredClone(runtimeManifest);
+  runtimeRecipe.ffmpeg.available = false;
   runtimeRecipe.runtime_validation = { available: true, probes: [{ component: 'silero', helper: 'probe.py', sha256: sha,
     timeout_ms: 2000, arguments: [] }] };
+  const probeAudio = path.join(root, 'fixture.wav'); fs.writeFileSync(probeAudio, 'fixture');
   const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, runtimeRecipe,
+    runtimeProbeAudio: probeAudio,
     processRunner: async () => ({ code: 0, stdout: JSON.stringify({ schema_version: 1, component: 'silero',
       success: true, inference_completed: true, identity: 'silero-fixture', device: 'cpu' }), stderr: '' }) });
   tasks.environment = { profile: 'linux-x86_64', wsl: false };
@@ -129,6 +189,47 @@ test('runtime probe runner requires a trusted helper and explicit completed infe
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('a passing CUDA Whisper probe updates the selected runtime device and worker profile', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-cuda-runtime-selection-'));
+  const applicationRoot = path.resolve('..');
+  const helper = path.join(applicationRoot, 'workers/dataset/scripts/runtime_probe.py');
+  const fixture = path.join(applicationRoot, 'workers/dataset/runtime-fixtures/speech.wav');
+  const recipe = structuredClone(runtimeManifest);
+  recipe.runtime_validation.probes = [{ component: 'cuda', helper: 'workers/dataset/scripts/runtime_probe.py',
+    sha256: sha(helper), environment_role: 'worker_cuda_candidate', fixture: 'speech', arguments: ['cuda'], timeout_ms: 600000 }];
+  const cudaPath = path.join(root, 'environments/worker/cuda');
+  const cpuPath = path.join(root, 'environments/worker/cpu');
+  const report = { schema_version: 1, component: 'cuda', success: true, inference_completed: true,
+    identity: 'cuda:NVIDIA RTX 4060', backend: 'torch:2.8.0/ctranslate2:4.7.2', device: 'NVIDIA RTX 4060',
+    gpu_detected: true, driver_identification: '610.57.04', actual_execution_device: 'NVIDIA RTX 4060',
+    torch_cuda_success: true, ctranslate2_cuda_success: true,
+    required_libraries: { cublas: true, cudnn: true, cudart: true },
+    measurements: { whisper_segments: 1, transcript_characters: 12 } };
+  const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot, runtimeRecipe: recipe,
+    processRunner: async (_python, _args, options) => {
+      assert.equal(options.env.SPEECHCRAFT_PROBE_DEVICE, 'cuda');
+      return { code: 0, stdout: JSON.stringify(report), stderr: '' };
+    } });
+  tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
+  tasks.paths = { home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
+  const context = { attemptId: '00000000-0000-4000-8000-000000000141', signal: new AbortController().signal,
+    componentStatus: tasks.initialBootstrapStatus(), onProgress() {},
+    onComponentStatus(value) { context.componentStatus = value; } };
+  context.componentStatus.components.worker_cuda_candidate = { state: 'verified', path: cudaPath, library_paths: [path.join(cudaPath, 'lib')] };
+  context.componentStatus.components.worker_environment = { state: 'verified', path: cpuPath,
+    effective_profile: 'linux-x86_64-cpu' };
+  context.componentStatus.components.whisper = { state: 'runtime_ready', identity: 'whisper-large-v3-sha256:fixture',
+    device: 'cpu', verification: 'trusted_inference_probe' };
+  context.componentStatus.host_details = { nvidia_gpus: ['NVIDIA RTX 4060'] };
+  await tasks.validateRuntime(context);
+  assert.equal(context.componentStatus.runtime_profile.accelerator, 'cuda');
+  assert.equal(context.componentStatus.components.worker_environment.effective_profile, 'linux-x86_64-cuda');
+  assert.equal(context.componentStatus.components.whisper.device, 'NVIDIA RTX 4060');
+  assert.equal(context.componentStatus.components.whisper.verification, 'trusted_cpu_and_cuda_inference_probes');
+  assert.equal(context.componentStatus.production_ready, false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('runtime probe failures remain component blockers and do not hide later successful probes', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-runtime-probe-blockers-'));
   const failed = path.join(root, 'failed.py'); const good = path.join(root, 'good.py');
@@ -137,12 +238,14 @@ test('runtime probe failures remain component blockers and do not hide later suc
   const workerPython = path.join(root, 'environments', 'worker', 'v1', 'bin', 'python');
   fs.mkdirSync(path.dirname(workerPython), { recursive: true }); fs.writeFileSync(workerPython, 'fixture interpreter');
   const runtimeRecipe = structuredClone(runtimeManifest);
+  runtimeRecipe.ffmpeg.available = false;
   runtimeRecipe.runtime_validation = { available: true, probes: [
     { component: 'ffmpeg', helper: 'failed.py', sha256: sha(failed), environment_role: 'worker', arguments: ['ffmpeg'], timeout_ms: 2000 },
     { component: 'silero', helper: 'good.py', sha256: sha(good), environment_role: 'worker', arguments: ['silero'], timeout_ms: 2000 },
   ] };
   const calls = [];
   const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, runtimeRecipe,
+    runtimeProbeAudio: path.join(root, 'fixture.wav'),
     processRunner: async (executable) => {
       calls.push(executable);
       return calls.length === 1
@@ -151,6 +254,7 @@ test('runtime probe failures remain component blockers and do not hide later suc
           inference_completed: true, identity: 'silero-fixture', device: 'cpu' }), stderr: '' };
     } });
   tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
+  fs.writeFileSync(path.join(root, 'fixture.wav'), 'fixture');
   tasks.paths = { home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
   const context = { attemptId: '00000000-0000-4000-8000-000000000099', signal: new AbortController().signal,
     componentStatus: tasks.initialBootstrapStatus(), onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };

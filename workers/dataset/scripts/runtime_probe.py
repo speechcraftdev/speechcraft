@@ -16,6 +16,15 @@ WORKER_ROOT = Path(__file__).resolve().parents[1]
 if str(WORKER_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKER_ROOT))
 
+PROBE_FIXTURES = {
+    "ffmpeg": ("speech-compressed.mp3", "e61a459dfc841b060aa2db5119ddd527346177ab965f290986a46c965302c33a", 144908),
+    "silero": ("speech-silence.wav", "65afa781f190dd7e6ee3b719e0b200b1224d057d4ae4c5077cd1b125685cda06", 640078),
+    "whisper": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
+    "titanet": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
+    "pyannote": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
+    "cuda": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
+}
+
 
 def digest(path: Path) -> str:
     h = hashlib.sha256()
@@ -25,13 +34,19 @@ def digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def audio_file() -> Path:
+def audio_file(component: str) -> Path:
     raw = os.environ.get("SPEECHCRAFT_RUNTIME_PROBE_AUDIO", "").strip()
-    if not raw:
-        raise RuntimeError("A local intelligible probe recording is required (SPEECHCRAFT_RUNTIME_PROBE_AUDIO).")
-    path = Path(raw).expanduser()
+    if raw:
+        path = Path(raw).expanduser()
+    else:
+        name, expected_sha, expected_size = PROBE_FIXTURES[component]
+        path = WORKER_ROOT / "runtime-fixtures" / name
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 100 * 1024 * 1024:
         raise RuntimeError("The configured probe recording is missing, unsafe, or larger than 100 MiB.")
+    if not raw:
+        name, expected_sha, expected_size = PROBE_FIXTURES[component]
+        if path.stat().st_size != expected_size or digest(path) != expected_sha:
+            raise RuntimeError("The bundled runtime probe fixture failed its pinned integrity check.")
     return path.resolve()
 
 
@@ -51,24 +66,31 @@ def run(component: str) -> dict:
         if not model.is_file() or model.is_symlink():
             raise RuntimeError("Verified Silero ONNX path is unavailable.")
         verify_managed_model("speech_detection", model.parent, os.environ.get("SPEECHCRAFT_MODEL_PLATFORM", "linux-x86_64"))
-        # Run the same official ONNX wrapper used by VR O0_4 on a bounded,
-        # deterministic signal; no slicer thresholds or packing are changed.
-        samples = np.zeros(16_000, dtype=np.float32)
+        import soundfile as sf
+        recording = audio_file("silero")
+        samples, rate = sf.read(str(recording), dtype="float32", always_2d=True)
+        if rate != 16_000 or samples.shape[1] != 1 or len(samples) < 16_000:
+            raise RuntimeError("The pinned Silero fixture must be nonempty 16 kHz mono audio.")
+        samples = samples[:, 0]
         rows = compute_vad_frames(samples, 16_000)
         values = np.asarray([row["speech_prob"] for row in rows], dtype=np.float64)
-        if values.size == 0 or not np.isfinite(values).all():
-            raise RuntimeError("Silero inference produced no finite frame probabilities.")
+        if values.size == 0 or not np.isfinite(values).all() or float(values.max()) < 0.25:
+            raise RuntimeError("Silero inference did not produce a finite positive speech response for the bundled speech fixture.")
+        leading = [float(row["speech_prob"]) for row in rows if float(row["center_sec"]) < 0.75]
+        trailing = [float(row["speech_prob"]) for row in rows if float(row["center_sec"]) > 19.25]
+        silence_max = max(leading + trailing, default=0.0)
         result.update(identity=f"silero-onnx-sha256:{digest(model)}", backend="onnxruntime-cpu",
                       device="cpu", inference_completed=True,
                       measurements={"frames": int(values.size), "probability_min": float(values.min()),
-                                    "probability_max": float(values.max())})
+                                    "probability_max": float(values.max()), "silence_probability_max": silence_max,
+                                    "fixture_sha256": digest(recording), "sample_rate": int(rate)})
     elif component == "whisper":
         from faster_whisper import WhisperModel
         from speechcraft_dataset.runtime_tools import verify_managed_model
         import soundfile as sf
 
         model = Path(os.environ.get("SPEECHCRAFT_ASR_MODEL_PATH", ""))
-        recording = audio_file()
+        recording = audio_file("whisper")
         recording_duration = float(sf.info(str(recording)).duration)
         if not model.is_dir() or model.is_symlink() or not (model / "model.bin").is_file():
             raise RuntimeError("Verified local Whisper Large-v3 model directory is unavailable.")
@@ -94,7 +116,7 @@ def run(component: str) -> dict:
         raw = Path(os.environ.get("SPEECHCRAFT_TITANET_ONNX_PATH", ""))
         if os.environ.get("SPEECHCRAFT_EXPERIMENTAL_TITANET") != "1":
             raise RuntimeError("TitaNet probe is disabled: licensing/checkpoint approval is unresolved.")
-        recording = audio_file()
+        recording = audio_file("titanet")
         samples, rate = sf.read(str(recording), dtype="float32", always_2d=True)
         mono = samples.mean(axis=1)
         if rate != 16_000:
@@ -121,7 +143,7 @@ def run(component: str) -> dict:
         import numpy as np
 
         snapshot = Path(os.environ.get("SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH", ""))
-        recording = audio_file()
+        recording = audio_file("pyannote")
         samples, rate = sf.read(str(recording), dtype="float32", always_2d=True)
         ready, reason = __import__("speechcraft_dataset.diarization", fromlist=["community1_snapshot_ready"]).community1_snapshot_ready(snapshot)
         if not ready:
@@ -139,7 +161,7 @@ def run(component: str) -> dict:
     elif component == "ffmpeg":
         import soundfile as sf
 
-        recording = audio_file()
+        recording = audio_file("ffmpeg")
         ffmpeg = Path(os.environ.get("SPEECHCRAFT_FFMPEG_BIN", ""))
         ffprobe = Path(os.environ.get("SPEECHCRAFT_FFPROBE_BIN", ""))
         if not ffmpeg.is_file() or not ffprobe.is_file() or ffmpeg.is_symlink() or ffprobe.is_symlink():
@@ -169,35 +191,63 @@ def run(component: str) -> dict:
                                     "decoded_duration_seconds": decoded_duration, "ffmpeg_version": ffmpeg_version,
                                     "ffprobe_version": ffprobe_version})
     elif component == "cuda":
+        import ctypes
         import torch
-        import ctranslate2
+        import ctypes.util
 
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA profile probe failed: PyTorch reports no usable CUDA device.")
-        tensor = torch.randn((256, 256), device="cuda")
-        _ = tensor @ tensor
-        torch.cuda.synchronize()
-        if ctranslate2.get_cuda_device_count() < 1:
-            raise RuntimeError("CTranslate2 reports no CUDA devices.")
-        # Validate the actual ASR execution backend as well; driver visibility
-        # or a successful Torch tensor operation is not enough.
-        from faster_whisper import WhisperModel
-        model_path = Path(os.environ.get("SPEECHCRAFT_ASR_MODEL_PATH", ""))
-        recording = audio_file()
-        if not model_path.is_dir() or model_path.is_symlink() or not (model_path / "model.bin").is_file():
-            raise RuntimeError("Verified local Whisper Large-v3 model directory is unavailable for CUDA validation.")
-        engine = WhisperModel(str(model_path), device="cuda", compute_type="float16", local_files_only=True)
-        segments, info = engine.transcribe(str(recording), beam_size=1)
-        rows = list(segments)
-        text_length = sum(len(row.text.strip()) for row in rows)
-        if not rows or text_length == 0:
-            raise RuntimeError("CTranslate2 CUDA Whisper inference returned no nonempty transcript.")
-        result.update(identity=f"cuda:{torch.cuda.get_device_name(0)}", backend=f"torch:{torch.__version__}/ctranslate2:{ctranslate2.__version__}",
-                      device=torch.cuda.get_device_name(0), inference_completed=True,
-                      measurements={"torch_cuda": torch.version.cuda, "ctranslate2_cuda_devices": ctranslate2.get_cuda_device_count(),
-                                    "whisper_compute_type": "float16", "whisper_segments": len(rows),
-                                    "transcript_characters": text_length, "language": info.language,
-                                    "audio_sha256": digest(recording)})
+        result.update(driver_identification=os.environ.get("SPEECHCRAFT_CUDA_DRIVER", "")[:160] or None,
+                      gpu_detected=False, torch_cuda_success=False, ctranslate2_cuda_success=False,
+                      actual_execution_device=None, required_libraries={"cublas": False, "cudnn": False, "cudart": False},
+                      fallback_decision="pending-controller-decision")
+        try:
+            result["gpu_detected"] = bool(torch.cuda.is_available())
+            if not result["gpu_detected"]:
+                raise RuntimeError("PyTorch reports no usable NVIDIA device.")
+            gpu_name = torch.cuda.get_device_name(0)
+            tensor = torch.ones((256, 256), device="cuda")
+            _ = tensor @ tensor
+            torch.cuda.synchronize()
+            result["torch_cuda_success"] = True
+            result["actual_execution_device"] = gpu_name
+            required = {"cublas": "libcublas.so.12", "cudnn": "libcudnn.so.9", "cudart": "libcudart.so.12"}
+            for name, library in required.items():
+                try:
+                    ctypes.CDLL(library)
+                    result["required_libraries"][name] = True
+                except OSError:
+                    result["required_libraries"][name] = False
+            if not all(result["required_libraries"].values()):
+                raise RuntimeError("Managed CUDA libraries are not loadable from the trusted worker environment.")
+            import ctranslate2
+            cuda_devices = int(ctranslate2.get_cuda_device_count())
+            result["ctranslate2_cuda_success"] = cuda_devices > 0
+            if not result["ctranslate2_cuda_success"]:
+                raise RuntimeError("CTranslate2 reports no usable CUDA devices.")
+            from faster_whisper import WhisperModel
+            model_path = Path(os.environ.get("SPEECHCRAFT_ASR_MODEL_PATH", ""))
+            recording = audio_file("cuda")
+            if not model_path.is_dir() or model_path.is_symlink() or not (model_path / "model.bin").is_file():
+                raise RuntimeError("Verified local Whisper Large-v3 model directory is unavailable for CUDA validation.")
+            engine = WhisperModel(str(model_path), device="cuda", compute_type="float16", local_files_only=True)
+            segments, info = engine.transcribe(str(recording), beam_size=1)
+            rows = list(segments)
+            text_length = sum(len(row.text.strip()) for row in rows)
+            if not rows or text_length == 0:
+                raise RuntimeError("CTranslate2 CUDA Whisper inference returned no nonempty transcript.")
+            result.update(identity=f"cuda:{gpu_name}", backend=f"torch:{torch.__version__}/ctranslate2:{ctranslate2.__version__}",
+                          device=gpu_name, actual_execution_device=gpu_name, inference_completed=True,
+                          success=True, torch_cuda_success=True, ctranslate2_cuda_success=True,
+                          fallback_decision="cuda-validated",
+                          measurements={"torch_cuda": torch.version.cuda, "ctranslate2_cuda_devices": cuda_devices,
+                                        "whisper_compute_type": "float16", "whisper_segments": len(rows),
+                                        "transcript_characters": text_length, "language": info.language,
+                                        "fixture_sha256": digest(recording)})
+        except Exception as exc:
+            result.update(success=False, inference_completed=False, duration_seconds=round(time.monotonic() - start, 4),
+                          error_code="cuda_runtime_unavailable",
+                          error="CUDA inference did not pass PyTorch, library, CTranslate2, and local Whisper checks; the controller should retain the validated CPU profile.",
+                          diagnostic=f"{type(exc).__name__}: {str(exc)[:180]}", fallback_decision="select-cpu-if-verified")
+            return result
     else:
         raise RuntimeError("Unknown trusted probe component.")
     result.update(success=True, duration_seconds=round(time.monotonic() - start, 4), host_architecture=platform.machine())
@@ -214,7 +264,7 @@ def main() -> int:
         with contextlib.redirect_stdout(sys.stderr):
             result = run(args.component)
         print(json.dumps(result, sort_keys=True))
-        return 0
+        return 0 if result.get("success") is True else 1
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"[:320]
         lower = message.lower()

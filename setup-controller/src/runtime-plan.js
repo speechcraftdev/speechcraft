@@ -14,8 +14,15 @@ export const PRODUCTION_STAGES = Object.freeze([
 ]);
 
 export function cudaProfileReady(recipe, gpuDetected, cudaProbe) {
-  return gpuDetected === true && recipe?.available === true && recipe?.validated === true
-    && cudaProbe?.success === true && cudaProbe?.torch === true && cudaProbe?.ctranslate2 === true;
+  return gpuDetected === true && recipe?.available === true
+    && cudaProbe?.schema_version === 1 && cudaProbe?.component === 'cuda'
+    && cudaProbe?.success === true && cudaProbe?.inference_completed === true
+    && cudaProbe?.torch_cuda_success === true && cudaProbe?.ctranslate2_cuda_success === true
+    && cudaProbe?.gpu_detected === true && typeof cudaProbe?.driver_identification === 'string'
+    && Boolean(cudaProbe.driver_identification.trim())
+    && typeof cudaProbe?.actual_execution_device === 'string' && Boolean(cudaProbe.actual_execution_device.trim())
+    && ['cublas', 'cudnn', 'cudart'].every((name) => cudaProbe?.required_libraries?.[name] === true)
+    && cudaProbe?.measurements?.whisper_segments > 0;
 }
 
 export function selectRuntimeProfile(host = hostEnvironment(), capabilities = {}) {
@@ -54,7 +61,9 @@ export function initialComponents() {
     worker_environment: runtimeManifest.worker.profiles['linux-x86_64-cpu'].available === true
       ? component('pending', `${runtimeManifest.worker.distribution}/linux-x86_64-cpu locked recipe`)
       : component('blocked', null, { code: 'runtime_profile_unavailable', message: runtimeManifest.worker.profiles['linux-x86_64-cpu'].reason }),
-    ffmpeg: component('blocked', null, { code: 'runtime_tool_unavailable', message: runtimeManifest.ffmpeg.reason }),
+    ffmpeg: runtimeManifest.ffmpeg?.available === true
+      ? component('pending', `FFmpeg ${runtimeManifest.ffmpeg.version}; pinned LGPL build`)
+      : component('blocked', null, { code: 'runtime_tool_unavailable', message: runtimeManifest.ffmpeg.reason }),
     silero: component('pending', 'manifest-pinned Silero ONNX'),
     whisper: component('pending', 'Whisper Large-v3; platform-selected format'),
     titanet: component('blocked', null, { code: 'model_release_blocked', message: runtimeManifest.models.blocked_roles.speaker_purity }),

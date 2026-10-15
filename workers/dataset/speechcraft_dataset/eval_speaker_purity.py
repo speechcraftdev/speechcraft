@@ -541,6 +541,7 @@ def evaluate_speaker_purity(
     target_speaker_id: str | None = None,
     model_name: str = DEFAULT_MODEL,
     config: SpeakerPurityConfig | None = None,
+    model_path: str | Path | None = None,
     max_clips: int | None = None,
     export_worst: int = 50,
     export_best: int = 20,
@@ -584,7 +585,7 @@ def evaluate_speaker_purity(
             "channel_mode": str(recipe.get("channel_mode") or "downmix"),
         }
 
-    model = load_titanet_model(model_name, device, config.get("speaker_purity_model_path"))
+    model = load_titanet_model(model_name, device, model_path)
     voiceprint, chunk_rows = build_sanitized_target_voiceprint(
         model,
         speaker_regions,
@@ -834,6 +835,7 @@ def run_speaker_purity(
         target_speaker_id=str(config.get("target_speaker_id") or "") or None,
         model_name=model,
         config=config_obj,
+        model_path=config.get("speaker_purity_model_path"),
         max_clips=None,
         export_worst=int(config.get("speaker_purity_export_worst") or 50),
         export_best=int(config.get("speaker_purity_export_best") or 20),

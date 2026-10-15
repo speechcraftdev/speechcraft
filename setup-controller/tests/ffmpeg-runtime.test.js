@@ -1,0 +1,71 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import test from 'node:test';
+import { RuntimeTasks } from '../src/runtime-tasks.js';
+
+const sha = (value) => createHash('sha256').update(value).digest('hex');
+
+function context(tasks, suffix = '00000000-0000-4000-8000-000000000001') {
+  return { attemptId: suffix, signal: new AbortController().signal,
+    componentStatus: tasks.initialBootstrapStatus(),
+    onComponentStatus(value) { this.componentStatus = value; }, onProgress() {},
+    async onChildProcess() {} };
+}
+
+test('managed FFmpeg installation verifies both pinned executables, reuses them, and repairs same-size corruption', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-ffmpeg-install-'));
+  const ffmpeg = Buffer.from('#!/bin/sh\n# fixture ffmpeg\n');
+  const ffprobe = Buffer.from('#!/bin/sh\n# fixture ffprobe\n');
+  const archiveBytes = Buffer.from('tiny trusted archive fixture');
+  let transfers = 0;
+  const artifact = { available: true, version: 'fixture-1', version_identity: 'fixture-1', release: 'test fixture',
+    source_revision: 'fixture-commit', url: 'https://github.com/example/ffmpeg/releases/download/fixture/archive.tar.xz',
+    file: 'archive.tar.xz', size_bytes: archiveBytes.length, sha256: sha(archiveBytes), tar_root: 'ffmpeg-fixture',
+    estimated_install_bytes: ffmpeg.length + ffprobe.length,
+    executables: { ffmpeg: { size_bytes: ffmpeg.length, sha256: sha(ffmpeg) },
+      ffprobe: { size_bytes: ffprobe.length, sha256: sha(ffprobe) } }, license: 'LGPL-3.0-or-later' };
+  const runtimeRecipe = { ffmpeg: artifact, disk_space: { safety_margin_bytes: 0 } };
+  const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, runtimeRecipe,
+    fetchImpl: async () => {
+      transfers += 1;
+      return new Response(archiveBytes, { status: 200, headers: { 'content-length': String(archiveBytes.length) } });
+    }, processRunner: async (executable, args) => {
+      if (args[0] === '-I' && args[1] === '-c') {
+        const target = args.at(-1);
+        fs.writeFileSync(path.join(target, 'ffmpeg'), ffmpeg, { mode: 0o600, flag: 'wx' });
+        fs.writeFileSync(path.join(target, 'ffprobe'), ffprobe, { mode: 0o600, flag: 'wx' });
+        fs.writeFileSync(path.join(target, 'COPYING.LGPLv3.txt'), 'fixture license');
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      const name = path.basename(executable);
+      return { code: 0, stdout: `${name} version fixture-1 Copyright\nconfiguration: --enable-version3 --disable-gpl --disable-nonfree\n`, stderr: '' };
+    } });
+  tasks.paths = Object.fromEntries(['home', 'temporary', 'uvCache', 'pythonRoot', 'hfHome', 'hfHub', 'hfXet', 'stagingRoot', 'quarantineRoot']
+    .map((key) => [key, path.join(root, key)]));
+  for (const value of Object.values(tasks.paths)) fs.mkdirSync(value, { recursive: true });
+  const first = context(tasks);
+  first.managedPython = '/managed/cpython';
+  await tasks.installManagedFfmpeg(first);
+  const installed = first.componentStatus.components.ffmpeg.path;
+  assert.equal(first.componentStatus.components.ffmpeg.state, 'files_verified');
+  assert.equal(transfers, 1);
+  assert.equal(await tasks.verifyFfmpegDirectory(installed, first), true);
+
+  const second = context(tasks, '00000000-0000-4000-8000-000000000002');
+  await tasks.installManagedFfmpeg(second);
+  assert.equal(transfers, 1, 'a verified installation is reused without a transfer');
+  assert.equal(second.componentStatus.components.ffmpeg.path, installed);
+
+  const executable = path.join(installed, 'ffmpeg');
+  fs.writeFileSync(executable, Buffer.alloc(ffmpeg.length, 0x21));
+  const repair = context(tasks, '00000000-0000-4000-8000-000000000003');
+  repair.managedPython = '/managed/cpython';
+  await tasks.installManagedFfmpeg(repair);
+  assert.equal(transfers, 2, 'a same-size corrupt executable triggers a verified repair');
+  assert.equal(repair.componentStatus.components.ffmpeg.state, 'files_verified');
+  assert.equal(await tasks.verifyFfmpegDirectory(installed, repair), true);
+  fs.rmSync(root, { recursive: true, force: true });
+});

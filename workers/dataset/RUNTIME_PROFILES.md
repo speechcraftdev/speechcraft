@@ -1,51 +1,85 @@
 # Linux processing runtime profiles
 
-SpeechCraft's Node setup controller installs the dataset worker from the trusted recipes in `runtime-profiles/`. The worker code is shared; the lock is selected by runtime profile. Both locks require the controller-managed CPython **3.12.15** and Linux x86-64. They pin PyTorch and torchaudio to the same **2.8.0** release, `pyannote.audio==4.0.3`, `faster-whisper==1.2.1`, `ctranslate2==4.7.2`, `onnxruntime==1.26.0`, `sherpa-onnx==1.13.8`, and `av==18.1.0`. PyAV 18.1 is intentional: PyAV 19 removed an argument currently used by faster-whisper 1.2.1.
+SpeechCraft's Node setup controller owns versioned Python environments, tools and model locations. It installs these from trusted lockfiles and runs inference probes in the selected managed worker interpreter. Runtime support is component-specific: installed files, a passing inference probe, and application production readiness are separate states.
 
-| Profile | Torch source | Status in this checkout |
+## Linux profiles
+
+| Profile | Recipe | Status |
 | --- | --- | --- |
-| `linux-x86_64-cpu` | Official PyTorch CPU wheel index | Installed and exercised on Linux CPU; see scope and blockers below |
-| `linux-x86_64-cuda` | Official PyTorch CUDA 12.8 wheel index (`torch==2.8.0+cu128`, `torchaudio==2.8.0+cu128`) | Recipe is pinned but remains unavailable: CUDA package set and end-to-end CUDA worker profile are not validated |
-| `macos-arm64` | None | Unavailable; no validated worker lock |
+| `linux-x86_64-cpu` | CPython 3.12.15; `runtime-profiles/linux-cpu/uv.lock` | Installed and exercised on Linux CPU. Silero, Whisper Large-v3, and local experimental TitaNet inference passed. The post-diarization worker flow passed with explicitly test-only reference speaker regions. |
+| `linux-x86_64-cuda` | CPython 3.12.15; `runtime-profiles/linux-cuda/uv.lock`; PyTorch/torchaudio 2.8.0 CUDA 12.8 | Validated on the development host's NVIDIA GeForce RTX 4060 Laptop GPU with driver 610.57.04. Controller installs it only as a candidate and selects it only after the torch CUDA operation, required library checks, CTranslate2 discovery, and actual local Large-v3 CUDA transcription all pass. Other hardware is revalidated during setup. |
+| `macos-arm64` | No validated worker lock | Unavailable; Apple Silicon runtime testing remains Kavin's follow-up. |
 
-The runtime manifest records the project and lock SHA-256 digests. The controller rejects any mismatch and checks the managed interpreter and imports after `uv sync --locked`. Do not edit a lock without updating its trusted digest and rerunning validation. CPU and CUDA profiles are separate locks: a resolver override is not used to force incompatible PyTorch/torchaudio constraints. Pyannote 4.0.3 resolved with Torch/Torchaudio 2.8.0 without a compatibility override.
+The CPU and CUDA locks pin PyTorch and torchaudio together at 2.8.0, pyannote.audio 4.0.3, faster-whisper 1.2.1, CTranslate2 4.7.2, ONNX Runtime 1.26.0, sherpa-onnx 1.13.8 and PyAV 18.1.0. PyAV 18.1 is intentional because faster-whisper 1.2.1 uses an API removed in PyAV 19. Pyannote 4.0.3 resolves against Torch/Torchaudio 2.8.0 without a compatibility override. Recipe lock and project digests are pinned in `setup-controller/resources/runtime-manifest.json`; the controller refuses a changed file.
 
-GPU visibility is only a candidate signal. The controller queries `nvidia-smi` for GPU name and driver, but keeps the CPU profile selected unless the trusted CUDA recipe is marked available and validated and separate PyTorch and CTranslate2 inference probes succeed. A Torch tensor test does not prove Whisper/CTranslate2 or pyannote CUDA works. If validation fails, a job must restart using the separately validated CPU environment; an active dataset job never changes device mid-run.
+CUDA is never selected from GPU visibility alone. The setup probe separately records driver identity, Torch execution, CUDA library availability and a real CTranslate2/Whisper inference. This host's managed CUDA candidate passed with Torch 2.8.0+cu128, torchaudio 2.8.0+cu128, CUDA runtime 12.8, CTranslate2 4.7.2, one detected CTranslate2 CUDA device, and a three-segment/283-character transcription from the pinned local Large-v3 model using float16 in 6.14 seconds. The previously observed missing `libcublas.so.12` was resolved by the pinned CUDA wheel dependencies in the managed environment and a controlled `LD_LIBRARY_PATH` assembled only from that environment's `nvidia/*/lib` packages; no system CUDA installation or symlink was used. If a future report is incomplete or fails, the already validated CPU environment remains selected; an active dataset job does not switch devices.
 
-## Paths and offline model loading
+The controller's current free-space estimates are 10 GiB for the CPU worker environment and 16 GiB for the CUDA candidate, each plus the 512 MiB safety margin. The model manager separately estimates model transfers/cache space; the pinned Whisper Large-v3 files occupy about 3.1 GB after installation. The FFmpeg archive is about 131 MiB and its two installed executables together are about 271 MiB. These are installation estimates rather than a promise about dataset scratch-space needs. No general minimum RAM figure is claimed; actual inference resource limits must be established on supported deployment hardware.
 
-The controller owns versioned environments under its persistent `environments/` directory. The model manager's verified artifacts remain under the independent persistent `models/` directory. Backend launch receives model locations and the selected model platform from verified controller component state. In managed mode, the worker requires local Silero and Whisper paths, verifies the catalog inventory and hashes before processing, forces `large-v3`, and enables Hugging Face/Transformers offline behavior. It does not fall back to arbitrary user caches or download weights during processing.
+## FFmpeg and FFprobe
 
-The frozen VR O0_4 slicer continues to use the official Silero ONNX wrapper and its existing thresholds and packing behavior. Managed mode supplies the model-manager ONNX file explicitly; development mode retains the existing `silero-vad` package behavior.
+The Linux x86-64 runtime recipe pins BtbN release `autobuild-2026-10-14-13-03`, artifact SHA-256 `602ca2985139dbab87e0d7c70f48afc69548060463dcfab44c0e5f50ebe39df8`, and matching executable hashes in the trusted manifest. The selected build identifies FFmpeg source revision `46d899d7a02bc63237472cc4897258d5ddf274ac`, reports LGPL-3.0-or-later with `--enable-version3`, and has no `--enable-gpl`/`--enable-nonfree` flags. The controller streams and verifies the archive, extracts only the paired binaries plus the license text into a versioned managed tools directory, checks both binary hashes/version identity, then runs the audio decode probe. Managed workers resolve the explicit `SPEECHCRAFT_FFMPEG_BIN` and `SPEECHCRAFT_FFPROBE_BIN`; they do not fall back to PATH.
 
-Speaker Purity's development adapter can load a local sherpa-onnx TitaNet-Large ONNX file when the explicit experimental environment flag is set. Its values are tagged uncalibrated and cannot be automatically accepted/rejected with historical NeMo cutoffs. The model's provenance and redistribution blocker remains in force; production setup must not enable that flag.
+The archive was installed into a fresh isolated data root and the pinned pair decoded the bundled 18-second MP3 to 16 kHz mono PCM: 288,000 samples, 18.0 seconds. The `ffprobe` duration and decoded duration matched. Reuse is covered by offline controller tests. See [`FFMPEG-LICENSE-NOTICE.md`](../../setup-controller/resources/FFMPEG-LICENSE-NOTICE.md) for the source/build references and remaining product legal review. Artifact integrity and local execution do not themselves grant redistribution permission or resolve codec patent questions.
 
-Community-1 inference requires an authorized local snapshot. No snapshot or gated authorization is included in this change. The worker must report the missing local model rather than substituting a diarizer. FFmpeg/FFprobe paths are explicit in managed mode, but this checkout has no trusted, license-cleared prebuilt artifact recipe; the controller leaves the tool blocked and processing unavailable rather than trusting PATH or requiring apt/Homebrew.
+## Models, paths and offline processing
 
-## Runtime probes and validation
+The model manager's verified files are authoritative under the persistent SpeechCraft model root, separate from versioned application and Python environments. The controller supplies verified local Whisper Large-v3 CTranslate2 and Silero ONNX paths. The worker verifies their inventory and hashes, forces Large-v3, and uses the same local Whisper path for transcription and Transcript Correctness. Managed mode sets Hugging Face offline flags; it does not search user caches or download during dataset processing. FFmpeg and FFprobe are resolved through the controller-provided executable paths.
 
-`scripts/runtime_probe.py` implements JSON probes for managed FFmpeg/FFprobe, Silero ONNX, local Whisper Large-v3, experimental TitaNet, local Community-1, and CUDA. The setup controller invokes the probes through the trusted worker interpreter, with offline Hugging Face settings and only controller-verified model paths. A local intelligible WAV may be supplied to the controller process as `SPEECHCRAFT_RUNTIME_PROBE_AUDIO`; it is not accepted through the browser API or persisted. Probe failures remain per-component blockers, and do not mark `production_ready`.
+The frozen VR O0_4 slicer retains its existing Silero ONNX wrapper, thresholds, segmentation and packing math. In managed mode it loads the model manager's ONNX file directly. It does not add a new VAD pass to the production pipeline. TitaNet runs through sherpa-onnx on CPU only when the explicit experimental opt-in is set; scores identify `sherpa-onnx` and `pending_evaluation`, and old NeMo-calibrated rejection thresholds are not used. Its artifact remains blocked for public release pending checkpoint provenance, use rights and redistribution/attribution evidence.
 
-On the current Linux x86-64 host, managed CPU-profile Silero inference passed (250 finite frames). Managed CPU-profile Whisper Large-v3 inference passed offline against the verified model (1 segment, nonempty transcript, 15.36 seconds on the probe run; transcript omitted). A CUDA candidate exists (RTX 4060, driver 610.57.04), but CTranslate2 GPU inference was attempted against the verified Large-v3 model and failed because `libcublas.so.12` could not be loaded. The existing worker environment has CPU-only PyTorch. CUDA is therefore **not validated or selectable**. No authorized Community-1 snapshot was available. No managed FFmpeg binary was available, so the real FFmpeg decode probe and full worker run remain blocked. macOS and WSL2 were not executed.
+Community-1 still requires a legitimate, authorized local snapshot. This stage does not download the gated model, bypass access terms, or substitute a diarizer. Full production processing/readiness remains blocked until the authorization milestone and genuine Community-1 inference are complete.
 
-FFmpeg provisioning remains deliberately blocked. FFmpeg upstream explains that optional GPL components change the resulting license and its LGPL distribution checklist calls for exact corresponding source/configuration and dynamic linking (see [FFmpeg legal considerations](https://ffmpeg.org/legal.html)). BtbN publishes a pinned LGPL-labelled Linux build, but it is a third-party static bundle and the available metadata does not establish SpeechCraft's exact redistribution/compliance obligations or provide a verified immutable archive digest suitable for our trusted recipe. SpeechCraft must not promote `/usr/bin/ffmpeg` or download an arbitrary static build. Release work must choose an audited build, pin asset identity and digest, retain matching source/configure materials and notices, and obtain licensing approval before setting `ffmpeg.available` true.
+## Probe fixtures and protocol
 
-Use these commands for offline worker checks after preparing the locked environment:
+The controller's trusted `speechcraft-runtime-probe-v1` recipes invoke `scripts/runtime_probe.py` with the worker or candidate CUDA interpreter. The small checked-in CC0 fixtures are pinned by both the runtime catalog and helper integrity checks: `speech.wav` for speech-positive Whisper/TitaNet inference, `speech-silence.wav` for speech and silence Silero behavior, and `speech-compressed.mp3` for FFmpeg decode. Attribution, derivative details and hashes are in [`runtime-fixtures/README.md`](runtime-fixtures/README.md). Tests and normal installation do not fetch fixture audio.
+
+Probe output is JSON with schema version, component/model identity, backend, device, duration, output measurements, and a safe error code/message. FFmpeg decode, Silero positive speech response, Whisper transcript, TitaNet 192-dimensional embedding and CUDA Large-v3 inference are genuine operations; a successful import is not enough. TitaNet's runtime test is an explicit developer experiment and does not clear its release blocker. Pyannote reports a missing/unauthorized local snapshot as a blocker.
+
+## Reproduce checks
+
+Offline controller tests:
 
 ```sh
-cd workers/dataset
-uv sync --locked --project runtime-profiles/linux-cpu
-python -m pytest -q
+cd setup-controller
+npm test
 ```
 
-For controller installation, use the real setup-controller runtime plan and its trusted `install_worker_environment` stage; do not manually create or activate a global Python environment. To run a real local probe, point the controller process at a short intelligible recording with `SPEECHCRAFT_RUNTIME_PROBE_AUDIO=/absolute/path/to/speech.wav`; use the authenticated setup job and inspect component status. Runtime inference is not declared ready by an environment import probe.
+Managed worker tests use the managed worker's locked runtime packages plus an isolated pytest runner (pytest is test tooling, not a production worker dependency):
 
-## Release blockers and next runtime work
+```sh
+WORKER_ENV=/absolute/path/to/managed/worker/environment
+TEST_TOOLS=/absolute/path/to/isolated/pytest/environment
+PYTHONPATH="$PWD/workers/dataset:$WORKER_ENV/lib/python3.12/site-packages" \
+PYTHONNOUSERSITE=1 "$TEST_TOOLS/bin/python" -m pytest -q workers/dataset/tests
+```
 
-1. Provision a trusted Linux FFmpeg/FFprobe artifact with a verified digest and accepted redistribution terms; then run the managed decode/probe helper through the controller.
-2. Obtain legitimate Community-1 access and a pinned local snapshot, then implement and run actual CPU diarization. Validate CUDA diarization separately if hardware is available.
-3. Run and validate the checked-in trusted helpers for Silero, Whisper, TitaNet, Community-1, and FFmpeg with approved local artifacts; currently only Silero and Whisper have passed actual inference on this host.
-4. Run a real end-to-end dataset job only after diarization and managed FFmpeg are available. Verify output files and project/export schemas, not only worker exit status.
-5. Validate the CUDA profile and actual CTranslate2/PyTorch/pyannote inference on a compatible NVIDIA host. If CUDA execution fails, use CPU only after validating the CPU runtime for the requested operation.
-6. Preserve TitaNet's provenance/redistribution blocker until its source checkpoint and license are resolved and score calibration is evaluated.
-7. Validate Apple Silicon worker compatibility separately; this Linux lock does not establish MLX or macOS inference support.
+The real post-diarization smoke uses only the checked-in CC0 fixture and injects an explicitly labelled speaker interval through a test-only harness. It runs actual FFmpeg normalization, local Silero O0_4 slicing, Whisper transcription and TC, experimental sherpa-onnx TitaNet/SP/QC, and canonical export. It does not run or claim production diarization:
+
+```sh
+SPEECHCRAFT_TEST_ONLY_REFERENCE_REGIONS=1 \
+SPEECHCRAFT_MANAGED_RUNTIME=1 \
+SPEECHCRAFT_MODEL_PLATFORM=linux-x86_64 \
+SPEECHCRAFT_MODEL_ROOT=/absolute/verified/model/root \
+SPEECHCRAFT_ASR_MODEL_PATH=/absolute/verified/whisper/path \
+SPEECHCRAFT_SILERO_MODEL_DIR=/absolute/verified/silero/model/directory \
+SPEECHCRAFT_SILERO_ONNX_PATH=/absolute/verified/silero/path/silero_vad.onnx \
+SPEECHCRAFT_TITANET_ONNX_PATH=/local/experimental/nemo_en_titanet_large.onnx \
+SPEECHCRAFT_EXPERIMENTAL_TITANET=1 \
+SPEECHCRAFT_FFMPEG_BIN=/absolute/managed/tools/ffmpeg \
+SPEECHCRAFT_FFPROBE_BIN=/absolute/managed/tools/ffprobe \
+SPEECHCRAFT_ASR_DEVICE=cpu HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_IMPLICIT_TOKEN=1 \
+/absolute/managed/worker/bin/python -I workers/dataset/scripts/downstream_reference_regions_smoke.py \
+  --run-root /tmp/speechcraft-reference-regions-smoke
+```
+
+Use a fresh isolated run root. The script refuses to execute unless both the test-only annotation flag and managed-runtime mode are set. Do not route its reference annotations into production jobs.
+
+## Current validation and blockers
+
+- **Linux CPU:** managed CPU worker environment was already installed in a separate SpeechCraft-managed runtime root and used for the real probes and downstream smoke. Silero and Whisper probes passed; TitaNet produced a finite 192-dimensional normalized embedding with repeat cosine 1.0 under explicit experimental opt-in. The downstream worker produced candidate clips, finite TC/SP values, QC artifacts and export files using test-only annotated regions.
+- **Managed FFmpeg:** a clean versioned install from the pinned archive completed in an isolated root. Both binaries passed archive/executable digest and version checks; actual fixture decode passed. No system FFmpeg was used.
+- **CUDA:** validated on this Linux host with an NVIDIA RTX 4060 Laptop GPU and driver 610.57.04. The actual controller runtime probe passed PyTorch CUDA execution, cuBLAS/cuDNN/cuDART discovery, CTranslate2 CUDA discovery, and local Large-v3 transcription. This evidence covers this hardware/driver combination; other GPU combinations are checked dynamically. Native WSL2 and macOS are not tested.
+- **Pyannote:** no authorized Community-1 snapshot is available in this environment. CPU/CUDA Community-1 inference and a genuine pyannote-first full dataset run are not validated.
+- **Release:** TitaNet checkpoint provenance/rights and FFmpeg product legal review remain blockers. Therefore `production_ready` remains false even when the tested CPU/downstream components pass.
+- **Platforms:** Linux x86-64 CPU and CUDA were exercised here. WSL2 filesystem policy tests are simulated unit tests; native WSL and macOS were not tested.
