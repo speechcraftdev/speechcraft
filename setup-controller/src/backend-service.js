@@ -8,6 +8,30 @@ import { validateManagedStorage } from './platform.js';
 
 const START_TIMEOUT_MS = 30_000;
 const POLL_MS = 250;
+const CHILD_CLOSE_CONFIRM_MS = 2_000;
+
+function childCloseConfirmed(child) {
+  return Boolean(child?.closed || child?.exitCode !== null || child?.signalCode !== null);
+}
+
+function waitForChildClose(child, timeoutMs = CHILD_CLOSE_CONFIRM_MS) {
+  if (childCloseConfirmed(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (closed) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener('close', onClose);
+      resolve(closed || childCloseConfirmed(child));
+    };
+    const onClose = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once('close', onClose);
+    // Close may have fired between the initial check and listener install.
+    if (childCloseConfirmed(child)) finish(true);
+  });
+}
 
 function freeLoopbackPort() {
   return new Promise((resolve, reject) => {
@@ -137,7 +161,14 @@ export class BackendService {
       // The gate has not been released, so no backend writer can run. Closing
       // stdin causes the child to exit without touching application state.
       child.stdin.destroy();
-      try { await new Promise((resolve) => child.once('close', resolve)); } catch {}
+      const closed = await waitForChildClose(child);
+      if (!closed) {
+        // Keep the durable launch intent and process reference. A later
+        // controller must reconcile this gated child before another launch.
+        throw Object.assign(new Error('Backend launch ownership could not be persisted and its gated child has not exited; retry is blocked until reconciliation.'), {
+          code: 'BACKEND_LAUNCH_TERMINATION_UNCERTAIN', cause: error,
+        });
+      }
       throw Object.assign(new Error('Could not persist backend process ownership before launch.'), { code: 'BACKEND_OWNERSHIP_PERSIST_FAILED', cause: error });
     }
     child.once('exit', () => { void this.handleExit(record); });
@@ -179,10 +210,10 @@ export class BackendService {
     try { await terminateRecoveredProcess(record); }
     catch (error) { this.stopping = false; throw error; }
     if (this.child && this.child.pid === record.pid) {
-      await new Promise((resolve) => {
-        if (this.child.exitCode !== null || this.child.signalCode !== null) return resolve();
-        this.child.once('close', resolve);
-      });
+      if (!await waitForChildClose(this.child)) {
+        this.stopping = false;
+        throw Object.assign(new Error('The backend process group stopped, but the child close event was not confirmed; ownership is retained.'), { code: 'BACKEND_CHILD_CLOSE_UNCONFIRMED' });
+      }
     }
     await this.clear();
     this.stopping = false;

@@ -57,6 +57,32 @@ test('backend service is a managed process group, requires health, and stops cle
   }
 });
 
+test('startup cleanup does not wait forever when the child close event preceded cleanup', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-backend-early-exit-'));
+  const data = path.join(root, 'data');
+  const bin = path.join(data, 'environments', 'backend', 'bin');
+  const runtimeBin = path.join(data, 'runtimes', 'fixture', 'bin');
+  const appRoot = path.join(root, 'release');
+  fs.mkdirSync(bin, { recursive: true }); fs.mkdirSync(runtimeBin, { recursive: true });
+  fs.mkdirSync(path.join(appRoot, 'backend'), { recursive: true });
+  const executable = path.join(bin, 'python');
+  const real = path.join(runtimeBin, 'python-real');
+  fs.writeFileSync(real, '#!/usr/bin/env node\nprocess.stdin.once("data",()=>process.exit(9));\n', { mode: 0o755 });
+  fs.symlinkSync(real, executable);
+  const store = StateStore.open(path.join(root, 'state'));
+  const service = new BackendService({ store, dataDirectory: data, applicationRoot: appRoot,
+    environment: { profile: 'linux-x86_64' }, pythonPath: executable,
+    environmentVars: { PATH: process.env.PATH }, attemptId: 'e45b248e-667a-42ca-9338-b44533d5eaca' });
+  try {
+    await assert.rejects(service.start(new AbortController().signal), { code: 'BACKEND_START_FAILED' });
+    assert.equal(store.snapshot().service_process, null, 'confirmed early child exit must release ownership');
+  } finally {
+    await service.stop().catch(() => {});
+    store.releaseOwnership();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('recovery stops an owned backend after controller restart', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-backend-recovery-'));
   const data = path.join(root, 'data');
