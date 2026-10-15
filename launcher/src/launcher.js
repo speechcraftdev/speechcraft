@@ -115,7 +115,36 @@ function readBootstrapCredential(dataDirectory) {
   return token;
 }
 
-async function getControllerStatus(dataDirectory) {
+export function readOrCreateFrontendIdentity(dataDirectory) {
+  const filename = path.join(dataDirectory, 'frontend.identity');
+  try {
+    const info = fs.lstatSync(filename);
+    if (!info.isFile() || info.isSymbolicLink() || (typeof process.getuid === 'function' && info.uid !== process.getuid())
+        || (info.mode & 0o077) !== 0 || info.size !== 44 || fs.realpathSync(filename) !== filename) {
+      throw new Error('The private frontend identity file is unsafe.');
+    }
+    const identity = fs.readFileSync(filename, 'ascii').trim();
+    if (!/^[A-Za-z0-9_-]{43}$/.test(identity)) throw new Error('The private frontend identity file is malformed.');
+    return identity;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const identity = crypto.randomBytes(32).toString('base64url');
+  const temporary = path.join(dataDirectory, `.frontend.identity-${crypto.randomUUID()}`);
+  const descriptor = fs.openSync(temporary, 'wx', 0o600);
+  try { fs.writeFileSync(descriptor, `${identity}\n`, 'ascii'); fs.fsyncSync(descriptor); }
+  finally { fs.closeSync(descriptor); }
+  try { fs.linkSync(temporary, filename); }
+  catch (error) {
+    fs.unlinkSync(temporary);
+    if (error.code === 'EEXIST') return readOrCreateFrontendIdentity(dataDirectory);
+    throw error;
+  }
+  fs.unlinkSync(temporary);
+  return identity;
+}
+
+async function getControllerSession(dataDirectory) {
   const origin = `http://${LOOPBACK}:${CONTROLLER_PORT}`;
   const token = readBootstrapCredential(dataDirectory);
   try {
@@ -127,13 +156,77 @@ async function getControllerStatus(dataDirectory) {
     if (!cookie) throw new Error('The local controller did not establish its private session.');
     const csrf = await session.json();
     if (typeof csrf.csrf_token !== 'string') throw new Error('The local controller session response was invalid.');
-    const response = await fetch(`${origin}/setup-api/status`, { headers: { host: `${LOOPBACK}:${CONTROLLER_PORT}`, cookie }, cache: 'no-store' });
-    if (!response.ok) throw new Error('The local controller status could not be read.');
-    return response.json();
+    const response = await fetch(`${origin}/setup-api/status`, { headers: { host: `${LOOPBACK}:${CONTROLLER_PORT}`, cookie }, cache: 'no-store', signal: AbortSignal.timeout(2_000) });
+    if (response.status === 401) throw Object.assign(new Error('The setup controller rejected its newly established launcher session.'), { code: 'CONTROLLER_AUTH_FAILED' });
+    if (!response.ok) throw Object.assign(new Error(`The authenticated controller status request failed with HTTP ${response.status}.`), { code: 'CONTROLLER_STATUS_FAILED' });
+    return { cookie, csrf: csrf.csrf_token, status: await response.json() };
   } finally {
     // JavaScript strings cannot be reliably zeroed; keep the secret short-lived
     // and never emit it to logs, arguments, or persistent launcher state.
   }
+}
+
+async function requestServiceRestore(session) {
+  const origin = `http://${LOOPBACK}:${CONTROLLER_PORT}`;
+  const response = await fetch(`${origin}/setup-api/services/restore`, { method: 'POST', headers: {
+    host: `${LOOPBACK}:${CONTROLLER_PORT}`, origin, cookie: session.cookie,
+    'content-type': 'application/json', 'x-speechcraft-csrf': session.csrf,
+  }, body: '{}', cache: 'no-store', signal: AbortSignal.timeout(2_000) });
+  if (response.status === 401) throw Object.assign(new Error('The setup controller session expired before service restoration.'), { code: 'CONTROLLER_AUTH_FAILED' });
+  if (!response.ok) throw Object.assign(new Error(`The controller refused managed-service restoration (HTTP ${response.status}).`), { code: 'BACKEND_RESTORE_FAILED' });
+  const result = await response.json();
+  if (result.accepted !== true) throw Object.assign(new Error('The controller did not acknowledge managed-service restoration.'), { code: 'BACKEND_RESTORE_FAILED' });
+  return result;
+}
+
+async function getAuthenticatedStatus(session) {
+  const origin = `http://${LOOPBACK}:${CONTROLLER_PORT}`;
+  const response = await fetch(`${origin}/setup-api/status`, { headers: {
+    host: `${LOOPBACK}:${CONTROLLER_PORT}`, cookie: session.cookie,
+  }, cache: 'no-store', signal: AbortSignal.timeout(2_000) });
+  if (response.status === 401) throw Object.assign(new Error('The controller session expired while checking restored services.'), { code: 'CONTROLLER_AUTH_FAILED' });
+  if (!response.ok) throw Object.assign(new Error(`Authenticated controller status failed with HTTP ${response.status}.`), { code: 'CONTROLLER_STATUS_FAILED' });
+  return response.json();
+}
+
+export async function verifyFrontendOwnership(origin, identity, processHandle = null) {
+  const publicResponse = await fetch(`${origin}/api/speechcraft-launcher/health`, {
+    cache: 'no-store', signal: AbortSignal.timeout(1_000),
+  });
+  if (!publicResponse.ok) throw new Error('Frontend is not responding.');
+  const publicHealth = await publicResponse.json();
+  if (publicHealth.service !== 'speechcraft-frontend') throw new Error('Unexpected frontend service response.');
+  const challenge = crypto.randomBytes(32).toString('base64url');
+  const privateResponse = await fetch(`${origin}/api/speechcraft-launcher/verify`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ challenge }), cache: 'no-store',
+    signal: AbortSignal.timeout(1_000),
+  });
+  let proof = null;
+  try { proof = (await privateResponse.json()).proof; } catch {}
+  const expected = crypto.createHmac('sha256', Buffer.from(identity, 'base64url')).update(challenge).digest('base64url');
+  if (privateResponse.status !== 200 || typeof proof !== 'string'
+      || !/^[A-Za-z0-9_-]{43}$/.test(proof)
+      || !crypto.timingSafeEqual(Buffer.from(proof), Buffer.from(expected))) {
+    if (processHandle) throw Object.assign(new Error('The launched frontend did not prove its private installation identity.'), { code: 'FRONTEND_IDENTITY_MISMATCH' });
+    throw new Error('Private frontend identity did not match.');
+  }
+  return true;
+}
+
+async function waitForRestoration(session, timeoutMs = STARTUP_TIMEOUT_MS, signal = null) {
+  const deadline = Date.now() + timeoutMs;
+  let latest;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw Object.assign(new Error('SpeechCraft startup was interrupted.'), { code: 'LAUNCH_CANCELLED' });
+    latest = await getAuthenticatedStatus(session);
+    const backend = latest.components?.backend_service;
+    if (backend?.verification === 'internal_health_identity') return { status: latest, ready: true, warning: null };
+    if (['failed', 'blocked'].includes(backend?.state)) return { status: latest, ready: false,
+      warning: backend.message || 'Managed backend restoration is blocked; use /setup to inspect and repair this installation.' };
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return { status: latest, ready: false,
+    warning: 'Managed service restoration is still pending. SpeechCraft has not confirmed processing readiness; open /setup to inspect status.' };
 }
 
 function launch(executable, args, { cwd, env, label }) {
@@ -209,6 +302,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   dataDirectory = fs.realpathSync(dataDirectory);
   validateManagedStorageTargets(hostEnvironment(), [dataDirectory]);
   const installId = crypto.createHash('sha256').update(`${dataDirectory}\0linux\0x64`).digest('hex');
+  const frontendIdentity = readOrCreateFrontendIdentity(dataDirectory);
   const appOrigin = `http://${LOOPBACK}:${FRONTEND_PORT}`;
   const controllerOrigin = `http://${LOOPBACK}:${CONTROLLER_PORT}`;
   const common = { ...env, SPEECHCRAFT_SETUP_DATA_DIR: dataDirectory,
@@ -245,7 +339,8 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     try { await fetch(`${controllerOrigin}/setup-api/health`, { signal: AbortSignal.timeout(1_000) }).then((r) => { if (!r.ok) throw new Error(); }); }
     catch { throw new Error('Setup controller port 4317 is occupied by an unrelated listener; SpeechCraft will not stop it.'); }
   }
-  const status = await getControllerStatus(dataDirectory);
+  const controllerSession = await getControllerSession(dataDirectory);
+  const status = controllerSession.status;
   const expectedMode = options.simulated ? 'simulated' : 'runtime';
   if (status.mode !== expectedMode) throw new Error(`The running controller is in ${status.mode} mode, but this launch requested ${expectedMode}; stop it safely before retrying.`);
 
@@ -259,34 +354,25 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
         SPEECHCRAFT_SETUP_CONTROLLER_URL: controllerOrigin,
         SPEECHCRAFT_SETUP_BOOTSTRAP_FILE: path.join(dataDirectory, 'bootstrap.token'),
         SPEECHCRAFT_SETUP_ALLOWED_APP_ORIGINS: `${appOrigin},http://localhost:${FRONTEND_PORT}`,
-        SPEECHCRAFT_LAUNCHER_INSTALL_ID: installId } });
+        SPEECHCRAFT_LAUNCHER_INSTALL_ID: installId,
+        SPEECHCRAFT_LAUNCHER_PRIVATE_IDENTITY: frontendIdentity } });
     children.push(frontendHandle);
     await frontendHandle.ready;
-    await waitFor(frontendHealth, async (response) => {
-      if (!response.ok) return false;
-      const value = await response.json();
-      return value.service === 'speechcraft-frontend' && value.installation_id === installId;
-    }, STARTUP_TIMEOUT_MS, signal, frontendHandle);
+    await waitFor(frontendHealth, async (response) => response.ok, STARTUP_TIMEOUT_MS, signal, frontendHandle);
+    await verifyFrontendOwnership(appOrigin, frontendIdentity, frontendHandle);
   } else {
-    try {
-      const response = await fetch(frontendHealth, { signal: AbortSignal.timeout(1_000) });
-      const value = await response.json();
-      if (!response.ok || value.service !== 'speechcraft-frontend' || value.installation_id !== installId) throw new Error();
-    } catch { throw new Error('Frontend port 3002 is occupied by a different or unverified application; SpeechCraft will not stop it.'); }
+    try { await verifyFrontendOwnership(appOrigin, frontendIdentity, null); }
+    catch { throw new Error('Frontend port 3002 is occupied by a different or unverified application; SpeechCraft will not stop it.'); }
   }
   const route = chooseDestination(status.onboarding);
   // An already onboarded installation gets an opportunity to restore its
   // managed backend. If it remains unhealthy, the normal UI still opens and
   // its repair notice points to /setup; the launcher never starts a download.
   if (status.onboarding?.completed) {
-    try {
-      await waitFor(`${controllerOrigin}/setup-api/status`, async (response) => {
-        if (!response.ok) return false;
-        const latest = await response.json();
-        return latest.components?.backend_service?.verification === 'internal_health_identity'
-          || latest.components?.backend_service?.state === 'failed';
-      }, 20_000, signal);
-    } catch { /* Show the local UI and its current repair state. */ }
+    await requestServiceRestore(controllerSession);
+    const restoration = await waitForRestoration(controllerSession, STARTUP_TIMEOUT_MS, signal);
+    controllerSession.status = restoration.status || status;
+    if (!restoration.ready) console.error(`SpeechCraft repair required: ${restoration.warning}`);
   }
   const url = `${appOrigin}${route}`;
   onUrl(url);
@@ -295,7 +381,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     catch { console.log(`Could not open a browser. Open ${url} manually.`); }
   }
   const unexpected = Promise.race(children.map((child) => child.exit.then((result) => ({ child, result }))));
-  return { url, status, children, shutdown, unexpected, get shuttingDown() { return shuttingDown; },
+  return { url, status: controllerSession.status, children, shutdown, unexpected, get shuttingDown() { return shuttingDown; },
     ownedChildren: children.length, reusedController: !controllerHandle, reusedFrontend: !frontendHandle };
   } catch (error) {
     try { await shutdown(); } catch (cleanupError) {

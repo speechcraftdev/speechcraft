@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { SETUP_STAGES, SimulatedTasks } from './simulated-tasks.js';
+import { evaluateRuntimeReadiness } from './runtime-plan.js';
 
 export const JOB_STATES = Object.freeze([
   'idle', 'running', 'waiting_for_user', 'failed', 'cancelled', 'interrupted', 'completed',
@@ -431,8 +432,9 @@ export class SetupController {
           // First-run completion is recorded only by a real runtime plan after
           // the authoritative component evaluator has accepted every required
           // technical prerequisite. Simulated completion never sets it.
+          const readiness = evaluateRuntimeReadiness(state.job.bootstrap_status?.components || {});
           if (state.job.mode === 'runtime' && state.job.plan_id === 'speechcraft-runtime-v1'
-              && state.job.bootstrap_status?.technical_processing_ready === true
+              && readiness.technical_ready
               && state.job.bootstrap_status?.components?.backend_service?.verification === 'internal_health_identity') {
             const profile = state.job.bootstrap_status.runtime_profile?.workerProfile
               || state.job.bootstrap_status.runtime_profile?.profile || 'unknown';

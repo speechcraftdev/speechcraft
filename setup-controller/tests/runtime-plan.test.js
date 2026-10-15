@@ -213,6 +213,63 @@ test('an interrupted CUDA candidate environment is quarantined and reinstalled f
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('restart recovery recognizes the previously validated CUDA environment without reinstalling it', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-cuda-recovery-'));
+  const applicationRoot = path.resolve('..');
+  const recipe = runtimeManifest.worker.profiles['linux-x86_64-cuda'];
+  const target = path.join(root, 'environments', 'worker', `v${recipe.environment_version}-${recipe.lock_sha256.slice(0, 16)}-linux-x86_64-cuda`);
+  const python = path.join(target, 'bin', 'python');
+  fs.mkdirSync(path.dirname(python), { recursive: true }); fs.writeFileSync(python, 'fixture interpreter', { mode: 0o700 });
+  const libraryRoot = path.join(target, 'lib/python3.12/site-packages/nvidia');
+  const libraryPaths = [];
+  for (const [packageName, filename] of [['cublas', 'libcublas.so.12'], ['cudnn', 'libcudnn.so.9'], ['cuda_runtime', 'libcudart.so.12']]) {
+    const directory = path.join(libraryRoot, packageName, 'lib');
+    fs.mkdirSync(directory, { recursive: true }); fs.writeFileSync(path.join(directory, filename), 'validated-library-fixture');
+    libraryPaths.push(directory);
+  }
+  let installCommands = 0;
+  const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot,
+    processRunner: async (_executable, args) => {
+      assert.equal(args[0], '-I');
+      const program = args[2];
+      if (program.includes('SPEECHCRAFT_WORKER_ENV_PROBE')) return { code: 0,
+        stdout: JSON.stringify({ kind: 'SPEECHCRAFT_WORKER_ENV_PROBE', profile: 'linux-x86_64-cuda', missing: [] }), stderr: '' };
+      if (program.includes('pathlib')) return { code: 0, stdout: libraryPaths.join(':'), stderr: '' };
+      installCommands += 1;
+      throw new Error('profile recovery must not run an installation command');
+    } });
+  tasks.environment = { profile: 'linux-x86_64', os: 'linux', architecture: 'x86_64', wsl: false };
+  tasks.paths = { home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
+  const recovered = await tasks.verifyExistingWorkerProfile('linux-x86_64-cuda', {
+    attemptId: 'fixture', signal: new AbortController().signal, onChildProcess: () => true,
+  });
+  assert.equal(recovered.profile, 'linux-x86_64-cuda');
+  assert.equal(recovered.target, target);
+  assert.deepEqual(recovered.libraryPaths, libraryPaths);
+  assert.equal(installCommands, 0, 'ordinary restart only verifies; it does not run uv sync');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('startup and launcher restore requests share one restore and a healthy result is reused', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-restore-once-'));
+  const tasks = new RuntimeTasks({ dataDirectory: root });
+  const state = { job: { attempt_id: 'runtime-attempt-1', bootstrap_status: { components: {
+    backend_service: { state: 'verified', verification: 'internal_health_identity' },
+  } } } };
+  tasks.store = { snapshot: () => structuredClone(state) };
+  tasks.service = { child: { exitCode: null, signalCode: null } };
+  let executions = 0;
+  tasks.performManagedServiceRestore = async () => { executions += 1; await new Promise((resolve) => setTimeout(resolve, 5)); return { restored: true }; };
+  const [first, second] = await Promise.all([tasks.restoreManagedServices(), tasks.restoreManagedServices()]);
+  assert.equal(first.restored, true); assert.equal(second.restored, true);
+  assert.equal((await tasks.restoreManagedServices()).restored, true);
+  assert.equal(executions, 1, 'the explicit launcher request reuses the startup restoration');
+  tasks.service.child.exitCode = 1;
+  await tasks.restoreManagedServices();
+  assert.equal(executions, 2, 'an exited backend invalidates the cached healthy restoration');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('runtime probe runner requires a trusted helper and explicit completed inference result', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-runtime-probe-'));
   const helper = path.join(root, 'probe.py'); fs.writeFileSync(helper, '# trusted fixture');

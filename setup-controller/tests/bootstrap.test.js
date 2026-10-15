@@ -44,7 +44,7 @@ const runtime = process.env.UV_PYTHON_INSTALL_DIR;
 if (source.includes('SPEECHCRAFT_PYTHON_PROBE')) {
   console.log(JSON.stringify({ kind: 'SPEECHCRAFT_PYTHON_PROBE', version: '3.12.15', machine: 'x86_64', system: 'Linux', executable, prefix: runtime, base_prefix: runtime }));
 } else if (source.includes('SPEECHCRAFT_MODEL_MANAGER_PROBE')) {
-  console.log(JSON.stringify({ kind: 'SPEECHCRAFT_MODEL_MANAGER_PROBE', version: '0.1.0', roles: ['asr', 'diarization', 'speaker_purity', 'speech_detection'], python: '3.12.15', heavy_dependencies: [], executable }));
+  console.log(JSON.stringify({ kind: 'SPEECHCRAFT_MODEL_MANAGER_PROBE', version: '0.1.0', roles: ['asr', 'diarization', 'speaker_purity', 'speech_detection'], python: '3.12.15', prefix: process.env.SPEECHCRAFT_EXPECTED_MANAGER_PREFIX, base_prefix: process.env.SPEECHCRAFT_EXPECTED_MANAGED_PYTHON_ROOT, heavy_dependencies: [], executable, wheel_sha256: process.env.SPEECHCRAFT_EXPECTED_MODEL_MANAGER_WHEEL_SHA256 || null }));
 } else if (process.argv.includes('--help')) {
   console.log('speechcraft_models install verify status');
 } else {
@@ -159,6 +159,90 @@ test('bootstrap checks capacity before acquisition but allows reuse below the in
   tasks.availableBytesOverride = 1;
   await assert.rejects(tasks.run('install_uv', context),
   (error) => error.code === 'INSUFFICIENT_DISK_SPACE');
+});
+
+test('ordinary installed-runtime recovery resolves the verified model-manager environment without an installer wheel', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-manager-recovery-'));
+  const wheelSha = 'b'.repeat(64);
+  const tasks = new BootstrapTasks({ dataDirectory: root, wheelPath: undefined, wheelSha256: undefined,
+    processRunner: async (_exe, _args, options) => ({ code: 0, stdout: JSON.stringify({ kind: 'SPEECHCRAFT_MODEL_MANAGER_PROBE', version: '0.1.0',
+      roles: ['diarization', 'asr', 'speech_detection', 'speaker_purity'], heavy_dependencies: [],
+      prefix: options.env.SPEECHCRAFT_EXPECTED_MANAGER_PREFIX,
+      base_prefix: options.env.SPEECHCRAFT_EXPECTED_MANAGED_PYTHON_ROOT, wheel_sha256: wheelSha }) }) });
+  tasks.environment = { profile: 'linux-x86_64' };
+  assert.throws(() => tasks.getPaths('linux-x86_64'), (error) => error.code === 'MODEL_MANAGER_WHEEL_REQUIRED',
+    'fresh installation paths still require trusted wheel metadata');
+  tasks.paths = tasks.getPaths('linux-x86_64', { allowMissingManager: true });
+  assert.equal(tasks.paths.environmentRoot, null);
+  fs.mkdirSync(tasks.paths.pythonRoot, { recursive: true });
+  const version = tasks.manifest.python.version;
+  const lockPrefix = tasks.manifest.model_manager.requirements_sha256.slice(0, 12);
+  const target = path.join(root, 'environments', 'speechcraft-model-manager',
+    `0.1.0-py${version}-linux-x86_64-${wheelSha.slice(0, 12)}-${lockPrefix}`);
+  fs.mkdirSync(path.join(target, 'bin'), { recursive: true, mode: 0o700 });
+  const python = path.join(target, 'bin', 'python');
+  fs.writeFileSync(python, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  const found = await tasks.findInstalledModelManager({ attemptId: 'fixture', signal: new AbortController().signal,
+    onChildProcess: () => true });
+  assert.equal(found.environmentRoot, target);
+  assert.equal(found.python, python);
+  assert.equal(found.wheel_sha256, wheelSha);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('controller restart reconstructs all installed model paths and retains the prior CUDA selection for revalidation without a wheel', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-full-runtime-recovery-'));
+  const firstStore = StateStore.open(root);
+  const firstController = new SetupController(firstStore, { mode: 'simulated' });
+  firstController.start(); await firstController.waitForIdle();
+  firstStore.commit((state) => {
+    state.job.mode = 'runtime'; state.job.plan_id = 'speechcraft-runtime-v1';
+    state.job.bootstrap_status = { runtime_profile: { profile: 'linux-x86_64', workerProfile: 'linux-x86_64-cuda',
+      modelPlatform: 'linux-x86_64', accelerator: 'cuda', cuda_validated: true,
+      cuda_probe: { schema_version: 1, component: 'cuda', success: true } },
+    host_details: { cuda_candidate: true, nvidia_gpus: ['fixture GPU'] }, components: {} };
+  }, 'install_fixture_for_restart_recovery');
+  await firstController.shutdown(); firstStore.releaseOwnership();
+
+  const store = StateStore.open(root);
+  const managerRoot = path.join(root, 'environments', 'speechcraft-model-manager', 'fixture-manager');
+  fs.mkdirSync(path.join(managerRoot, 'bin'), { recursive: true });
+  const expectedWheelSha = 'c'.repeat(64);
+  const reports = {
+    speech_detection: { install_ready: true, integrity_verified: true, root: path.join(root, 'models', 'silero') },
+    asr: { install_ready: true, integrity_verified: true, root: path.join(root, 'models', 'whisper') },
+    speaker_purity: { install_ready: false, integrity_verified: true, complete: true,
+      release_blockers: ['TitaNet provenance unresolved'], root: path.join(root, 'models', 'titanet') },
+    diarization: { install_ready: true, integrity_verified: true, inventory_exact: true, root: path.join(root, 'models', 'pyannote') },
+  };
+  const tasks = new BootstrapTasks({ dataDirectory: root, wheelPath: undefined, wheelSha256: undefined,
+    processRunner: async (_exe, args) => {
+      const role = args[args.indexOf('status') + 1];
+      return { code: reports[role] ? 0 : 1, stdout: JSON.stringify(reports[role] || {}), stderr: '' };
+    } });
+  tasks.verifyUv = async () => true;
+  tasks.findPython = async () => path.join(root, 'runtimes', 'python', 'bin', 'python');
+  tasks.verifyPython = async () => ({ version: '3.12.15' });
+  tasks.findInstalledModelManager = async () => ({ environmentRoot: managerRoot,
+    python: path.join(managerRoot, 'bin', 'python'), version: '0.1.0', wheel_sha256: expectedWheelSha });
+  tasks.validateBackendEnvironment = async () => true;
+  try {
+    await tasks.recoverInterrupted(store);
+    const status = store.snapshot().job.bootstrap_status;
+    assert.equal(status.model_manager_verified, true);
+    assert.equal(status.components.model_manager.path, managerRoot);
+    assert.equal(status.components.backend_environment.state, 'verified');
+    assert.equal(status.runtime_profile.workerProfile, 'linux-x86_64-cuda', 'the prior profile is retained for real inference revalidation');
+    for (const [component, rootName] of [['silero', 'silero'], ['whisper', 'whisper'], ['titanet', 'titanet'], ['pyannote', 'pyannote']]) {
+      assert.equal(status.components[component].path, path.join(root, 'models', rootName));
+      assert.equal(status.components[component].runtime_ready, false, 'old inference readiness is never blindly trusted');
+    }
+    assert.equal(status.components.titanet.release_approved, false);
+    assert.match(status.components.titanet.message, /provenance/i);
+  } finally {
+    store.releaseOwnership();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('an owned bootstrap subprocess that ignores SIGTERM is killed and reaped before cancellation settles', { skip: process.platform === 'win32' }, async () => {

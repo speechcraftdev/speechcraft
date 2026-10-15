@@ -21,7 +21,7 @@ export SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256="$(sha256sum "$SPEECHCRAFT_MODEL_M
 ./bin/speechcraft
 ```
 
-The controller verifies the wheel against this supplied digest before installation. In a release package these values must come from signed/trusted release metadata, not an interactive shell. If they are absent, real setup fails with an explicit wheel requirement; the launcher does not invent a source artifact.
+The controller verifies the wheel against this supplied digest before a fresh model-manager install or repair. In a release package these values must come from signed/trusted release metadata, not an interactive shell. If they are absent during installation or repair, that operation fails with an explicit wheel requirement; the launcher does not invent a source artifact. An already installed manager environment is independently revalidated from its installed wheel metadata and trusted lock identity, so an ordinary repeat launch does not need this wheel or digest.
 
 The executable can be exposed as the `speechcraft` command without changing system files:
 
@@ -42,7 +42,9 @@ Then open `http://127.0.0.1:3002/setup`. No controller or backend port needs pub
 
 The controller stores a versioned `onboarding` completion record in its atomic state store. It is created only when the real `speechcraft-runtime-v1` plan has passed the controller's technical-readiness evaluator and the supervised backend has passed its private health-identity check. Simulated setup never creates this record. An incomplete, interrupted, failed, or waiting first setup launches `/setup` on each invocation. A matching completed record launches `/login` on subsequent invocations. Corrupt or installation-mismatched state fails closed at controller startup rather than being reset.
 
-On an already onboarded install, a runtime controller revalidates the selected worker environment, managed FFmpeg, and local offline runtime probes, then restores the backend without launching downloads or creating a setup job. The login chain displays a repair notice if current processing health is degraded; `/setup` remains available by direct navigation. Completion is sticky and does not mean current health or public-release approval. TitaNet provenance and FFmpeg redistribution compliance remain release blockers.
+On an already onboarded install, the launcher establishes a private controller session, requests service restoration through the authenticated API, and polls status using that session. The controller revalidates the installed model-manager package, model inventories, selected worker recipe, managed FFmpeg, and local offline runtime probes, then restores the backend without launching downloads or creating a setup job. A 401 is an immediate authentication failure; the launcher never polls protected status anonymously. The login chain displays a repair notice if current processing health is degraded; `/setup` remains available by direct navigation. Completion is sticky and does not mean current health or public-release approval. TitaNet provenance and FFmpeg redistribution compliance remain release blockers.
+
+The launcher authenticates a reused frontend with a private random challenge identity under the data root (mode 0600). It first checks only public availability, then verifies a nonce HMAC response. It never sends the private identity to an unverified listener. The public installation ID remains diagnostic only.
 
 The launcher does not install or download anything itself. First-run installation continues through the setup page and setup controller. The controller's runtime setup records completion only after its trusted required checks succeed, including pyannote runtime validation.
 
@@ -54,13 +56,13 @@ The frontend must already have the pinned lockfile dependencies. Runtime mode al
 ./bin/speechcraft --data-dir /tmp/speechcraft-launcher-test --development --simulated --no-browser
 ```
 
-Run the real local launcher-to-Next-to-controller HTTP smoke test with:
+Run the local launcher-to-Next-to-controller HTTP smoke test with:
 
 ```bash
 node launcher/scripts/integration.mjs
 ```
 
-It verifies the loopback page, server-side session bridge, authenticated status/SSE, and duplicate-launch reuse. Its setup job is simulated and is not evidence of model installation or inference.
+It verifies the loopback page, server-side session bridge, authenticated status/SSE, duplicate-launch reuse, and an onboarding record created through `SetupController` and `RuntimeTasks` using controlled verified component evidence. The latter validates the production state transition, not model inference; it is not evidence of model installation or inference. Repeat-launch fixture intentionally removes wheel path/digest inputs and checks the normal route remains available while missing runtime artifacts surface as repair blockers.
 
 ## Troubleshooting and safe diagnostics
 

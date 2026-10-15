@@ -93,6 +93,32 @@ test('authorization API is session/CSRF/origin protected and only accepts one to
   await f.app.close();
 });
 
+test('managed-service restore is authenticated, idempotent, and does not create a setup attempt', async () => {
+  const tasks = gatedTestTasks();
+  let restoreCalls = 0;
+  let restorePromise;
+  tasks.restoreManagedServices = () => {
+    if (!restorePromise) { restoreCalls += 1; restorePromise = Promise.resolve({ restored: true }); }
+    return restorePromise;
+  };
+  const f = await temporaryController({ mode: 'runtime', tasks }); active.add(f);
+  f.app.store.commit((state) => {
+    state.onboarding = { schema_version: 1, completed: true, installation_identity: state.installation_identity,
+      completed_at: new Date().toISOString(), setup_plan: 'speechcraft-runtime-v1', profile: 'linux-x86_64-cpu',
+      required_checks: ['managed_python'] };
+  }, 'test_completed_installation');
+  const denied = await fetch(`${f.base}/setup-api/services/restore`, { method: 'POST', headers: {
+    origin: f.origin, 'content-type': 'application/json', 'x-speechcraft-csrf': f.auth.csrf_token,
+  }, body: '{}' });
+  assert.equal(denied.status, 401, 'a 401 is preserved as an authentication failure');
+  const accepted = await f.request('/setup-api/services/restore', { method: 'POST', body: {} });
+  assert.equal(accepted.status, 202);
+  assert.deepEqual(await accepted.json().then(({ accepted: ok, state }) => ({ accepted: ok, state })), { accepted: true, state: 'restoring' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(restoreCalls, 1);
+  assert.equal(f.app.store.snapshot().job, null, 'service restore does not create a new setup job');
+});
+
 test('a waiting Community-1 authorization survives controller restart without retaining a credential', async () => {
   const f = await temporaryController({ mode: 'runtime', tasks: gatedTestTasks() }); active.add(f);
   await f.request('/setup-api/start', { method: 'POST', body: {} });

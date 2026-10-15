@@ -7,6 +7,9 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { SetupController } from '../../setup-controller/src/controller.js';
+import { RuntimeTasks } from '../../setup-controller/src/runtime-tasks.js';
+import { StateStore } from '../../setup-controller/src/state-store.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const bin = path.join(root, 'bin/speechcraft');
@@ -18,8 +21,11 @@ let childOutput = '';
 
 function startLauncher({ simulated = true } = {}) {
   const args = ['--data-dir', dataDir, '--development', '--no-browser', ...(simulated ? ['--simulated'] : [])];
+  const launchEnv = { ...process.env };
+  delete launchEnv.SPEECHCRAFT_MODEL_MANAGER_WHEEL;
+  delete launchEnv.SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256;
   const processHandle = spawn(bin, args, {
-    cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env },
+    cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: launchEnv,
   });
   processHandle.stdout.setEncoding('utf8').on('data', (value) => { childOutput += value; launchedUrls.push(...value.match(/http:\/\/127\.0\.0\.1:3002\/(?:setup|login)/g) || []); });
   processHandle.stderr.setEncoding('utf8').on('data', (value) => { childOutput += value; });
@@ -49,6 +55,46 @@ async function acceptsConnection(host, port) {
     socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolve(true); });
     socket.once('error', () => { clearTimeout(timer); resolve(false); });
   });
+}
+
+class RuntimeCompletionFixture extends RuntimeTasks {
+  constructor(options) {
+    super(options);
+    this.stages = ['verify_services'];
+    this.service = { verify: async () => ({ port: 8010 }), stop: async () => {} };
+  }
+  initialBootstrapStatus() {
+    const value = super.initialBootstrapStatus();
+    value.profile = 'linux-x86_64';
+    value.runtime_profile = { profile: 'linux-x86_64', workerProfile: 'linux-x86_64-cpu', accelerator: 'cpu' };
+    value.uv_verified = true; value.python_verified = true; value.model_manager_verified = true;
+    for (const name of ['managed_python', 'backend_environment', 'worker_environment']) {
+      value.components[name] = { state: 'verified', verification: 'controlled_fixture', identity: `${name}:fixture` };
+    }
+    for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+      value.components[name] = { state: 'runtime_ready', runtime_ready: true, verification: 'controlled_fixture', identity: `${name}:fixture` };
+    }
+    value.components.titanet.release_approved = false;
+    value.components.titanet.message = 'TitaNet provenance remains a release blocker.';
+    value.components.ffmpeg.redistribution_approved = false;
+    return value;
+  }
+}
+
+async function completeThroughControllerTransition() {
+  const store = StateStore.open(dataDir);
+  const tasks = new RuntimeCompletionFixture({ dataDirectory: store.directory, store });
+  const controller = new SetupController(store, { tasks, mode: 'runtime' });
+  try {
+    assert.equal(store.snapshot().onboarding, null);
+    controller.start();
+    await controller.waitForIdle();
+    assert.equal(store.snapshot().onboarding?.completed, true);
+    assert.equal(store.snapshot().job.bootstrap_status.production_ready, false);
+  } finally {
+    await controller.shutdown();
+    store.releaseOwnership();
+  }
 }
 
 async function waitFor(url, predicate, timeout = 50_000) {
@@ -122,17 +168,10 @@ try {
   assert.equal(childOutput.includes(bootstrap), false);
   await stopLauncher();
 
-  // Seed a valid completion record in this disposable test store to exercise
-  // sticky routing independently of model access. Production writes it only
-  // after the real runtime readiness gate.
-  const stateFile = path.join(dataDir, 'state.json');
-  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-  const identity = state.installation_identity;
-  assert.match(identity, /^[a-f0-9]{64}$/);
-  state.onboarding = { schema_version: 1, completed: true, installation_identity: identity,
-    completed_at: new Date().toISOString(), setup_plan: 'speechcraft-runtime-v1',
-    profile: 'linux-x86_64-cpu', required_checks: ['test_fixture_only'] };
-  fs.writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  // Reach completion through SetupController + RuntimeTasks' authoritative
+  // readiness evaluator. Only the prerequisite evidence is a controlled
+  // fixture; production code performs the state transition and persistence.
+  await completeThroughControllerTransition();
   child = startLauncher({ simulated: false });
   const normalEntry = await waitFor(`${origin}/login`, (response) => response.ok);
   assert.equal(normalEntry.status, 200);
@@ -151,7 +190,7 @@ try {
   } })).json();
   assert.equal(persistedStatus.job.state, 'completed', 'service restoration does not create a new setup job');
   assert.equal(persistedStatus.onboarding.completed, true, 'onboarding remains sticky after controller restart');
-  console.log('Launcher HTTP integration passed: loopback UI, session bridge, authenticated status/SSE, duplicate-launch reuse, and durable first-run routing.');
+  console.log('Launcher HTTP integration passed: loopback UI, session bridge, authenticated status/SSE, duplicate-launch reuse, controller-driven onboarding completion, wheel-free repeat launch, and sticky first-run routing.');
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

@@ -391,6 +391,21 @@ export async function createSetupController({
         json(response, result.idempotent ? 200 : 202, publicMutation(result, store.snapshot().revision));
         return;
       }
+      if (url.pathname === '/setup-api/services/restore') {
+        if (controller.mode !== 'runtime' || !store.snapshot().onboarding?.completed) {
+          throw new HttpError(409, 'RESTORE_NOT_APPLICABLE', 'Managed service restoration is available only for a completed runtime installation.');
+        }
+        if (typeof executor.restoreManagedServices !== 'function') {
+          throw new HttpError(503, 'BACKEND_RESTORE_UNAVAILABLE', 'This controller cannot restore managed services for the installed runtime.');
+        }
+        // Startup and launcher requests share RuntimeTasks' single in-flight
+        // restoration promise. This endpoint only asks the existing trusted
+        // executor to restore verified services; it never creates an install
+        // job or starts model acquisition.
+        void executor.restoreManagedServices().catch(() => {});
+        json(response, 202, { accepted: true, state: 'restoring', state_revision: store.snapshot().revision });
+        return;
+      }
       throw new HttpError(404, 'NOT_FOUND', 'Unknown setup API endpoint.');
     }
 

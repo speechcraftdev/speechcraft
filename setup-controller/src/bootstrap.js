@@ -25,7 +25,7 @@ import hashlib, importlib, pathlib
 assert sys.version_info[:3] == (3, 12, 15), sys.version
 for module in (json, os, platform, ssl, sys, sysconfig, venv, hashlib, importlib, pathlib): assert module
 print(json.dumps({"kind":"SPEECHCRAFT_PYTHON_PROBE","version":".".join(map(str,sys.version_info[:3])),"machine":platform.machine(),"system":platform.system(),"executable":os.path.realpath(sys.executable),"prefix":os.path.realpath(sys.prefix),"base_prefix":os.path.realpath(sys.base_prefix)}))`;
-const MANAGER_PROBE = String.raw`import importlib.metadata as md, json, platform, sys
+const MANAGER_PROBE = String.raw`import importlib.metadata as md, json, os, platform, sys
 from speechcraft_models.manifest import load_catalog, validate_manifest
 catalog = load_catalog(); validate_manifest(catalog)
 forbidden = {"torch", "pytorch", "pyannote.audio", "faster-whisper", "mlx", "mlx-whisper", "nemo-toolkit", "sherpa-onnx"}
@@ -33,7 +33,13 @@ installed = {d.metadata.get("Name", "").lower().replace("_", "-") for d in md.di
 unexpected = sorted(installed & forbidden)
 assert not unexpected, unexpected
 assert md.version("speechcraft-model-manager") == "0.1.0"
-print(json.dumps({"kind":"SPEECHCRAFT_MODEL_MANAGER_PROBE","version":md.version("speechcraft-model-manager"),"roles":sorted(item["role"] for item in catalog["models"]),"python":platform.python_version(),"heavy_dependencies":unexpected,"executable":sys.executable}))`;
+dist = md.distribution("speechcraft-model-manager")
+direct = json.loads(dist.read_text("direct_url.json") or "{}")
+archive = direct.get("archive_info", {})
+wheel_sha256 = archive.get("hashes", {}).get("sha256")
+if not wheel_sha256 and isinstance(archive.get("hash"), str) and archive["hash"].startswith("sha256="):
+    wheel_sha256 = archive["hash"].split("=", 1)[1]
+print(json.dumps({"kind":"SPEECHCRAFT_MODEL_MANAGER_PROBE","version":md.version("speechcraft-model-manager"),"roles":sorted(item["role"] for item in catalog["models"]),"python":platform.python_version(),"prefix":os.path.realpath(sys.prefix),"base_prefix":os.path.realpath(sys.base_prefix),"heavy_dependencies":unexpected,"executable":sys.executable,"wheel_sha256":wheel_sha256}))`;
 
 export class BootstrapError extends Error {
   constructor(code, message, options = {}) {
@@ -636,10 +642,11 @@ export class BootstrapTasks {
     const job = store.snapshot().job;
     if (!['bootstrap', 'runtime'].includes(job?.mode)) return;
     const status = this.initialBootstrapStatus();
+    const priorStatus = job.bootstrap_status || {};
     const attemptId = job.attempt_id;
     try {
       this.environment = inspectHost();
-      this.paths = this.getPaths(this.environment.profile);
+      this.paths = this.getPaths(this.environment.profile, { allowMissingManager: true });
       const signal = new AbortController().signal;
       const context = { attemptId, signal, componentStatus: status,
         onComponentStatus: (value) => store.commit((state) => {
@@ -652,6 +659,8 @@ export class BootstrapTasks {
       };
       status.profile = this.environment.profile;
       status.wsl = this.environment.wsl;
+      status.runtime_profile = structuredClone(priorStatus.runtime_profile || null);
+      status.host_details = structuredClone(priorStatus.host_details || null);
       const uvVerified = await this.verifyUv(context);
       this.status(context, { uv_verified: uvVerified });
       if (uvVerified) {
@@ -661,44 +670,65 @@ export class BootstrapTasks {
           this.status(context, { python_verified: true, python_version: this.manifest.python.version,
             python_executable: python });
           try {
-            const managerPython = path.join(this.paths.environmentRoot, 'bin', 'python');
-            const manager = await this.verifyModelManager(managerPython, context);
+            const manager = await this.findInstalledModelManager(context);
+            this.paths.environmentRoot = manager.environmentRoot;
             this.status(context, { model_manager_verified: true, manager_version: manager.version });
-            this.setComponent(context, 'model_manager', { state: 'verified', verification: 'catalog_import_and_cli', last_verified_at: new Date().toISOString(), failure_code: null, message: null });
-          } catch {}
+            this.setComponent(context, 'model_manager', { state: 'verified', verification: 'installed_wheel_identity_catalog_and_cli',
+              last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: manager.environmentRoot,
+              wheel_sha256: manager.wheel_sha256 });
+          } catch (error) {
+            this.setComponent(context, 'model_manager', { state: 'blocked', path: null,
+              failure_code: error.code || 'MODEL_MANAGER_ENVIRONMENT_UNAVAILABLE',
+              message: error instanceof BootstrapError ? error.message.slice(0, 320)
+                : 'The installed model-manager environment could not be verified; trusted repair inputs are required.' });
+          }
         } catch {}
       }
       if (job.mode === 'runtime' && context.componentStatus.model_manager_verified) {
         try {
           const backendValid = await this.validateBackendEnvironment(context);
           this.setComponent(context, 'backend_environment', backendValid
-            ? { state: 'verified', verification: 'lock_identity_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null }
+            ? { state: 'verified', verification: 'lock_identity_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: this.backendEnvironmentPath() }
             : { state: 'pending', verification: 'revalidation_failed', failure_code: 'BACKEND_ENVIRONMENT_INVALID', message: 'The managed backend environment must be repaired before use.' });
         } catch (error) {
           this.setComponent(context, 'backend_environment', { state: 'pending', verification: 'revalidation_failed', failure_code: error.code || 'BACKEND_ENVIRONMENT_INVALID', message: 'The managed backend environment must be repaired before use.' });
         }
         const runtime = selectRuntimeProfile(this.environment);
-        for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper'], ['diarization', 'pyannote']]) {
+        for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper'], ['speaker_purity', 'titanet'], ['diarization', 'pyannote']]) {
           try {
             const managerPython = path.join(this.paths.environmentRoot, 'bin', 'python');
             const result = await this.runProcess(managerPython, ['-I', '-m', 'speechcraft_models', 'status', role,
               '--platform', runtime.modelPlatform, '--root', path.join(this.dataDirectory, 'models')], context, { allowFailure: true });
             const report = JSON.parse(result.stdout);
-            const installed = report.install_ready === true && report.integrity_verified === true
-              && (role !== 'diarization' || report.inventory_exact === true);
+            const installed = role === 'speaker_purity'
+              ? report.integrity_verified === true && report.complete === true
+              : report.install_ready === true && report.integrity_verified === true
+                && (role !== 'diarization' || report.inventory_exact === true);
+            const modelIdentity = component === 'pyannote' ? 'pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee'
+              : component === 'titanet' ? 'titanet-large-onnx-fp32/experimental' : undefined;
             this.setComponent(context, component, installed
-              ? { state: 'files_verified', identity: role === 'diarization' ? 'pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee' : undefined,
-                verification: role === 'diarization' ? 'complete_manifest_size_sha256_and_exact_tree' : 'manifest_size_and_sha256',
+              ? { state: 'files_verified', identity: modelIdentity,
+                verification: role === 'diarization' ? 'complete_manifest_size_sha256_and_exact_tree'
+                  : role === 'speaker_purity' ? 'experimental_manifest_size_and_sha256' : 'manifest_size_and_sha256',
                 last_verified_at: new Date().toISOString(), failure_code: null,
-                message: role === 'diarization' ? 'Community-1 files are verified; offline inference must be revalidated.' : 'Files are verified; inference readiness is not established.',
-                runtime_ready: false, path: report.root, report }
-              : { state: role === 'diarization' ? 'waiting_for_token' : ['missing', 'partial', 'corrupt', 'error', 'unverified'].includes(report.status) ? report.status : 'error',
-                verification: 'manifest_check', failure_code: role === 'diarization' && job.state !== 'waiting_for_user'
+                message: component === 'titanet' ? this.runtimeRecipe.models.blocked_roles.speaker_purity
+                  : role === 'diarization' ? 'Community-1 files are verified; offline inference must be revalidated.' : 'Files are verified; inference readiness is not established.',
+                runtime_ready: false, release_approved: role === 'speaker_purity' ? false : undefined,
+                release_blockers: role === 'speaker_purity' ? report.release_blockers : undefined,
+                path: report.root, report }
+              : { state: role === 'diarization' ? 'waiting_for_token' : role === 'speaker_purity' ? 'blocked'
+                  : ['missing', 'partial', 'corrupt', 'error', 'unverified'].includes(report.status) ? report.status : 'error',
+                verification: 'manifest_check', failure_code: role === 'speaker_purity' && report.status === 'corrupt' ? 'TITANET_ARTIFACT_CORRUPT'
+                  : role === 'diarization' && job.state !== 'waiting_for_user'
                   ? 'AUTHORIZATION_REQUIRED_AFTER_RESTART' : role === 'diarization' ? null : 'MODEL_FILES_NOT_VERIFIED',
-                message: role === 'diarization' && job.state !== 'waiting_for_user'
+                message: role === 'speaker_purity' && report.status === 'corrupt'
+                  ? 'The experimental TitaNet artifact failed its trusted hash check; repair is required. Provenance remains unresolved.'
+                  : role === 'speaker_purity' ? 'No complete, hash-verified TitaNet experimental artifact was found. Provenance and release approval remain unresolved.'
+                  : role === 'diarization' && job.state !== 'waiting_for_user'
                   ? 'The controller restarted before gated acquisition completed. Its token was discarded; submit a read token to resume.'
                   : role === 'diarization' ? 'Community-1 is not completely verified. Submit a read token to acquire the pinned local snapshot.'
-                    : 'Model files need repair before use.', runtime_ready: false, report });
+                    : 'Model files need repair before use.', runtime_ready: false,
+                ...(role === 'speaker_purity' ? { release_approved: false } : {}), report });
           } catch {
             this.setComponent(context, component, { state: 'pending', verification: 'revalidation_failed', failure_code: 'MODEL_STATUS_UNAVAILABLE', message: 'Model files must be rechecked before use.', runtime_ready: false });
           }
@@ -712,7 +742,7 @@ export class BootstrapTasks {
     }
   }
 
-  getPaths(profile = this.environment?.profile || 'linux-x86_64') {
+  getPaths(profile = this.environment?.profile || 'linux-x86_64', { allowMissingManager = false, managerWheelSha256 = this.wheelSha256 } = {}) {
     const artifact = this.manifest.uv.artifacts[profile];
     if (!artifact) throw new BootstrapError('BOOTSTRAP_ARTIFACT_UNRESOLVED', `No bootstrap artifacts are cataloged for ${profile}.`);
     const python = this.manifest.python.supported_profiles[profile];
@@ -722,7 +752,7 @@ export class BootstrapTasks {
     const version = this.manifest.python.version;
     const build = this.manifest.python.build;
     const normalized = profile;
-    if (!/^[a-f0-9]{64}$/.test(this.wheelSha256 || '')) {
+    if (!/^[a-f0-9]{64}$/.test(managerWheelSha256 || '') && !allowMissingManager) {
       throw new BootstrapError('MODEL_MANAGER_WHEEL_REQUIRED', 'Real bootstrap requires the exact locally shipped model-manager wheel SHA-256 from trusted launcher configuration.');
     }
     if (!fs.existsSync(this.requirementsPath) || fs.lstatSync(this.requirementsPath).isSymbolicLink()) {
@@ -734,19 +764,21 @@ export class BootstrapTasks {
     }
     const uvTarget = path.join(this.dataDirectory, 'runtimes', 'uv', this.manifest.uv.version, normalized);
     const pythonRoot = path.join(this.dataDirectory, 'runtimes', `cpython-${version}+${build}`, normalized);
-    const environments = path.join(this.dataDirectory, 'environments', 'speechcraft-model-manager',
-      `${this.manifest.model_manager.version || '0.1.0'}-py${version}-${normalized}-${this.wheelSha256.slice(0, 12)}-${lockSha256.slice(0, 12)}`);
+    const environments = /^[a-f0-9]{64}$/.test(managerWheelSha256 || '')
+      ? path.join(this.dataDirectory, 'environments', 'speechcraft-model-manager',
+        `${this.manifest.model_manager.version || '0.1.0'}-py${version}-${normalized}-${managerWheelSha256.slice(0, 12)}-${lockSha256.slice(0, 12)}`)
+      : null;
     const cacheRoot = path.join(this.dataDirectory, 'cache', 'bootstrap');
     const stagingRoot = path.join(this.dataDirectory, 'staging', 'bootstrap');
     const quarantineRoot = path.join(this.dataDirectory, 'quarantine', 'bootstrap');
-    const dirs = [uvTarget, pythonRoot, environments, cacheRoot, path.join(cacheRoot, 'uv'),
+    const dirs = [uvTarget, pythonRoot, ...(environments ? [environments] : []), cacheRoot, path.join(cacheRoot, 'uv'),
       path.join(cacheRoot, 'huggingface', 'hub'), path.join(cacheRoot, 'huggingface', 'xet'),
       path.join(cacheRoot, 'tmp'), path.join(cacheRoot, 'home'), stagingRoot, quarantineRoot];
     const resolved = validateManagedStorage(this.environment || { wsl: false }, [this.dataDirectory, ...dirs]);
     const map = new Map(dirs.map((dir, index) => [dir, resolved[index + 1]]));
     return {
       uvTarget: map.get(uvTarget), uvExecutable: path.join(map.get(uvTarget), 'uv'),
-      pythonRoot: map.get(pythonRoot), environmentRoot: map.get(environments),
+      pythonRoot: map.get(pythonRoot), environmentRoot: environments ? map.get(environments) : null,
       cacheRoot: map.get(cacheRoot), uvCache: map.get(path.join(cacheRoot, 'uv')),
       hfHome: path.join(map.get(cacheRoot), 'huggingface'),
       hfHub: map.get(path.join(cacheRoot, 'huggingface', 'hub')),
@@ -1065,12 +1097,77 @@ export class BootstrapTasks {
     const wheel = this.managerWheelIdentity();
     const identity = await hashFile(wheel);
     if (identity.sha256 !== this.wheelSha256) throw new BootstrapError('MODEL_MANAGER_WHEEL_HASH_MISMATCH', 'The model-manager wheel did not match its trusted SHA-256.');
-    const result = await this.runProcess(python, ['-I', '-c', MANAGER_PROBE], context);
+    const result = await this.runProcess(python, ['-I', '-c', MANAGER_PROBE], context, {
+      env: { ...this.makeEnvironment(this.paths), SPEECHCRAFT_EXPECTED_MODEL_MANAGER_WHEEL_SHA256: this.wheelSha256,
+        SPEECHCRAFT_EXPECTED_MANAGER_PREFIX: this.paths.environmentRoot,
+        SPEECHCRAFT_EXPECTED_MANAGED_PYTHON_ROOT: this.paths.pythonRoot },
+    });
     const probe = parseProbe(result, 'SPEECHCRAFT_MODEL_MANAGER_PROBE', 'MODEL_MANAGER_VALIDATION_FAILED');
-    if (probe.version !== '0.1.0' || !['diarization', 'asr', 'speech_detection', 'speaker_purity'].every((role) => probe.roles.includes(role))) {
+    const managedPythonRoot = fs.realpathSync(this.paths.pythonRoot);
+    const basePrefix = probe.base_prefix || '';
+    if (probe.version !== '0.1.0' || probe.wheel_sha256 !== this.wheelSha256
+        || probe.prefix !== this.paths.environmentRoot
+        || (basePrefix !== managedPythonRoot && !basePrefix.startsWith(`${managedPythonRoot}${path.sep}`))
+        || !['diarization', 'asr', 'speech_detection', 'speaker_purity'].every((role) => probe.roles.includes(role))) {
       throw new BootstrapError('MODEL_MANAGER_VALIDATION_FAILED', 'The installed model manager catalog or package version is not valid.');
     }
     return probe;
+  }
+
+  async findInstalledModelManager(context) {
+    const version = this.manifest.model_manager.version || '0.1.0';
+    const pythonVersion = this.manifest.python.version;
+    const lockSha = this.manifest.model_manager.requirements_sha256;
+    if (!/^[a-f0-9]{64}$/.test(lockSha || '') || !fs.existsSync(this.requirementsPath)
+        || createHash('sha256').update(fs.readFileSync(this.requirementsPath)).digest('hex') !== lockSha) {
+      throw new BootstrapError('DEPENDENCY_LOCK_INTEGRITY_FAILED', 'The model-manager dependency lock is missing or differs from the trusted installation identity.');
+    }
+    const parent = path.join(this.dataDirectory, 'environments', 'speechcraft-model-manager');
+    let entries;
+    try {
+      const info = fs.lstatSync(parent);
+      if (info.isSymbolicLink() || !info.isDirectory()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'The managed model-manager environment root is unsafe.');
+      entries = fs.readdirSync(parent, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === 'ENOENT') throw new BootstrapError('MODEL_MANAGER_ENVIRONMENT_UNAVAILABLE', 'The installed model-manager environment is missing; use trusted repair inputs to reinstall it.');
+      throw error;
+    }
+    const pattern = new RegExp(`^${version.replaceAll('.', '\\.')}\\-py${pythonVersion.replaceAll('.', '\\.')}\\-${this.environment.profile}\\-([a-f0-9]{12})\\-${lockSha.slice(0, 12)}$`);
+    const candidates = entries.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && pattern.test(entry.name));
+    for (const entry of candidates) {
+      const environmentRoot = path.join(parent, entry.name);
+      const python = path.join(environmentRoot, 'bin', 'python');
+      try {
+        const rootInfo = fs.lstatSync(environmentRoot);
+        const binInfo = fs.lstatSync(path.join(environmentRoot, 'bin'));
+        const info = fs.statSync(python);
+        const resolvedEnvironment = fs.realpathSync(environmentRoot);
+        const resolvedPython = fs.realpathSync(python);
+        const resolvedManagedPython = fs.realpathSync(this.paths.pythonRoot);
+        const trustedPythonPath = resolvedPython.startsWith(`${resolvedEnvironment}${path.sep}`)
+          || resolvedPython.startsWith(`${resolvedManagedPython}${path.sep}`);
+        if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || resolvedEnvironment !== environmentRoot
+            || !binInfo.isDirectory() || binInfo.isSymbolicLink() || !info.isFile()
+            || !trustedPythonPath || (info.mode & 0o111) === 0) continue;
+        const result = await this.runProcess(python, ['-I', '-c', MANAGER_PROBE], context, { allowFailure: true,
+          env: { ...this.makeEnvironment(this.paths), SPEECHCRAFT_EXPECTED_MANAGER_PREFIX: environmentRoot,
+            SPEECHCRAFT_EXPECTED_MANAGED_PYTHON_ROOT: this.paths.pythonRoot } });
+        const probe = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+        const wheelPrefix = entry.name.match(pattern)?.[1];
+        if (result.code === 0 && probe.kind === 'SPEECHCRAFT_MODEL_MANAGER_PROBE'
+            && probe.version === version && probe.prefix === environmentRoot
+            && (probe.base_prefix === this.paths.pythonRoot || probe.base_prefix.startsWith(`${this.paths.pythonRoot}${path.sep}`))
+            && /^[a-f0-9]{64}$/.test(probe.wheel_sha256 || '')
+            && probe.wheel_sha256.slice(0, 12) === wheelPrefix
+            && ['diarization', 'asr', 'speech_detection', 'speaker_purity'].every((role) => probe.roles.includes(role))
+            && Array.isArray(probe.heavy_dependencies) && probe.heavy_dependencies.length === 0) {
+          return { ...probe, environmentRoot, python };
+        }
+      } catch (error) {
+        if (['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN'].includes(error.code)) throw error;
+      }
+    }
+    throw new BootstrapError('MODEL_MANAGER_ENVIRONMENT_UNAVAILABLE', 'No installed model-manager environment passed its pinned package, wheel, lock, and catalog identity checks. Trusted repair inputs are required to reinstall it.');
   }
 
   async ensureModelManager(context) {
@@ -1088,8 +1185,11 @@ export class BootstrapTasks {
     if (inspectDirectoryOrMissing(target)) {
       const python = path.join(target, 'bin', 'python');
       try {
-        await this.verifyModelManager(python, context);
+        const manager = await this.verifyModelManager(python, context);
         this.status(context, { model_manager_verified: true });
+        this.setComponent(context, 'model_manager', { state: 'verified', verification: 'catalog_import_and_cli',
+          last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target,
+          wheel_sha256: manager.wheel_sha256, lock_sha256: this.manifest.model_manager.requirements_sha256 });
         this.emit(context, safeProgress('verified', 'The isolated model-manager environment is verified and was reused.'));
         return;
       } catch (error) {
@@ -1110,6 +1210,9 @@ export class BootstrapTasks {
       '--python', environmentPython, wheel], context, { env });
     await this.verifyModelManager(environmentPython, context);
     this.status(context, { model_manager_verified: true });
+    this.setComponent(context, 'model_manager', { state: 'verified', verification: 'catalog_import_and_cli',
+      last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target,
+      wheel_sha256: this.wheelSha256, lock_sha256: this.manifest.model_manager.requirements_sha256 });
     this.emit(context, safeProgress('verified', 'The isolated model-manager environment passed import, catalog, CLI, and dependency checks.'));
   }
 
@@ -1128,7 +1231,8 @@ export class BootstrapTasks {
       python_executable: python, manager_version: manager.version });
     this.setComponent(context, 'uv', { state: 'verified', verification: 'sha256_and_version', last_verified_at: new Date().toISOString(), failure_code: null, message: null });
     this.setComponent(context, 'managed_python', { state: 'verified', verification: 'runtime_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null });
-    this.setComponent(context, 'model_manager', { state: 'verified', verification: 'catalog_import_and_cli', last_verified_at: new Date().toISOString(), failure_code: null, message: null });
+    this.setComponent(context, 'model_manager', { state: 'verified', verification: 'catalog_import_and_cli', last_verified_at: new Date().toISOString(), failure_code: null, message: null,
+      path: this.paths.environmentRoot, wheel_sha256: this.wheelSha256, lock_sha256: this.manifest.model_manager.requirements_sha256 });
     const attemptDirectory = path.join(this.paths.stagingRoot, `attempt-${context.attemptId}`);
     removeOwnedDirectory(this.dataDirectory, attemptDirectory);
     this.emit(context, safeProgress('complete', 'Bootstrap components are verified; models and inference are not installed or ready.'));
@@ -1195,8 +1299,8 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     this.setComponent(context, 'backend_environment', { state: 'verified', verification: 'lock_identity_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
   }
 
-  workerEnvironmentPath(recipe) {
-    return path.join(this.dataDirectory, 'environments', 'worker', `v${recipe.environment_version}-${recipe.lock_sha256.slice(0, 16)}-${selectRuntimeProfile(this.environment).workerProfile}`);
+  workerEnvironmentPath(recipe, profile = selectRuntimeProfile(this.environment).workerProfile) {
+    return path.join(this.dataDirectory, 'environments', 'worker', `v${recipe.environment_version}-${recipe.lock_sha256.slice(0, 16)}-${profile}`);
   }
 
   async ensureWorkerEnvironment(context) {

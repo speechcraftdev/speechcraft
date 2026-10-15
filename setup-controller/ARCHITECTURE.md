@@ -103,7 +103,7 @@ automatic experimental TitaNet override is used.
 ## Authentication handoff
 
 The Linux source-checkout launcher reads `bootstrap.token` only in its trusted process and
-call the controller's authenticated session bootstrap privately over loopback.
+calls the controller's authenticated session bootstrap privately over loopback.
 The same-origin Next.js proxy should accept a credential-free browser request,
 perform that bootstrap itself, and forward only the HTTP-only session cookie and
 CSRF token. The secret must never enter a URL, browser JavaScript, page source,
@@ -111,8 +111,31 @@ console output or persistent job/event data. For SSH tunnels, keep the controlle
 on loopback and explicitly configure expected Host/Origin at the trusted proxy.
 Origin, Host and CSRF checks remain active. The frontend bridge refuses to run
 unless the launcher explicitly confirms its loopback binding. The source
-launcher binds all services to IPv4 loopback and only reuses an existing
-frontend when its installation identity matches.
+launcher binds all services to IPv4 loopback. Existing frontend ownership is
+proved with a random nonce and an HMAC response from a per-installation
+identity protected by mode 0600; the identity itself is never sent over HTTP.
+The public health endpoint is only an availability check. Its path-derived
+installation identifier is diagnostic and is not authentication.
+
+On a completed runtime install, the launcher creates a controller session,
+reads status only with that session, then submits the authenticated
+`POST /setup-api/services/restore` request. This operation shares the
+controller's in-flight startup restore, revalidates trusted installed
+identities, and starts the backend only when prerequisites pass. A 401 is an
+immediate authentication error, not a readiness timeout. Status polling remains
+authenticated and bounded; degraded health keeps onboarding history and is
+reported for repair without starting model downloads.
+
+Ordinary restart does not require the original model-manager wheel or its
+launcher-provided digest. Startup locates the versioned isolated manager env by
+its trusted environment name, then checks its installed distribution metadata,
+wheel archive digest, dependency-lock identity, package catalog, and executable.
+Fresh installation and repair still require the separately trusted wheel and
+digest. Local Silero, Whisper, TitaNet and Community-1 artifacts are
+re-enumerated by the manager's integrity status operation; Community-1 does not
+require another token when its exact local snapshot remains valid. The last
+selected CUDA worker environment is checked and its CUDA probe rerun before it
+can be selected again; a verified CPU env remains the fallback.
 
 The current authenticated API accepts the token only at
 `POST /setup-api/models/pyannote/authorize`, requires same-origin and CSRF

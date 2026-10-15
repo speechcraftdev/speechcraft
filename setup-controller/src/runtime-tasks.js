@@ -49,6 +49,9 @@ export class RuntimeTasks extends BootstrapTasks {
     this.stages = PRODUCTION_STAGES;
     this.service = null;
     this.store = options.store;
+    this.restorePromise = null;
+    this.restoreAttemptId = null;
+    this.restoreResult = null;
   }
 
   status(context, patch) {
@@ -133,6 +136,34 @@ export class RuntimeTasks extends BootstrapTasks {
       if (['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN'].includes(error.code)) throw error;
       this.setComponent(context, 'worker_cuda_candidate', { state: 'blocked', failure_code: error.code || 'cuda_candidate_failed',
         message: `${error instanceof BootstrapError ? error.message : `Managed CUDA candidate check failed (${error?.name || 'unexpected error'}).`} The validated CPU worker remains selected.`.slice(0, 320) });
+    }
+  }
+
+  async verifyExistingWorkerProfile(profile, context) {
+    const recipe = this.runtimeRecipe.worker?.profiles?.[profile];
+    if (recipe?.available !== true || recipe.validated !== true) return null;
+    const project = path.resolve(this.applicationRoot, recipe.project || this.runtimeRecipe.worker.project);
+    const lock = path.resolve(project, recipe.lockfile || this.runtimeRecipe.worker.lockfile.split('/').at(-1));
+    if (!hashMatches(lock, recipe.lock_sha256) || !hashMatches(path.join(project, 'pyproject.toml'), recipe.project_manifest_sha256)) return null;
+    const target = this.workerEnvironmentPath(recipe, profile);
+    if (!managedDirectoryExists(target)) return null;
+    const python = path.join(target, 'bin', 'python');
+    const probe = `import importlib.util,json,os,sys\nassert sys.version.split()[0]==${JSON.stringify(recipe.python_version)}\nassert os.path.realpath(sys.prefix)==os.path.realpath(${JSON.stringify(target)})\nbase=os.path.realpath(sys.base_prefix); runtime=os.path.realpath(${JSON.stringify(this.paths.pythonRoot)})\nassert base==runtime or base.startswith(runtime+os.sep),base\nmissing=[name for name in ${JSON.stringify(recipe.validation_modules)} if importlib.util.find_spec(name) is None]\nassert not missing,missing\nprint(json.dumps({'kind':'SPEECHCRAFT_WORKER_ENV_PROBE','profile':${JSON.stringify(profile)},'missing':missing}))`;
+    try {
+      const result = await this.runProcess(python, ['-I', '-c', probe], context, { cwd: project });
+      if (result.code !== 0 || !result.stdout.includes('SPEECHCRAFT_WORKER_ENV_PROBE')) return null;
+      let libraryPaths = [];
+      if (profile.endsWith('-cuda')) {
+        const query = `import pathlib,sys; r=pathlib.Path(sys.prefix)/'lib'/f'python{sys.version_info.major}.{sys.version_info.minor}'/'site-packages'; print(':'.join(str(p) for p in sorted(r.glob('nvidia/*/lib')) if p.is_dir()))`;
+        const libraries = await this.runProcess(python, ['-I', '-c', query], context, { cwd: project });
+        libraryPaths = libraries.stdout.trim().split(':').filter((entry) => entry
+          && path.resolve(entry).startsWith(`${path.resolve(target)}${path.sep}`));
+        if (!['libcublas.so.12', 'libcudnn.so.9', 'libcudart.so.12'].every((name) => libraryPaths.some((directory) => fs.existsSync(path.join(directory, name))))) return null;
+      }
+      return { profile, recipe, target, python, libraryPaths };
+    } catch (error) {
+      if (['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN'].includes(error.code)) throw error;
+      return null;
     }
   }
 
@@ -321,7 +352,27 @@ export class RuntimeTasks extends BootstrapTasks {
 
   /** Revalidate installed artifacts and restore the managed backend without
    * creating a setup job or invoking any download/install operation. */
-  async restoreManagedServices() {
+  restoreManagedServices() {
+    const job = this.store?.snapshot().job;
+    const attemptId = job?.attempt_id || null;
+    if (this.restorePromise) return this.restoreAttemptId === attemptId
+      ? this.restorePromise : this.restorePromise.then(() => this.restoreManagedServices());
+    const backend = job?.bootstrap_status?.components?.backend_service;
+    const serviceHealthy = this.service?.child && this.service.child.exitCode === null
+      && this.service.child.signalCode === null && backend?.verification === 'internal_health_identity';
+    if (this.restoreAttemptId === attemptId && this.restoreResult
+        && (this.restoreResult.restored !== true || serviceHealthy)) {
+      return Promise.resolve(this.restoreResult);
+    }
+    this.restoreAttemptId = attemptId;
+    this.restorePromise = this.performManagedServiceRestore().then((result) => {
+      this.restoreResult = result;
+      return result;
+    }).finally(() => { this.restorePromise = null; });
+    return this.restorePromise;
+  }
+
+  async performManagedServiceRestore() {
     const state = this.store?.snapshot();
     const job = state?.job;
     if (!state?.onboarding?.completed || job?.state !== 'completed' || job.mode !== 'runtime'
@@ -338,18 +389,39 @@ export class RuntimeTasks extends BootstrapTasks {
     context.bootstrapStatus = context.componentStatus;
     try {
       this.environment = inspectHost();
-      this.paths = this.getPaths(this.environment.profile);
-      const selection = selectRuntimeProfile(this.environment);
-      const recipe = this.runtimeRecipe.worker?.profiles?.[selection.workerProfile];
-      if (recipe?.available === true && recipe.validated === true) {
-        const target = this.workerEnvironmentPath(recipe);
-        const python = path.join(target, 'bin', 'python');
-        const project = path.resolve(this.applicationRoot, recipe.project || this.runtimeRecipe.worker.project);
-        const probe = `import importlib.util,json,os,sys\nassert sys.version.split()[0]==${JSON.stringify(recipe.python_version)}\nassert os.path.realpath(sys.prefix)==os.path.realpath(${JSON.stringify(target)})\nmissing=[name for name in ${JSON.stringify(recipe.validation_modules)} if importlib.util.find_spec(name) is None]\nassert not missing,missing\nprint(json.dumps({'kind':'SPEECHCRAFT_WORKER_ENV_PROBE','profile':${JSON.stringify(selection.workerProfile)},'missing':missing}))`;
-        const result = await this.runProcess(python, ['-I', '-c', probe], context, { cwd: project });
-        if (result.code !== 0 || !result.stdout.includes('SPEECHCRAFT_WORKER_ENV_PROBE')) throw new BootstrapError('WORKER_ENVIRONMENT_INVALID', 'The existing worker environment failed its startup identity check.');
-        this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${recipe.environment_version}/${selection.workerProfile}`,
-          verification: 'trusted_lock_and_startup_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
+      this.paths = this.getPaths(this.environment.profile, { allowMissingManager: true });
+      const managerPath = context.componentStatus.components?.model_manager?.path;
+      const managedRoot = path.resolve(this.dataDirectory, 'environments');
+      if (!managerPath || path.resolve(managerPath) !== managerPath
+          || !path.resolve(managerPath).startsWith(`${managedRoot}${path.sep}`)) {
+        throw new BootstrapError('MODEL_MANAGER_ENVIRONMENT_UNAVAILABLE', 'The verified model-manager environment path could not be reconstructed; use trusted repair inputs.');
+      }
+      this.paths.environmentRoot = managerPath;
+      const selectedBeforeRestart = job.bootstrap_status.runtime_profile?.workerProfile;
+      const baseSelection = selectRuntimeProfile(this.environment);
+      this.status(context, { runtime_profile: baseSelection, accelerator: 'cpu',
+        pyannote_cuda_validated: false, cuda_fallback_reason: selectedBeforeRestart === 'linux-x86_64-cuda'
+          ? 'Revalidating the previously selected CUDA profile before backend restoration.' : null });
+      const cpu = await this.verifyExistingWorkerProfile('linux-x86_64-cpu', context);
+      if (cpu) {
+        this.setComponent(context, 'worker_cpu_fallback', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${cpu.recipe.environment_version}/linux-x86_64-cpu`,
+          verification: 'trusted_lock_and_startup_probe', path: cpu.target, last_verified_at: new Date().toISOString(), failure_code: null, message: null });
+        this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${cpu.recipe.environment_version}/linux-x86_64-cpu`,
+          verification: 'trusted_lock_and_startup_probe', path: cpu.target, effective_profile: 'linux-x86_64-cpu',
+          last_verified_at: new Date().toISOString(), failure_code: null, message: null });
+      } else {
+        this.setComponent(context, 'worker_environment', { state: 'blocked', path: null, runtime_ready: false,
+          failure_code: 'WORKER_ENVIRONMENT_INVALID', message: 'The previously verified CPU fallback environment is missing or invalid.' });
+      }
+      if (selectedBeforeRestart === 'linux-x86_64-cuda') {
+        const cuda = await this.verifyExistingWorkerProfile('linux-x86_64-cuda', context);
+        if (cuda) this.setComponent(context, 'worker_cuda_candidate', { state: 'verified',
+          identity: `${this.runtimeRecipe.worker.distribution}/v${cuda.recipe.environment_version}/linux-x86_64-cuda`,
+          verification: 'trusted_lock_and_startup_probe', last_verified_at: new Date().toISOString(), failure_code: null,
+          message: 'Previously selected CUDA environment is installed; CUDA inference is being revalidated.',
+          path: cuda.target, library_paths: cuda.libraryPaths });
+        else this.setComponent(context, 'worker_cuda_candidate', { state: 'blocked', path: null,
+          failure_code: 'CUDA_PROFILE_INVALID', message: 'The previously selected CUDA environment is missing or no longer matches its trusted recipe; CPU fallback will be used if valid.' });
       }
       const ffmpegRecipe = this.runtimeRecipe.ffmpeg;
       if (ffmpegRecipe?.available === true) {
