@@ -20,7 +20,7 @@
       },
       "artifacts": [
         {
-          "platform": "linux-x86_64",
+          "platform": "all-supported",
           "format": "pyannote pipeline snapshot (PyTorch)",
           "revision": "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee",
           "availability": "verified",
@@ -59,7 +59,11 @@
             }
           ],
           "provenance": "Hugging Face model API at immutable revision 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee; LFS metadata supplies SHA-256 and exact size for four weights. config.yaml SHA-256 was computed from byte-identical public mirror content whose Git blob SHA-1 matches the gated source repository's config.yaml blobId.",
-          "release_blockers": []
+          "release_blockers": [],
+          "supported_platforms": [
+            "linux-x86_64",
+            "macos-arm64"
+          ]
         }
       ],
       "runtime_validation": {

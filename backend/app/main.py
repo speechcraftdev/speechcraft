@@ -4,7 +4,7 @@ import os
 import shutil
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 
@@ -37,6 +37,7 @@ from .dataset_runs import (
     start_dataset_run,
 )
 from .dataset_qc import finalize_dataset_qc, get_dataset_qc
+from .setup_health import matches_setup_health_identity
 from .clip_lab_state import (
     ClipLabStateError,
     ClipLabValidationError,
@@ -173,6 +174,15 @@ native_cliplab_store = NativeClipLabStore(repository.db_path, repository.media_r
 @app.get("/healthz")
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/_setup/health")
+def setup_healthcheck(x_speechcraft_service_identity: str | None = Header(default=None, alias="X-SpeechCraft-Service-Identity")) -> dict[str, str]:
+    """Controller-only startup proof; ordinary /healthz remains public and generic."""
+    expected = os.environ.get("SPEECHCRAFT_INTERNAL_HEALTH_IDENTITY", "")
+    if not matches_setup_health_identity(expected, x_speechcraft_service_identity):
+        raise HTTPException(status_code=403, detail="supervised service identity required")
+    return {"status": "ok", "service": "speechcraft-backend", "service_identity": expected}
 
 
 @app.get("/api/system/preflight")

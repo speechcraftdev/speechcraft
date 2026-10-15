@@ -6,7 +6,7 @@ import { afterEach, test } from 'node:test';
 import { runOwnedProcess } from '../src/bootstrap.js';
 import { createSetupController } from '../src/server.js';
 import { initialComponents } from '../src/runtime-plan.js';
-import { temporaryController } from './helpers.js';
+import { openEvents, temporaryController } from './helpers.js';
 
 const active = new Set();
 afterEach(async () => {
@@ -54,7 +54,7 @@ function gatedTestTasks({ entered, release } = {}) {
       const args = ['-e', script];
       const env = { PATH: process.env.PATH || '' };
       let output = '';
-      invocation = { args, env };
+      invocation = { args, env, tokenBuffer: context.authorizationToken };
       const child = await runOwnedProcess(process.execPath, args, { cwd: os.tmpdir(), env,
         stdinData: `${token}\n`, signal: context.signal,
         onChildProcess: context.onChildProcess,
@@ -127,6 +127,7 @@ test('token waits ephemerally, is piped to an actual child, and never appears in
   assert.equal(tasks.calls, 2);
   assert.equal(tasks.invocation.args.includes(token), false);
   assert.equal(JSON.stringify(tasks.invocation.env).includes(token), false);
+  assert.ok(tasks.invocation.tokenBuffer.every((byte) => byte === 0), 'controller clears its mutable token buffer after install_models settles');
   const publicText = JSON.stringify({ status, diagnostics: await f.request('/setup-api/diagnostics').then((r) => r.json()), models: await f.request('/setup-api/models').then((r) => r.json()) });
   assert.equal(publicText.includes(token), false);
   for (const file of filesUnder(f.directory)) assert.equal(fs.readFileSync(file).includes(token), false, path.relative(f.directory, file));
@@ -150,4 +151,49 @@ test('duplicate authorization is rejected while a prior authorized operation is 
   assert.equal((await second.json()).error.code, 'AUTHORIZATION_ALREADY_RUNNING');
   release();
   await f.app.controller.waitForIdle();
+});
+
+test('all status, mutation, diagnostics, model, and SSE responses sanitize private job fields', async () => {
+  const f = await temporaryController({ mode: 'runtime', tasks: gatedTestTasks() }); active.add(f);
+  await f.request('/setup-api/start', { method: 'POST', body: {} });
+  await f.app.controller.waitForIdle();
+  const marker = 'hf_SECRET_MARKER_public_serializer_123456';
+  f.app.store.commit((state) => {
+    state.job.authorizationToken = marker;
+    state.job.private_nonce = 'private-process-nonce';
+    state.job.child_process = { pid: 123, identity: 'private-process-identity', nonce: 'private-owner-nonce' };
+    state.job.bootstrap_status.private_exception = { stack: marker };
+    state.job.bootstrap_status.components.private_process_identity = { state: 'private', identity: marker };
+    state.job.bootstrap_status.components.runtime_probes.components = ['whisper', { identity: marker }];
+  }, 'test_private_job_fields');
+  const eventClient = await openEvents(f.base, f.cookie, { origin: f.origin });
+  const snapshot = await eventClient.nextEvent();
+  eventClient.close();
+  const bodies = [];
+  for (const route of ['/setup-api/status', '/setup-api/models', '/setup-api/diagnostics']) {
+    bodies.push(await f.request(route).then((r) => r.json()));
+  }
+  bodies.push(await (await f.request('/setup-api/start', { method: 'POST', body: {} })).json());
+  f.app.store.commit((state) => { state.job.child_process = null; }, 'test_remove_fake_owner');
+  bodies.push(await (await f.request('/setup-api/cancel', { method: 'POST', body: {} })).json());
+  await f.app.controller.waitForIdle();
+  bodies.push(await (await f.request('/setup-api/retry', { method: 'POST', body: {} })).json());
+  await f.app.controller.waitForIdle();
+  bodies.push(await (await f.request('/setup-api/repair', { method: 'POST', body: {} })).json());
+  await f.app.controller.waitForIdle();
+  bodies.push(await (await f.request('/setup-api/cancel', { method: 'POST', body: {} })).json());
+  await f.app.controller.waitForIdle();
+  bodies.push(await (await f.request('/setup-api/retry', { method: 'POST', body: {} })).json());
+  await f.app.controller.waitForIdle();
+  const authToken = 'hf_' + 'serializerSecret'.repeat(2);
+  const authResponse = await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: { token: authToken } });
+  bodies.push(await authResponse.json());
+  await f.app.controller.waitForIdle();
+  const serialized = JSON.stringify({ snapshot: snapshot.data, bodies });
+  for (const secret of [marker, authToken, 'private-process-nonce', 'private-process-identity', 'private-owner-nonce']) {
+    assert.equal(serialized.includes(secret), false, `public API leaked ${secret}`);
+  }
+  assert.equal(Object.hasOwn(bodies[0].components, 'private_process_identity'), false);
+  assert.equal(snapshot.data.job.id, f.app.store.snapshot().job.id);
+  assert.equal(authResponse.status, 202);
 });

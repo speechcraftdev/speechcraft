@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -32,6 +33,39 @@ def digest(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def community1_probe_regions(annotation, *, sample_rate: int, recording_duration: float):
+    """Convert the real pyannote Annotation through the production region contract."""
+    from speechcraft_dataset.diarization import annotation_to_speechcraft_regions
+
+    rows = annotation_to_speechcraft_regions(
+        annotation,
+        source_audio_id="runtime-probe",
+        analysis_audio_path="runtime-probe.wav",
+        sample_rate=sample_rate,
+        backend_version="runtime-probe",
+    )
+    if not rows:
+        raise RuntimeError("Community-1 returned no SpeechCraft speaker regions.")
+    speakers = set()
+    previous_start = -1.0
+    for row in rows:
+        try:
+            start = float(row["start_sec"])
+            end = float(row["end_sec"])
+            speaker = str(row["speaker_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("Community-1 returned a malformed SpeechCraft speaker region.") from exc
+        if not speaker or not math.isfinite(start) or not math.isfinite(end) or not (0 <= start < end <= recording_duration + 1e-6):
+            raise RuntimeError("Community-1 returned invalid or out-of-recording speaker timestamps.")
+        if start < previous_start:
+            raise RuntimeError("Community-1 speaker regions are not ordered by start time.")
+        previous_start = start
+        speakers.add(speaker)
+    if len(speakers) != 2:
+        raise RuntimeError("Community-1 did not identify exactly two speakers in the pinned two-voice fixture.")
+    return rows, speakers
 
 
 def audio_file(component: str) -> Path:
@@ -139,7 +173,7 @@ def run(component: str) -> dict:
                                     "release_blocked": True})
     elif component == "pyannote":
         import soundfile as sf
-        from speechcraft_dataset.diarization import load_community1_pipeline, run_community1_pipeline
+        from speechcraft_dataset.diarization import community1_annotation, load_community1_pipeline, run_community1_pipeline
         import numpy as np
 
         snapshot = Path(os.environ.get("SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH", ""))
@@ -150,15 +184,15 @@ def run(component: str) -> dict:
             raise RuntimeError(f"model_snapshot_missing: {reason}")
         device = os.environ.get("SPEECHCRAFT_PROBE_DEVICE", "cpu")
         pipeline = load_community1_pipeline(snapshot, device)
-        turns = run_community1_pipeline(pipeline, np.ascontiguousarray(samples.T), int(rate))
-        speaker_count = len({row["speaker_id"] for row in turns})
-        if not turns or speaker_count < 2 or any(float(row["start_sec"]) < 0 or float(row["end_sec"]) <= float(row["start_sec"])
-                            or not row.get("speaker_id") for row in turns):
-            raise RuntimeError("Community-1 inference did not return valid turns for both speakers in the pinned two-voice fixture.")
+        annotation = community1_annotation(run_community1_pipeline(pipeline, np.ascontiguousarray(samples.T), int(rate)))
+        recording_duration = len(samples) / int(rate)
+        turns, speakers = community1_probe_regions(annotation, sample_rate=int(rate), recording_duration=recording_duration)
+        speaker_count = len(speakers)
         result.update(identity="pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee",
                       backend="pyannote.audio", device=str(getattr(pipeline, "device", device)), inference_completed=True,
                       measurements={"turn_count": len(turns), "speaker_count": speaker_count,
-                                    "recording_duration_seconds": round(len(samples) / int(rate), 4)})
+                                    "recording_duration_seconds": round(recording_duration, 4),
+                                    "region_contract": "annotation_to_speechcraft_regions"})
     elif component == "ffmpeg":
         import soundfile as sf
 

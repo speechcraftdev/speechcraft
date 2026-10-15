@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import fs from 'node:fs';
@@ -44,14 +44,19 @@ function freeLoopbackPort() {
   });
 }
 
-async function health(port, timeout = 800) {
+export async function verifyServiceIdentity(port, identity, timeout = 800) {
+  if (typeof identity !== 'string' || identity.length < 32) return false;
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(timeout) });
+    const response = await fetch(`http://127.0.0.1:${port}/_setup/health`, {
+      headers: { 'x-speechcraft-service-identity': identity }, signal: AbortSignal.timeout(timeout),
+    });
     if (!response.ok) return false;
     const value = await response.json();
-    return value?.status === 'ok';
+    return value?.status === 'ok' && value?.service === 'speechcraft-backend'
+      && value?.service_identity === identity;
   } catch { return false; }
 }
+const health = verifyServiceIdentity;
 
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -79,13 +84,14 @@ export class BackendService {
     this.child = null;
     this.record = null;
     this.port = null;
+    this.healthIdentity = null;
     this.stopping = false;
     this.restartCount = 0;
   }
 
   async start(signal) {
     if (this.record && this.child && this.child.exitCode === null && this.child.signalCode === null
-        && await health(this.port)) return { port: this.port, reused: true };
+        && await health(this.port, this.healthIdentity)) return { port: this.port, reused: true };
     if (this.record) await this.stop();
     const backendRoot = path.join(this.applicationRoot, 'backend');
     let executable;
@@ -114,6 +120,7 @@ export class BackendService {
       path.join(projectData, 'media'), path.join(projectData, 'exports')]);
     const port = await freeLoopbackPort();
     const nonce = randomUUID();
+    const healthIdentity = randomBytes(32).toString('hex');
     const attemptId = this.attemptId || 'service';
     const record = { kind: 'speechcraft-backend', state: 'starting', launch_protocol: 2, pid: null,
       process_group_id: null, identity: null, nonce, attempt_id: attemptId, port,
@@ -125,6 +132,7 @@ export class BackendService {
       SPEECHCRAFT_DATASET_WORKER_ROOT: this.workerRoot || path.join(this.applicationRoot, 'workers', 'dataset'),
       SPEECHCRAFT_DATASET_WORKER_PYTHON: this.workerPython || '',
       SPEECHCRAFT_OWNED_PROCESS_NONCE: nonce };
+    env.SPEECHCRAFT_INTERNAL_HEALTH_IDENTITY = healthIdentity;
     // The service cannot bind its port or write application data until its
     // durable PID/identity record has been committed. If the controller dies
     // before that commit, closing stdin makes this gate exit harmlessly.
@@ -135,6 +143,7 @@ export class BackendService {
       detached: true, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
     this.port = port;
+    this.healthIdentity = healthIdentity;
     child.stdout.on('data', (chunk) => this.onOutput('stdout', chunk));
     child.stderr.on('data', (chunk) => this.onOutput('stderr', chunk));
     await new Promise((resolve, reject) => {
@@ -177,8 +186,8 @@ export class BackendService {
       while (Date.now() < deadline) {
         if (signal.aborted) throw Object.assign(new Error('Backend startup was cancelled.'), { code: 'BOOTSTRAP_CANCELLED' });
         if (child.exitCode !== null || child.signalCode !== null) throw Object.assign(new Error('The backend exited before its health check succeeded.'), { code: 'BACKEND_START_FAILED' });
-        if (await health(port)) {
-          this.onStatus({ state: 'verified', verification: 'loopback_healthz', last_verified_at: new Date().toISOString(), failure_code: null, message: null, port }, record);
+        if (await health(port, healthIdentity)) {
+          this.onStatus({ state: 'verified', verification: 'internal_health_identity', last_verified_at: new Date().toISOString(), failure_code: null, message: null, port }, record);
           return { port, reused: false };
         }
         await sleep(POLL_MS, signal);
@@ -191,7 +200,7 @@ export class BackendService {
   }
 
   async verify() {
-    const ok = this.port !== null && await health(this.port);
+    const ok = this.port !== null && await health(this.port, this.healthIdentity);
     if (!ok) throw Object.assign(new Error('The managed backend health endpoint is not responding.'), { code: 'BACKEND_UNHEALTHY' });
     return { port: this.port, health: 'ok' };
   }
@@ -201,7 +210,7 @@ export class BackendService {
     await this.store.commit((state) => { state.service_process = record; }, record ? 'backend_process_started' : 'backend_process_stopped');
   }
 
-  async clear() { this.record = null; this.port = null; this.child = null; await this.persist(null); }
+  async clear() { this.record = null; this.port = null; this.child = null; this.healthIdentity = null; await this.persist(null); }
 
   async stop() {
     if (!this.record) return;
@@ -238,7 +247,7 @@ export class BackendService {
           || this.store.snapshot().service_process?.state !== 'running') return;
       try {
         const result = await this.start(new AbortController().signal);
-        this.onStatus({ state: 'verified', verification: 'loopback_healthz', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Backend recovered after one bounded restart.', port: result.port }, this.record);
+        this.onStatus({ state: 'verified', verification: 'internal_health_identity', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Backend recovered after one bounded restart.', port: result.port }, this.record);
       } catch {
         this.onStatus({ state: 'failed', failure_code: 'BACKEND_RESTART_FAILED', message: 'The backend did not recover after its one automatic restart.' }, this.record || record);
       }

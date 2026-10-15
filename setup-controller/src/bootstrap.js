@@ -251,7 +251,8 @@ export async function reconcileOwnedProcess(store) {
 }
 
 export function runOwnedProcess(executable, args, { signal, cwd, env, stdinData, onChildProcess, onOutput,
-  graceMs = CHILD_TERMINATE_GRACE_MS, maxOutputBytes = OUTPUT_CAPTURE_LIMIT } = {}) {
+  graceMs = CHILD_TERMINATE_GRACE_MS, maxOutputBytes = OUTPUT_CAPTURE_LIMIT,
+  identityResolver = ownedProcessIdentity } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new BootstrapError('BOOTSTRAP_CANCELLED', 'Bootstrap was cancelled.')); return; }
     const launchNonce = randomUUID();
@@ -265,6 +266,13 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, stdinData,
       return;
     }
     const collected = { stdout: [], stderr: [], stdoutBytes: 0, stderrBytes: 0 };
+    const secretInput = stdinData === undefined ? null
+      : Buffer.isBuffer(stdinData) ? stdinData : Buffer.from(String(stdinData));
+    const discardSecret = () => { if (secretInput) secretInput.fill(0); };
+    const closeCredentialPipe = () => {
+      if (!child?.stdin || child.stdin.destroyed || child.stdin.writableEnded) return;
+      child.stdin.destroy();
+    };
     const capture = (stream, field, byteField) => stream.on('data', (chunk) => {
       try { onOutput?.(field, Buffer.from(chunk)); } catch {}
       const remaining = maxOutputBytes - collected[byteField];
@@ -288,6 +296,8 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, stdinData,
     const markTerminationUncertain = async (diagnostic) => {
       if (settled) return;
       settled = true;
+      discardSecret();
+      closeCredentialPipe();
       signal?.removeEventListener('abort', onAbort);
       try {
         if (childRecord) await onChildProcess?.({ ...childRecord,
@@ -301,10 +311,21 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, stdinData,
       // Abort can race the `spawn` event. Never signal until durable ownership
       // exists and the PID still identifies the process we created.
       if (!childRecord || terminationStarted) return;
-      await ownershipUpdate;
+      try { await ownershipUpdate; }
+      catch {
+        // The child is still ours because its current OS identity is checked
+        // below. Close its private input first, then terminate only that
+        // verified process group. If cleanup cannot be confirmed, retain an
+        // uncertainty record so retries remain blocked.
+        ownershipWriteFailed = true;
+      }
       if (settled || terminationStarted) return;
+      if (!matchesProcessIdentity(childRecord, identityResolver(childRecord.pid, childRecord.nonce))) {
+        await markTerminationUncertain('The owned process identity is missing or changed; no signal was sent.');
+        return;
+      }
       terminationStarted = true;
-      const initialIdentity = ownedProcessIdentity(childRecord.pid, childRecord.nonce);
+      const initialIdentity = identityResolver(childRecord.pid, childRecord.nonce);
       if (!matchesProcessIdentity(childRecord, initialIdentity)) {
         await markTerminationUncertain('The owned process identity changed before initial SIGTERM; no signal was sent.');
         return;
@@ -315,7 +336,7 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, stdinData,
         return;
       }
       killTimer = setTimeout(async () => {
-        if (!childRecord || !matchesProcessIdentity(childRecord, ownedProcessIdentity(childRecord.pid, childRecord.nonce))) {
+        if (!childRecord || !matchesProcessIdentity(childRecord, identityResolver(childRecord.pid, childRecord.nonce))) {
           await markTerminationUncertain('The owned process identity changed before SIGKILL escalation; no signal was sent.');
           return;
         }
@@ -347,26 +368,51 @@ export function runOwnedProcess(executable, args, { signal, cwd, env, stdinData,
     signal?.addEventListener('abort', onAbort, { once: true });
     child.once('error', (error) => { spawnError = error; });
     child.once('spawn', () => {
-      childRecord = { pid: child.pid, process_group_id: child.pid, identity: ownedProcessIdentity(child.pid, launchNonce),
+      childRecord = { pid: child.pid, process_group_id: child.pid, identity: identityResolver(child.pid, launchNonce),
         nonce: launchNonce, attempt_id: null, termination_status: 'active' };
-      if (stdinData !== undefined) {
-        const secretInput = Buffer.isBuffer(stdinData) ? stdinData : Buffer.from(String(stdinData));
-        child.stdin.once('error', () => {});
-        child.stdin.end(secretInput, () => secretInput.fill(0));
-      }
-      ownershipUpdate = Promise.resolve(onChildProcess?.(childRecord))
-        .then(() => { if (cancelled) void stop(); })
-        .catch(() => { ownershipWriteFailed = true; void stop(); });
+      ownershipUpdate = Promise.resolve().then(() => {
+        if (secretInput && typeof onChildProcess !== 'function') {
+          throw new BootstrapError('BOOTSTRAP_OWNERSHIP_PERSIST_FAILED', 'A credential-bearing process requires durable ownership acknowledgement.');
+        }
+        return onChildProcess?.(childRecord);
+      });
+      ownershipUpdate.then((ownershipAcknowledged) => {
+        if (ownershipAcknowledged === false) {
+          throw new BootstrapError('BOOTSTRAP_OWNERSHIP_PERSIST_FAILED', 'The setup attempt is no longer current; no credential was released.');
+        }
+        if (!childRecord.identity) {
+          discardSecret();
+          closeCredentialPipe();
+          void markTerminationUncertain('The subprocess identity could not be established after spawn; no credential was released.');
+          return;
+        }
+        if (cancelled || signal?.aborted || child.exitCode !== null || child.signalCode !== null) {
+          discardSecret();
+          closeCredentialPipe();
+          if (cancelled || signal?.aborted) void stop();
+          return;
+        }
+        if (secretInput) {
+          child.stdin.once('error', () => {});
+          child.stdin.end(secretInput, () => secretInput.fill(0));
+        }
+      }).catch(() => {
+        ownershipWriteFailed = true;
+        discardSecret();
+        closeCredentialPipe();
+        void stop();
+      });
     });
     child.once('close', async (code, childSignal) => {
       if (settled) return;
       settled = true;
+      discardSecret();
       signal?.removeEventListener('abort', onAbort);
-      await ownershipUpdate;
+      await ownershipUpdate.catch(() => { ownershipWriteFailed = true; });
       let processGroupSafe = true;
       if (!spawnError && childRecord) {
         processGroupSafe = await waitForProcessGroupExit(child.pid, cancelled ? graceMs : 100);
-        if (!processGroupSafe && matchesProcessIdentity(childRecord, ownedProcessIdentity(child.pid, childRecord.nonce))) {
+        if (!processGroupSafe && matchesProcessIdentity(childRecord, identityResolver(child.pid, childRecord.nonce))) {
           try { signalProcessGroup(child.pid, 'SIGKILL'); } catch {}
           processGroupSafe = await waitForProcessGroupExit(child.pid, graceMs);
         }
@@ -566,7 +612,8 @@ export class BootstrapTasks {
 
   emit(context, progress) { context.onProgress?.(progress); }
   status(context, patch) {
-    context.componentStatus = { ...context.componentStatus, ...patch, production_ready: false };
+    context.componentStatus = { ...context.componentStatus, ...patch,
+      production_ready: patch.production_ready === true };
     context.onComponentStatus?.(structuredClone(context.componentStatus));
   }
 
@@ -730,6 +777,9 @@ export class BootstrapTasks {
 
   async runProcess(executable, args, context, { cwd = this.dataDirectory, env = this.makeEnvironment(this.paths), onOutput,
     allowFailure = false, stdinData } = {}) {
+    if (this.processRunner === runOwnedProcess && typeof context.onChildProcess !== 'function') {
+      throw new BootstrapError('BOOTSTRAP_OWNERSHIP_PERSIST_FAILED', 'A trusted subprocess requires a durable setup ownership callback.');
+    }
     const childCallback = (record) => {
       if (!context.onChildProcess) return;
       if (record?.clear) return context.onChildProcess(null, 'termination_confirmed');
@@ -738,8 +788,9 @@ export class BootstrapTasks {
     };
     // Persist a launch intent before spawning. A crash between spawn and the
     // subsequent PID write therefore fails closed instead of losing ownership.
-    await context.onChildProcess?.({ attempt_id: context.attemptId, state: 'starting', pid: null,
+    const intentAcknowledged = await context.onChildProcess?.({ attempt_id: context.attemptId, state: 'starting', pid: null,
       identity: null, termination_status: 'active', created_at: new Date().toISOString() }, 'active');
+    if (intentAcknowledged === false) throw new BootstrapError('BOOTSTRAP_OWNERSHIP_PERSIST_FAILED', 'The setup attempt is no longer current; no subprocess was started.');
     const result = await this.processRunner(executable, args, { signal: context.signal, cwd, env, stdinData,
       onChildProcess: childCallback, onOutput });
     if (result.code !== 0 && !allowFailure) {
@@ -1140,7 +1191,6 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     if (!recipe?.available || recipe.validated !== true) {
       const reason = recipe?.reason || `No trusted, validated worker recipe is available for ${selection.workerProfile}.`;
       this.setComponent(context, 'worker_environment', { state: 'blocked', failure_code: 'runtime_profile_unavailable', message: reason });
-      this.setComponent(context, 'dataset_processing', { state: 'blocked', failure_code: 'runtime_profile_unavailable', message: 'Dataset processing requires a validated worker environment and managed FFmpeg artifact.' });
       this.emit(context, safeProgress('blocked', reason));
       return;
     }
@@ -1179,7 +1229,6 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         parseProbe(result, 'SPEECHCRAFT_WORKER_ENV_PROBE', 'WORKER_ENVIRONMENT_INVALID');
         this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${recipe.environment_version}/${selection.workerProfile}`,
           verification: 'trusted_lock_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
-        this.setComponent(context, 'dataset_processing', { state: 'blocked', failure_code: 'runtime_validation_pending', message: 'Managed FFmpeg and inference probes have not completed.' });
         return;
       } catch (error) {
         if (error.code === 'BOOTSTRAP_CANCELLED' || error.code === 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN') throw error;
@@ -1195,7 +1244,6 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     parseProbe(result, 'SPEECHCRAFT_WORKER_ENV_PROBE', 'WORKER_ENVIRONMENT_INVALID');
     this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${recipe.environment_version}/${selection.workerProfile}`,
       verification: 'trusted_lock_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
-    this.setComponent(context, 'dataset_processing', { state: 'blocked', failure_code: 'runtime_validation_pending', message: 'Managed FFmpeg and inference probes have not completed.' });
   }
 
   async installApprovedModels(context) {
@@ -1272,11 +1320,15 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     this.setComponent(context, 'pyannote', { state: 'checking_token', identity: 'pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee',
       verification: 'pending', runtime_ready: false, failure_code: null, message: 'Checking token identity and Community-1 access.' });
     let progressBuffer = '';
-    const acquired = await this.runProcess(managerPython, ['-I', '-m', 'speechcraft_models', 'authorize-install', 'diarization',
+    const credentialBytes = Buffer.isBuffer(context.authorizationToken)
+      ? context.authorizationToken : Buffer.from(String(context.authorizationToken), 'utf8');
+    const tokenInput = Buffer.concat([credentialBytes, Buffer.from('\n')]);
+    let acquired;
+    try { acquired = await this.runProcess(managerPython, ['-I', '-m', 'speechcraft_models', 'authorize-install', 'diarization',
       '--platform', profile.modelPlatform, '--root', root, '--token-stdin'], context, {
       cwd: this.dataDirectory,
       env: { ...this.makeEnvironment(this.paths), SPEECHCRAFT_MODELS_ROOT: root },
-      stdinData: `${context.authorizationToken}\n`, allowFailure: true,
+      stdinData: tokenInput, allowFailure: true,
       onOutput: (stream, chunk) => {
         if (stream !== 'stderr') return;
         progressBuffer = `${progressBuffer}${chunk.toString('utf8')}`.slice(-16_384);
@@ -1299,7 +1351,7 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
           } catch {}
         }
       },
-    });
+    }); } finally { tokenInput.fill(0); if (credentialBytes !== context.authorizationToken) credentialBytes.fill(0); }
     let gatedReport;
     try { gatedReport = JSON.parse(acquired.stdout); }
     catch { throw new BootstrapError('MODEL_MANAGER_RESPONSE_INVALID', 'The model manager returned an invalid Community-1 authorization result.'); }
@@ -1440,8 +1492,12 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       const probeLibraryPaths = role === 'worker_cuda_candidate'
         ? components.worker_cuda_candidate?.library_paths
         : (cudaSelected ? components.worker_environment?.library_paths : null);
+      const pyannoteCudaValidated = context.componentStatus.runtime_profile?.pyannote_cuda_validated === true;
       const probeEnvironment = { ...helperEnvironment, SPEECHCRAFT_RUNTIME_PROBE_AUDIO: selectedProbeAudio,
-        SPEECHCRAFT_PROBE_DEVICE: probe.component === 'cuda' || (probe.component === 'whisper' && cudaSelected) ? 'cuda' : 'cpu',
+        SPEECHCRAFT_PROBE_DEVICE: probe.component === 'cuda' || (probe.component === 'whisper' && cudaSelected)
+          || (probe.component === 'pyannote' && pyannoteCudaValidated) ? 'cuda' : 'cpu',
+        SPEECHCRAFT_PYANNOTE_DEVICE: pyannoteCudaValidated ? 'cuda' : 'cpu',
+        SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED: pyannoteCudaValidated ? '1' : '0',
         SPEECHCRAFT_ASR_DEVICE: cudaSelected ? 'cuda' : 'cpu',
         LD_LIBRARY_PATH: Array.isArray(probeLibraryPaths) ? probeLibraryPaths.join(path.delimiter) : '',
         SPEECHCRAFT_CUDA_DRIVER: Array.isArray(candidateGpus) ? String(candidateGpus[0] || '').slice(0, 160) : '' };

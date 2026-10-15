@@ -2,7 +2,7 @@ import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { SessionAuth } from './auth.js';
-import { ControllerError, SetupController } from './controller.js';
+import { ControllerError, SetupController, publicComponents, serializePublicJob } from './controller.js';
 import { defaultDataDirectory } from './paths.js';
 import { StateStore, StateStoreError } from './state-store.js';
 import { SimulatedTasks } from './simulated-tasks.js';
@@ -111,21 +111,21 @@ function parseCsv(value) {
 }
 
 function statusEvent(job, revision, controllerStatus = 'running', mode = job?.mode || 'simulated', componentUpdates = null) {
-  const publicJob = job ? structuredClone(job) : {
+  const publicJob = job ? serializePublicJob(job) : {
     schema_version: 2,
     id: null, state: 'idle', stage: null, task_id: null, progress: null,
     error: null, attempt_count: 0, attempt_id: null, revision,
     created_at: null, updated_at: null, started_at: null, completed_at: null,
   };
-  if (publicJob) delete publicJob.child_process;
   return { controller_status: controllerStatus, state_revision: revision, job: publicJob,
     mode, simulated: mode === 'simulated', setup_plan: job?.plan_id || null,
-    components: job?.bootstrap_status?.components || null,
-    component_updates: componentUpdates,
-    runtime_profile: job?.bootstrap_status?.runtime_profile || null,
+    components: publicComponents(job?.bootstrap_status?.components),
+    component_updates: publicComponents(componentUpdates),
+    runtime_profile: publicJob?.bootstrap_status?.runtime_profile || null,
     bootstrap_ready: job?.bootstrap_status?.bootstrap_ready === true,
     partial_ready: job?.bootstrap_status?.partial_ready === true,
-    production_ready: false };
+    technical_processing_ready: job?.bootstrap_status?.technical_processing_ready === true,
+    production_ready: job?.bootstrap_status?.production_ready === true };
 }
 
 function sse(response, id, event, data) {
@@ -137,7 +137,7 @@ function diagnostics(store, mode = 'simulated') {
   const state = store.snapshot();
   return {
     state_revision: state.revision,
-    current_job: state.job ? (() => { const job = structuredClone(state.job); delete job.child_process; return job; })() : null,
+    current_job: serializePublicJob(state.job),
     recent_transitions: state.events.slice(-24).map((event) => ({
       id: event.id,
       type: event.type,
@@ -146,12 +146,17 @@ function diagnostics(store, mode = 'simulated') {
       stage: event.data.job?.stage || null,
       progress: event.data.job?.progress || null,
       error: event.data.job?.error || null,
-      component_updates: event.data.component_updates || null,
+      component_updates: publicComponents(event.data.component_updates),
     })),
     mode,
     simulated: mode === 'simulated',
-    production_ready: false,
+    production_ready: state.job?.bootstrap_status?.production_ready === true,
   };
+}
+
+function publicMutation(result, revision) {
+  return { job: serializePublicJob(result.job), idempotent: result.idempotent === true,
+    state_revision: revision };
 }
 
 export async function createSetupController({
@@ -356,7 +361,7 @@ export async function createSetupController({
         const result = controller.authorizeModel('diarization', token);
         const job = result.job;
         json(response, result.idempotent ? 200 : 202, {
-          state: job.state, job_id: job.id, stage: job.stage, attempt_id: job.attempt_id,
+          job: serializePublicJob(job), state: job.state, job_id: job.id, stage: job.stage, attempt_id: job.attempt_id,
           idempotent: result.idempotent, state_revision: store.snapshot().revision,
           component: publicModels(controller).models.find((model) => model.role === 'diarization'),
         });
@@ -365,24 +370,24 @@ export async function createSetupController({
       await readJson(request);
       if (url.pathname === '/setup-api/start') {
         const result = controller.start();
-        json(response, result.idempotent ? 200 : 202, { ...result, state_revision: store.snapshot().revision });
+        json(response, result.idempotent ? 200 : 202, publicMutation(result, store.snapshot().revision));
         return;
       }
       if (url.pathname === '/setup-api/retry') {
         const result = controller.retry();
-        json(response, 202, { ...result, state_revision: store.snapshot().revision });
+        json(response, 202, publicMutation(result, store.snapshot().revision));
         return;
       }
       if (url.pathname === '/setup-api/repair') {
         const current = store.snapshot().job;
         const result = current && ['failed', 'cancelled', 'interrupted'].includes(current.state)
           ? controller.retry() : controller.start();
-        json(response, result.idempotent ? 200 : 202, { ...result, state_revision: store.snapshot().revision });
+        json(response, result.idempotent ? 200 : 202, publicMutation(result, store.snapshot().revision));
         return;
       }
       if (url.pathname === '/setup-api/cancel') {
         const result = controller.cancel();
-        json(response, result.idempotent ? 200 : 202, { ...result, state_revision: store.snapshot().revision });
+        json(response, result.idempotent ? 200 : 202, publicMutation(result, store.snapshot().revision));
         return;
       }
       throw new HttpError(404, 'NOT_FOUND', 'Unknown setup API endpoint.');

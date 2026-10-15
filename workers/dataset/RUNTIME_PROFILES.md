@@ -33,8 +33,12 @@ current Hugging Face conditions, submit a read token through the authenticated
 setup API, verify token identity and repository access separately, then install
 the pinned snapshot through the model manager. The token is ephemeral and is
 never stored or used during inference. The included two-voice CC0 synthetic
-fixture exercises offline inference when an authorized snapshot is available;
-it does not establish quality on human multi-speaker speech. No diarization
+fixture is a pinned, CC0 two-voice audio recording. The probe runs actual
+Community-1 inference and converts its pyannote `Annotation` through the
+production `annotation_to_speechcraft_regions` contract, requiring exactly two
+speaker IDs and finite, ordered, in-recording regions. It does not establish
+quality on human multi-speaker speech. The real gated inference smoke remains
+not executed when an authorized snapshot is unavailable. No diarization
 fallback is used. Full production processing remains blocked until an
 authorized snapshot has passed the offline probe and other release blockers
 are resolved.

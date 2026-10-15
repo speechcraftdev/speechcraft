@@ -1,5 +1,5 @@
 import { BootstrapError, BootstrapTasks, ensureManagedDirectory, fetchArtifact } from './bootstrap.js';
-import { PRODUCTION_STAGES, hashMatches, runtimeRoots, selectRuntimeProfile } from './runtime-plan.js';
+import { PRODUCTION_STAGES, evaluateRuntimeReadiness, hashMatches, runtimeRoots, selectRuntimeProfile } from './runtime-plan.js';
 import { BackendService, reconcileOwnedService } from './backend-service.js';
 import fs from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
@@ -11,6 +11,21 @@ async function trustedFileHash(file) {
   const hash = createHash('sha256');
   for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
   return { size: info.size, sha256: hash.digest('hex') };
+}
+
+function applyReadiness(components) {
+  const readiness = evaluateRuntimeReadiness(components);
+  return {
+    readiness,
+    components: { ...components, dataset_processing: {
+      state: readiness.technical_ready ? 'runtime_ready' : 'blocked',
+      runtime_ready: readiness.technical_ready,
+      verification: readiness.technical_ready ? 'all_required_runtime_components_verified' : 'derived_component_readiness',
+      failure_code: readiness.blockers[0]?.code || null,
+      message: readiness.technical_ready ? 'Required managed components and inference operations are available.' : readiness.blockers[0]?.message,
+      blockers: readiness.blockers,
+    } },
+  };
 }
 
 function managedDirectoryExists(directory) {
@@ -33,6 +48,20 @@ export class RuntimeTasks extends BootstrapTasks {
     this.stages = PRODUCTION_STAGES;
     this.service = null;
     this.store = options.store;
+  }
+
+  status(context, patch) {
+    const derived = applyReadiness(patch.components || context.componentStatus?.components || {});
+    super.status(context, { ...patch, components: derived.components,
+      technical_processing_ready: derived.readiness.technical_ready,
+      release_blockers: derived.readiness.release_blockers, production_ready: derived.readiness.production_ready });
+  }
+
+  setComponent(context, name, patch) {
+    const current = context.componentStatus || this.initialBootstrapStatus();
+    current.components ||= {};
+    current.components[name] = { ...(current.components[name] || {}), ...patch };
+    this.status(context, { components: current.components });
   }
 
   async installCudaCandidate(context) {
@@ -115,8 +144,10 @@ export class RuntimeTasks extends BootstrapTasks {
     this.store.commit((state) => {
       const components = state.job.bootstrap_status.components || {};
       components.backend_service = { ...(components.backend_service || {}), ...status };
-      state.job.bootstrap_status.components = components;
-      state.job.bootstrap_status.production_ready = false;
+      const derived = applyReadiness(components);
+      Object.assign(state.job.bootstrap_status, { components: derived.components,
+        technical_processing_ready: derived.readiness.technical_ready,
+        release_blockers: derived.readiness.release_blockers, production_ready: derived.readiness.production_ready });
     }, 'backend_service_status');
   }
 
@@ -217,7 +248,7 @@ export class RuntimeTasks extends BootstrapTasks {
         && this.service.child?.signalCode === null) {
       try {
         const result = await this.service.verify();
-        this.setComponent(context, 'backend_service', { state: 'verified', verification: 'loopback_healthz', last_verified_at: new Date().toISOString(), failure_code: null, message: null, port: result.port });
+        this.setComponent(context, 'backend_service', { state: 'verified', verification: 'internal_health_identity', last_verified_at: new Date().toISOString(), failure_code: null, message: null, port: result.port });
         return;
       } catch { await this.service.stop(); }
     } else if (this.store?.snapshot().service_process) {
@@ -248,6 +279,9 @@ export class RuntimeTasks extends BootstrapTasks {
       SPEECHCRAFT_FFPROBE_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffprobe') : '',
       SPEECHCRAFT_FFMPEG_DIR: ffmpegDir || '',
       SPEECHCRAFT_ASR_DEVICE: context.componentStatus.runtime_profile?.accelerator === 'cuda' ? 'cuda' : 'cpu',
+      SPEECHCRAFT_MANAGED_RUNTIME: '1',
+      SPEECHCRAFT_PYANNOTE_DEVICE: context.componentStatus.runtime_profile?.pyannote_cuda_validated === true ? 'cuda' : 'cpu',
+      SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED: context.componentStatus.runtime_profile?.pyannote_cuda_validated === true ? '1' : '0',
       LD_LIBRARY_PATH: worker?.library_paths?.join(path.delimiter) || '',
     };
     this.service = new BackendService({ store: this.store, dataDirectory: this.dataDirectory,
@@ -273,7 +307,7 @@ export class RuntimeTasks extends BootstrapTasks {
   async verifyServices(context) {
     if (!this.service) throw Object.assign(new Error('No supervised backend process is available for health verification.'), { code: 'BACKEND_SERVICE_MISSING' });
     const result = await this.service.verify();
-    this.setComponent(context, 'backend_service', { state: 'verified', verification: 'loopback_healthz', last_verified_at: new Date().toISOString(), failure_code: null, message: null, port: result.port });
+    this.setComponent(context, 'backend_service', { state: 'verified', verification: 'internal_health_identity', last_verified_at: new Date().toISOString(), failure_code: null, message: null, port: result.port });
     const components = context.componentStatus.components;
     const bootstrapVerified = ['uv', 'managed_python', 'backend_environment', 'worker_environment', 'backend_service']
       .every((name) => components?.[name]?.state === 'verified');

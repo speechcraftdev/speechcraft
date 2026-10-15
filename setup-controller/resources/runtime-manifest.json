@@ -106,7 +106,7 @@
       {
         "component": "ffmpeg",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-      "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
+        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
         "environment_role": "worker",
         "arguments": [
           "ffmpeg"
@@ -117,7 +117,7 @@
       {
         "component": "silero",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-      "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
+        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
         "environment_role": "worker",
         "arguments": [
           "silero"
@@ -128,7 +128,7 @@
       {
         "component": "whisper",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-      "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
+        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
         "environment_role": "worker",
         "arguments": [
           "whisper"
@@ -139,7 +139,7 @@
       {
         "component": "titanet",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-      "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
+        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
         "environment_role": "worker",
         "arguments": [
           "titanet"
@@ -150,7 +150,7 @@
       {
         "component": "pyannote",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
+        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
         "environment_role": "worker",
         "arguments": [
           "pyannote"
@@ -161,7 +161,7 @@
       {
         "component": "cuda",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-      "sha256": "c3937022faf0f54d8f417bbcb0dba78cdb4e0453d208a71916a40df6d1dfc3f5",
+        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
         "environment_role": "worker_cuda_candidate",
         "fixture": "speech",
         "arguments": [

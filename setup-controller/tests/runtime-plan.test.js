@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { assertTrustedBackendRecipe, cudaProfileReady, initialComponents, runtimeManifest, selectRuntimeProfile } from '../src/runtime-plan.js';
+import { assertTrustedBackendRecipe, cudaProfileReady, evaluateRuntimeReadiness, initialComponents, runtimeManifest, selectRuntimeProfile } from '../src/runtime-plan.js';
 import { RuntimeTasks } from '../src/runtime-tasks.js';
 
 const sha = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -36,6 +36,58 @@ test('CUDA remains a candidate until its recipe and independent Torch/CTranslate
     { ...passingCuda, required_libraries: { cublas: true, cudnn: false, cudart: true } }), false);
   assert.equal(selectRuntimeProfile(host, { gpuDetected: true, cudaRecipeAvailable: true, cudaValidated: true,
     cudaProbe: { ...passingCuda, ctranslate2_cuda_success: false } }).workerProfile, 'linux-x86_64-cpu');
+});
+
+test('readiness derives technical processing and release approval from current component evidence', () => {
+  const components = Object.fromEntries(['managed_python', 'backend_environment', 'worker_environment', 'backend_service']
+    .map((name) => [name, { state: 'verified', verification: name === 'backend_service' ? 'internal_health_identity' : 'trusted_recipe' }]));
+  for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+    components[name] = { state: 'runtime_ready', runtime_ready: true };
+  }
+  components.ffmpeg.redistribution_approved = true;
+  components.titanet.release_approved = true;
+  let readiness = evaluateRuntimeReadiness(components);
+  assert.deepEqual(readiness, { technical_ready: true, production_ready: true, blockers: [], release_blockers: [] });
+  components.pyannote = { state: 'waiting_for_token', failure_code: 'HF_MODEL_ACCESS_REQUIRED', message: 'Accept access.' };
+  readiness = evaluateRuntimeReadiness(components);
+  assert.equal(readiness.technical_ready, false);
+  assert.deepEqual(readiness.blockers[0], { component: 'pyannote', code: 'HF_MODEL_ACCESS_REQUIRED', message: 'Accept access.' });
+  components.pyannote = { state: 'failed', failure_code: 'PYANNOTE_RUNTIME_VALIDATION_FAILED', message: 'Offline inference failed.' };
+  readiness = evaluateRuntimeReadiness(components);
+  assert.equal(readiness.blockers[0].code, 'PYANNOTE_RUNTIME_VALIDATION_FAILED');
+  components.pyannote = { state: 'runtime_ready', runtime_ready: true };
+  components.titanet.release_approved = false;
+  components.backend_service = { state: 'failed', failure_code: 'BACKEND_EXITED', message: 'Backend exited.' };
+  readiness = evaluateRuntimeReadiness(components);
+  assert.equal(readiness.technical_ready, false);
+  assert.equal(readiness.blockers.find((item) => item.component === 'backend_service').code, 'BACKEND_EXITED');
+  assert.equal(readiness.release_blockers.find((item) => item.component === 'titanet').code, 'TITANET_PROVENANCE_UNRESOLVED');
+});
+
+test('each technical prerequisite independently blocks readiness and repaired evidence clears stale errors', () => {
+  const components = Object.fromEntries(['managed_python', 'backend_environment', 'worker_environment']
+    .map((name) => [name, { state: 'verified', verification: 'trusted_recipe' }]));
+  for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+    components[name] = { state: 'runtime_ready', runtime_ready: true };
+  }
+  components.backend_service = { state: 'verified', verification: 'internal_health_identity' };
+  const restore = structuredClone(components);
+  for (const name of ['managed_python', 'backend_environment', 'worker_environment', 'backend_service',
+    'ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+    const expected = structuredClone(restore);
+    expected[name] = { state: 'failed', failure_code: `${name.toUpperCase()}_FAILED`, message: `${name} repair required.` };
+    const failed = evaluateRuntimeReadiness(expected);
+    assert.equal(failed.technical_ready, false, `${name} failure must block technical readiness`);
+    assert.equal(failed.blockers[0].component, name);
+    assert.equal(failed.blockers[0].message, `${name} repair required.`);
+    const repaired = evaluateRuntimeReadiness(restore);
+    assert.equal(repaired.technical_ready, true);
+    assert.deepEqual(repaired.blockers, [], 'resolved failure text must not remain in the new evaluation');
+  }
+  const untrustedService = evaluateRuntimeReadiness({ ...restore,
+    backend_service: { state: 'verified', verification: 'generic_healthz' } });
+  assert.equal(untrustedService.technical_ready, false);
+  assert.equal(untrustedService.blockers[0].component, 'backend_service');
 });
 
 test('checked-in backend recipe identity is verified and unsupported components remain blocked', () => {
@@ -330,7 +382,7 @@ test('gated controller acquisition uses only the trusted role and sends token th
   const calls = [];
   const tasks = new RuntimeTasks({ dataDirectory: root, availableBytes: 32 * 1024 ** 3,
     processRunner: async (python, args, options) => {
-      calls.push({ python, args, env: options.env, stdinData: options.stdinData });
+      calls.push({ python, args, env: options.env, stdinData: Buffer.isBuffer(options.stdinData) ? Buffer.from(options.stdinData) : options.stdinData });
       const actionAt = args.findIndex((value) => ['install', 'status', 'authorize-install'].includes(value));
       const action = args[actionAt];
       const role = args[actionAt + 1];
@@ -354,7 +406,8 @@ test('gated controller acquisition uses only the trusted role and sends token th
   assert.equal(gated.args[gated.args.indexOf('authorize-install') + 1], 'diarization');
   assert.equal(gated.args.includes(token), false);
   assert.equal(JSON.stringify(gated.env).includes(token), false);
-  assert.equal(gated.stdinData, `${token}\n`);
+  assert.equal(gated.stdinData.toString('utf8'), `${token}\n`);
+  gated.stdinData.fill(0);
   assert.equal(context.componentStatus.components.pyannote.state, 'files_verified');
   assert.equal(context.componentStatus.components.pyannote.runtime_ready, false);
   assert.equal(context.componentStatus.production_ready, false);

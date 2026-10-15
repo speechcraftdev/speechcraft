@@ -366,17 +366,39 @@ class _Installer:
 
     def check(self, role, platform, *, experimental=False):
         model_id, key, artifact = self.resolve(role, platform, experimental=experimental)
-        path = self.root / model_id / key
+        last_report = None
         try:
             with self.store(model_id, False) as (_, model):
-                final = _directory(model, key)
-                try:
-                    report = verify_directory_fd(final, artifact, str(path))
-                finally:
-                    os.close(final)
+                for candidate_key in (key, *self._legacy_shared_keys(model_id, artifact)):
+                    path = self.root / model_id / candidate_key
+                    try:
+                        final = _directory(model, candidate_key)
+                    except FileNotFoundError:
+                        continue
+                    try:
+                        report = verify_directory_fd(final, artifact, str(path))
+                    finally:
+                        os.close(final)
+                    if report.get('install_ready'):
+                        return report
+                    last_report = report
         except FileNotFoundError:
-            return {'status': 'missing', 'install_ready': False, 'runtime_ready': None, 'root': str(path)}
-        return report
+            pass
+        return last_report or {'status': 'missing', 'install_ready': False, 'runtime_ready': None,
+                               'root': str(self.root / model_id / key)}
+
+    @staticmethod
+    def _legacy_shared_keys(model_id, artifact):
+        # Stage 6.1 makes Community-1's platform-independent snapshot shared.
+        # Older SpeechCraft releases keyed the exact same inventory with a
+        # Linux-only platform field. Verify and reuse that directory in place.
+        if model_id != 'pyannote-community-1' or artifact.get('platform') != 'all-supported':
+            return ()
+        legacy = dict(artifact)
+        legacy.pop('supported_platforms', None)
+        legacy['platform'] = 'linux-x86_64'
+        key = hashlib.sha256(json.dumps(legacy, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        return (key,)
 
     @contextmanager
     def lock(self, model, key):
@@ -657,6 +679,19 @@ class _Installer:
             _validate_huggingface_storage(self.root)
         path = self.root / model_id / key
         with self.store(model_id, True) as (root, model), self.lock(model, key):
+            for legacy_key in self._legacy_shared_keys(model_id, artifact):
+                with self.lock(model, legacy_key):
+                    try:
+                        legacy = _directory(model, legacy_key)
+                    except FileNotFoundError:
+                        continue
+                    try:
+                        report = verify_directory_fd(legacy, artifact, str(self.root / model_id / legacy_key))
+                    finally:
+                        os.close(legacy)
+                    if report.get('install_ready'):
+                        self.emit('reused', root=report['root'], legacy_key_reused=True)
+                        return {**report, 'reused': True, 'legacy_key_reused': True}
             self._cleanup_stages(model, key)
             self._cleanup_quarantines(model, key)
             stage_name = '.stage-' + key

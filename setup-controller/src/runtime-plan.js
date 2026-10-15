@@ -39,6 +39,36 @@ export function selectRuntimeProfile(host = hostEnvironment(), capabilities = {}
   throw Object.assign(new Error('No trusted SpeechCraft runtime profile exists for this host.'), { code: 'RUNTIME_PROFILE_UNAVAILABLE' });
 }
 
+const TECHNICAL_COMPONENTS = Object.freeze([
+  ['managed_python', 'verified'], ['backend_environment', 'verified'], ['worker_environment', 'verified'],
+  ['ffmpeg', 'runtime_ready'], ['silero', 'runtime_ready'], ['whisper', 'runtime_ready'],
+  ['pyannote', 'runtime_ready'], ['titanet', 'runtime_ready'], ['backend_service', 'verified'],
+]);
+
+/** Single source of truth for technical processing and release readiness. */
+export function evaluateRuntimeReadiness(components = {}) {
+  const blockers = [];
+  for (const [name, expected] of TECHNICAL_COMPONENTS) {
+    const value = components[name];
+    const ready = expected === 'verified'
+      ? value?.state === 'verified' && (name !== 'backend_service' || value.verification === 'internal_health_identity')
+      : value?.state === 'runtime_ready' && value.runtime_ready === true;
+    if (!ready) blockers.push({ component: name, code: value?.failure_code || `${name.toUpperCase()}_NOT_READY`,
+      message: value?.message || `${name} has not passed its required verification.` });
+  }
+  const technicalReady = blockers.length === 0;
+  const releaseBlockers = [];
+  if (components.titanet?.release_approved !== true) releaseBlockers.push({ component: 'titanet',
+    code: 'TITANET_PROVENANCE_UNRESOLVED', message: components.titanet?.message || 'TitaNet checkpoint provenance and redistribution approval remain unresolved.' });
+  if (components.ffmpeg?.redistribution_approved !== true) releaseBlockers.push({ component: 'ffmpeg',
+    code: 'FFMPEG_RELEASE_REVIEW_REQUIRED', message: 'FFmpeg product redistribution compliance review remains required.' });
+  if (components.pyannote?.state !== 'runtime_ready') releaseBlockers.push({ component: 'pyannote',
+    code: components.pyannote?.failure_code || 'PYANNOTE_RUNTIME_NOT_READY',
+    message: components.pyannote?.message || 'Community-1 authorization and offline inference validation are required.' });
+  return { technical_ready: technicalReady, production_ready: technicalReady && releaseBlockers.length === 0,
+    blockers, release_blockers: releaseBlockers };
+}
+
 /** CUDA is selectable only after both the recipe and runtime probes are trusted. */
 export function hashMatches(file, expected) {
   if (!/^[a-f0-9]{64}$/.test(expected || '')) return false;

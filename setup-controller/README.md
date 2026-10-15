@@ -55,20 +55,22 @@ installable only when its manifest entry is marked both `available` and
 `validated`, pins the project manifest and lock SHA-256 values, identifies the
 managed Python version, environment version, disk estimate, and required
 import checks. The checked-in Linux CPU profile is installable and validated.
-CUDA Linux and macOS remain unavailable; the CUDA lock is not yet a validated
-complete recipe. Trusted worker inference probes are checked in for FFmpeg,
-Silero, Whisper, experimental TitaNet, Community-1, and CUDA. The controller
-checks their digests, runs them through the managed worker interpreter with a
-bounded timeout and process ownership, and accepts readiness only from a
-structured result confirming inference completed. The Community-1 probe uses a
-bundled CC0 two-voice synthetic dialogue fixture; it performs real inference
-but does not qualify performance on human conversation. Failed probes leave
-their components blocked and do not imply full readiness. TitaNet's release
-blocker remains. No FFmpeg/FFprobe bundle is installed until its exact source,
-digest, and redistribution obligations are approved. These components appear
-as blocked in status, while an eligible backend can still be started and
-checked at `/healthz`.
-`production_ready` remains false.
+Linux CPU is the default validated worker recipe. The Linux CUDA route is
+selected only after its trusted candidate environment and separate PyTorch,
+CTranslate2, library, and Whisper inference checks pass; this host-specific
+validation is recorded in `workers/dataset/RUNTIME_PROFILES.md`. macOS
+validation remains pending Kavin's Apple Silicon test. Trusted worker inference
+probes are manifest-pinned for FFmpeg, Silero, Whisper, experimental TitaNet,
+Community-1, and CUDA. The controller checks their digests, runs them through
+the appropriate managed interpreter with bounded output/timeouts and process
+ownership, and accepts runtime readiness only from structured completed
+inference. The Community-1 probe converts the real pyannote `Annotation` through
+the production speaker-region converter and requires two speakers in the
+pinned CC0 fixture; it does not establish quality on human conversation. A
+verified FFmpeg pair is installed from its pinned managed archive, with product
+redistribution/legal review still open. Missing Community-1 authorization and
+TitaNet provenance remain visible blockers, so production readiness remains
+false.
 
 Backend service launch uses a durable ownership gate. The child blocks on
 stdin before importing Uvicorn or serving requests; the controller releases
@@ -401,15 +403,11 @@ Python/model installations. Real network smoke tests are opt-in.
 
 ## Remaining runtime blockers
 
-The Linux x86-64 CPU worker recipe is pinned, controller-installable, and
-validated for environment imports plus actual Silero ONNX and offline Whisper
-Large-v3 inference. This host has an RTX 4060, but its CTranslate2 Whisper GPU
-attempt failed because `libcublas.so.12` is unavailable; the installed Torch
-is CPU-only, so CUDA remains unvalidated and unselectable. Earlier controller
-smoke probes confirmed Silero and Whisper readiness. This Stage 6 change adds
-the gated acquisition path, but no authorized token or Community-1 snapshot was
-available to exercise live download or diarization here. The Community-1 probe
-uses synthetic two-voice TTS audio, not human conversation. The complete
-dataset job remains blocked until authorized local inference and the other
-runtime release blockers pass. TitaNet's licensing/provenance and score
-calibration remain release gates. Mac and WSL2 were not tested.
+Linux x86-64 CPU worker environment, Silero and offline Whisper Large-v3
+inference have been exercised. The RTX 4060 CUDA result and managed FFmpeg
+decode evidence are recorded in `workers/dataset/RUNTIME_PROFILES.md`. The
+live authenticated Community-1 download and diarization were not tested here:
+no authorized token or snapshot was available. The complete production dataset
+job remains blocked pending that real offline diarization plus remaining
+release gates. TitaNet provenance and FFmpeg product redistribution review
+remain open. Native WSL2 and macOS were not tested.

@@ -307,3 +307,88 @@ test('process killed during stale ownership recovery leaves a safe manual-recove
     && error.code === 'LOCK_RECOVERY_REQUIRED');
   fs.rmSync(directory, { recursive: true, force: true });
 });
+
+test('credential is delivered only after durable process ownership acknowledgement', async () => {
+  const marker = 'hf_SECRET_MARKER_ownership_gate_123456';
+  let persisted = false;
+  const order = [];
+  const result = await runOwnedProcess(process.execPath, ['-e',
+    `let s='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>process.stdout.write(s===${JSON.stringify(marker)}?'received':'empty'))`], {
+    cwd: os.tmpdir(), env: { PATH: process.env.PATH }, stdinData: Buffer.from(marker),
+    onChildProcess: async (record) => {
+      if (record?.pid) { order.push('persisting'); await new Promise((resolve) => setTimeout(resolve, 25)); persisted = true; order.push('persisted'); }
+    },
+    onOutput: (_stream, chunk) => { if (chunk.toString() === 'received') { assert.equal(persisted, true); order.push('consumed'); } },
+  });
+  assert.equal(result.stdout, 'received');
+  assert.ok(order.indexOf('persisting') < order.indexOf('persisted'));
+  assert.ok(order.indexOf('persisted') < order.indexOf('consumed'));
+  assert.ok(order.filter((value) => value === 'persisting').length >= 1);
+  assert.equal(JSON.stringify(result).includes(marker), false);
+});
+
+test('failed ownership persistence or unavailable process identity withholds credentials', async () => {
+  for (const identityResolver of [undefined, () => null]) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-secret-gate-'));
+    const received = path.join(directory, 'received');
+    const exited = path.join(directory, 'exited');
+    const marker = 'hf_SECRET_MARKER_must_not_be_consumed_123456';
+    const childCode = `const fs=require('node:fs');let s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{if(s)fs.writeFileSync(${JSON.stringify(received)},s);fs.writeFileSync(${JSON.stringify(exited)},'closed')});`;
+    let writes = 0;
+    let childPid = null;
+    const options = { cwd: directory, env: { PATH: process.env.PATH }, stdinData: Buffer.from(marker), graceMs: 100,
+      ...(identityResolver ? { identityResolver } : {}),
+      onChildProcess: async (record) => { writes += 1; if (record?.pid) childPid = record.pid;
+        if (record?.pid && writes === 1 && !identityResolver) throw new Error('state write failed'); } };
+    await assert.rejects(runOwnedProcess(process.execPath, ['-e', childCode], options),
+      (error) => ['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN', 'BOOTSTRAP_OWNERSHIP_PERSIST_FAILED'].includes(error.code));
+    const deadline = Date.now() + 2_000;
+    while (!fs.existsSync(exited) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(fs.existsSync(received), false);
+    if (identityResolver) assert.ok(fs.existsSync(exited), 'an unidentifiable child may exit only through the closed input pipe');
+    else assert.throws(() => process.kill(childPid, 0), { code: 'ESRCH' }, 'a child with valid identity is terminated after ownership persistence fails');
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('cancellation before process creation and between spawn and ownership persistence cannot release a token', async () => {
+  const before = new AbortController(); before.abort();
+  await assert.rejects(runOwnedProcess(process.execPath, ['-e', 'process.exit(0)'], {
+    signal: before.signal, stdinData: Buffer.from('hf_SECRET_MARKER_pre_spawn_123456'),
+    onChildProcess: () => assert.fail('pre-aborted execution must not spawn') }), { code: 'BOOTSTRAP_CANCELLED' });
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-secret-cancel-'));
+  const received = path.join(directory, 'received');
+  const childCode = `const fs=require('node:fs');let s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{if(s)fs.writeFileSync(${JSON.stringify(received)},s)});`;
+  const abort = new AbortController();
+  let signalPersistStarted;
+  const persistStarted = new Promise((resolve) => { signalPersistStarted = resolve; });
+  let release;
+  const persistenceGate = new Promise((resolve) => { release = resolve; });
+  const operation = runOwnedProcess(process.execPath, ['-e', childCode], {
+    cwd: directory, env: { PATH: process.env.PATH }, stdinData: Buffer.from('hf_SECRET_MARKER_cancel_123456'),
+    signal: abort.signal, graceMs: 100,
+    onChildProcess: async (record) => { if (record?.pid) { signalPersistStarted(); await persistenceGate; } },
+  });
+  await persistStarted;
+  abort.abort();
+  release();
+  await assert.rejects(operation, (error) => ['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN'].includes(error.code));
+  assert.equal(fs.existsSync(received), false);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test('an obsolete setup attempt cannot acknowledge ownership or receive the credential', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-secret-obsolete-attempt-'));
+  const received = path.join(directory, 'received');
+  let childPid = null;
+  const code = `const fs=require('node:fs');let data='';process.stdin.on('data',b=>data+=b);process.stdin.on('end',()=>{if(data)fs.writeFileSync(${JSON.stringify(received)},data)});`;
+  await assert.rejects(runOwnedProcess(process.execPath, ['-e', code], {
+    cwd: directory, env: { PATH: process.env.PATH }, graceMs: 100,
+    stdinData: Buffer.from('hf_SECRET_MARKER_obsolete_attempt_123456'),
+    onChildProcess: (record) => { if (record?.pid) childPid = record.pid; return false; },
+  }), (error) => ['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN'].includes(error.code));
+  assert.equal(fs.existsSync(received), false);
+  assert.throws(() => process.kill(childPid, 0), { code: 'ESRCH' });
+  fs.rmSync(directory, { recursive: true, force: true });
+});

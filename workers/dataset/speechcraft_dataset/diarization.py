@@ -115,7 +115,7 @@ def annotation_to_speechcraft_regions(
 
 def community1_snapshot_ready(path: Path) -> tuple[bool, str]:
     if not path.is_dir() or path.is_symlink():
-        return False, f"pyannote Community-1 snapshot is missing or not a safe directory: {path}"
+        return False, f"pyannote Community-1 snapshot is missing or not a directory, or is otherwise unsafe: {path}"
     try:
         from speechcraft_models.manifest import load_catalog, select_artifact, verify_artifact
 
@@ -145,6 +145,13 @@ def resolve_community1_model_path(config: dict[str, Any]) -> Path:
 
 
 def resolve_diarization_device(config: dict[str, Any]) -> str:
+    # Managed mode uses the controller's validated per-model decision. GPU
+    # visibility alone is not evidence that pyannote CUDA inference passed.
+    if os.environ.get("SPEECHCRAFT_MANAGED_RUNTIME") == "1":
+        requested = str(os.environ.get("SPEECHCRAFT_PYANNOTE_DEVICE", "cpu")).strip().lower()
+        if requested == "cuda" and os.environ.get("SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED") == "1":
+            return "cuda"
+        return "cpu"
     explicit = str(config.get("diarization_device") or "").strip()
     if explicit:
         return explicit

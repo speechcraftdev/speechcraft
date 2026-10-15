@@ -58,15 +58,20 @@ lightweight model manager. Launcher-selected `runtime` extends this plan with:
 5. Backend startup in a process group, loopback `/healthz` validation and
    separate service ownership.
 
-Backend service status says only that the API process answers its health check.
+Backend service readiness requires the private `/_setup/health` route to echo
+the unpredictable identity for that launch over loopback. A generic listener
+on the selected port or a stale identity is rejected. The identity is passed
+only to the child process and internal health request; it is not persisted or
+included in public setup responses. The public `/healthz` route remains a
+basic process health endpoint.
 It waits at a stdin launch gate until its PID and OS identity are durably
 recorded. A v2 starting intent with no PID proves the gate was never released
 and is safe to clear; records without this protocol remain conservative.
 The backend retains ownership of on-demand dataset jobs. It receives
 `SPEECHCRAFT_DATASET_WORKER_ROOT` and
-`SPEECHCRAFT_DATASET_WORKER_PYTHON`; the latter points at the future managed
-worker environment, and worker processing remains unavailable until that
-environment and its required tools validate.
+`SPEECHCRAFT_DATASET_WORKER_PYTHON`; the latter points at the verified,
+versioned managed worker environment. Dataset processing remains blocked
+until its required tools, models, inference probes, and service checks pass.
 
 ## Current component gates
 
@@ -74,22 +79,26 @@ The controller and model manager support authenticated Community-1 acquisition
 for the pinned `pyannote/speaker-diarization-community-1` revision. When no
 complete local snapshot exists, runtime setup waits for a user token. The
 authenticated controller endpoint sends that credential only over a private
-stdin pipe to the fixed model-manager helper. The helper checks identity and
-gated file access separately. Credentials are discarded after the attempt and
-are not persisted. A bundled CC0 two-voice synthetic dialogue is available to
-the offline pyannote inference probe; it does not replace validation on human
-multi-speaker recordings. An authorized snapshot is still required to execute
-the probe.
+stdin pipe after PID and process identity are durably recorded. The helper
+checks identity and gated file access separately. Mutable credential buffers
+are cleared after use where practical; credentials are not persisted. The
+offline probe consumes a real pyannote `Annotation` through the same
+`annotation_to_speechcraft_regions` converter as the production pipeline and
+requires two in-bounds speaker identities from the pinned CC0 two-voice
+fixture. This does not replace validation on human multi-speaker recordings.
+An authorized snapshot is still required to execute the probe.
 
-The checked-in Linux CPU recipe is validated; CUDA and macOS runtime recipes
-remain unavailable. The trusted FFmpeg/FFprobe artifact bundle and its
-redistribution record are also unavailable. TitaNet release approval remains
-blocked. Consequently dataset processing and `production_ready` remain false.
-Runtime installation can be partial and the API reports each blocker.
+The Linux CPU recipe and the host-specific Linux CUDA route are documented in
+`workers/dataset/RUNTIME_PROFILES.md`; the manifest contains the current
+validated recipes. macOS runtime validation remains pending Kavin's hardware
+test. Managed FFmpeg/FFprobe is available and locally verified, while product
+redistribution review remains a release blocker. TitaNet provenance remains
+blocked, and Community-1 requires an authorized snapshot plus the real offline
+probe. The API reports technical and release blockers separately.
 
 Model status distinguishes `files_verified` from `runtime_ready`. A completed
-setup plan is not a production-ready workstation. No synthetic inference
-synthetic placeholder inference or experimental TitaNet override are used.
+setup plan is not a production-ready workstation. No placeholder inference or
+automatic experimental TitaNet override is used.
 
 ## Authentication handoff
 
@@ -103,19 +112,22 @@ on loopback and explicitly configure expected Host/Origin at the trusted proxy.
 Origin, Host and CSRF checks remain active. Launcher/proxy integration still
 needs end-to-end validation.
 
-If gated-model auth is added, the future API must bind a one-time credential to
-the active attempt and send it through protected stdin or a file descriptor to a
-trusted Python helper. It must not enter state, arguments, logs or events and
-must be discarded after use. This release has no such helper and never accepts
-or persists HF tokens.
+The current authenticated API accepts the token only at
+`POST /setup-api/models/pyannote/authorize`, requires same-origin and CSRF
+checks, and scopes it to the active setup attempt. The credential is piped to
+the fixed model-manager helper only after durable process ownership is
+established. It is not written to state, argv, environment, logs, events,
+diagnostics, or temporary files. A controller restart during acquisition
+discards the token and asks for it again; a complete verified local snapshot
+does not require reauthorization.
 
 ## Profile validation status
 
 | Profile | Artifact selection | Bootstrap implementation | Full worker/runtime status |
 |---|---|---|---|
-| Linux x86-64 CPU | Linux artifacts | Shared; CPU worker lock is available | Environment and Silero/Whisper CPU inference exercised; full worker blocked by managed FFmpeg and Community-1 snapshot |
-| Linux x86-64 NVIDIA | Linux artifacts | Shared; CUDA 12.8 lock is pinned | Not validated: no working driver or real CUDA inference on this host |
-| Ubuntu WSL2 x86-64 | Linux runtime, WSL model label | Shared with native-filesystem enforcement | Uses CPU recipe today; actual WSL filesystem/device validation pending |
-| macOS ARM64 | macOS artifacts | Shared | Backend/model route implemented; worker/inference compatibility pending Apple Silicon validation |
+| Linux x86-64 CPU | Linux artifacts | Shared; CPU worker lock is available | Environment and CPU probes documented as exercised; full Community-1 processing is pending authorized local model access |
+| Linux x86-64 NVIDIA | Linux artifacts | Shared; CUDA 12.8 recipe | Hardware-specific results and current `libcublas` status are recorded in `workers/dataset/RUNTIME_PROFILES.md`; revalidation is per installation |
+| Ubuntu WSL2 x86-64 | Linux runtime, WSL model label | Shared with native-filesystem enforcement | Runtime uses Linux profile; native WSL host validation remains pending |
+| macOS ARM64 | macOS artifacts | Shared | Apple Silicon worker/inference compatibility pending Kavin's validation |
 
 These are implementation and blocker descriptions, not claims of host testing.

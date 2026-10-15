@@ -63,6 +63,16 @@ class ModelManifestTests(unittest.TestCase):
                 result = verify_artifact(self.root, artifact)
                 self.assertFalse(result["install_ready"])
 
+    def test_community1_shared_snapshot_selects_identical_inventory_on_supported_hosts(self):
+        catalog = parse_manifest(SCHEMA_PATH.with_name("model-catalog.json"))
+        selected = [select_artifact(catalog, "diarization", platform)
+                    for platform in ("linux-x86_64", "windows-wsl2", "macos-arm64")]
+        self.assertEqual({item["revision"] for item in selected}, {"3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"})
+        self.assertEqual([item["required_files"] for item in selected], [selected[0]["required_files"]] * 3)
+        self.assertEqual([item["platform"] for item in selected], ["all-supported"] * 3)
+        with self.assertRaises(ManifestError):
+            select_artifact(catalog, "diarization", "windows-x64")
+
     def test_each_schema_required_field_is_enforced(self):
         schema = json.loads(SCHEMA_PATH.read_text())
 

@@ -277,6 +277,27 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(len(self.server.requests), count)
         self.assertIn('progress', [e['event'] for e in self.events])
 
+    def test_shared_community1_artifact_reuses_verified_linux_only_key(self):
+        catalog = copy.deepcopy(load_catalog())
+        model = next(item for item in catalog['models'] if item['role'] == 'diarization')
+        artifact = model['artifacts'][0]
+        artifact.pop('source', None)
+        artifact['required_files'] = [{'path': 'config.yaml', 'size_bytes': 2,
+            'sha256': hashlib.sha256(b'{}').hexdigest(), 'url': self.server.base + '/config'}]
+        installer = _Installer(self.root, catalog, allow_test_http=True, retry_delay=0)
+        model_id, current_key, selected = installer.resolve('diarization', 'macos-arm64')
+        legacy_key, = installer._legacy_shared_keys(model_id, selected)
+        legacy_dir = self.root / model_id / legacy_key
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / 'config.yaml').write_bytes(b'{}')
+        checked = installer.check('diarization', 'macos-arm64')
+        self.assertTrue(checked['install_ready'])
+        self.assertEqual(Path(checked['root']), legacy_dir)
+        result = installer.install('diarization', 'macos-arm64')
+        self.assertTrue(result['reused'])
+        self.assertTrue(result['legacy_key_reused'])
+        self.assertNotEqual(current_key, legacy_key)
+
     def test_interruption_resumes_with_strong_validator(self):
         self.server.modes = ['drop', 'ok']
         with patch('speechcraft_models.download.CHECKPOINT_BYTES', 512):

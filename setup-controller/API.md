@@ -123,8 +123,12 @@ The earlier real `bootstrap` mode uses these ordered stages:
 5. `validate_bootstrap`
 
 `completed` means the selected plan finished. It does not itself establish
-inference or workstation readiness. `production_ready` is always `false` in
-API v4. `bootstrap_ready` covers only uv, managed CPython and model-manager
+inference or workstation readiness. `technical_processing_ready` is derived
+from current managed environments, verified tools/models, real inference
+probes, and authenticated backend health. `production_ready` additionally
+requires release approvals. With current TitaNet provenance, FFmpeg
+redistribution, and Community-1 access gates, production readiness remains
+false. `bootstrap_ready` covers only uv, managed CPython and model-manager
 verification; `files_verified` does not mean `runtime_ready`.
 
 ## Snapshot and job shape
@@ -397,6 +401,18 @@ ignore fields they do not use.
 
 ## Readiness boundary
 
-Every response has `production_ready: false`, including successful runtime
-plans. The `simulated` field describes the configured controller mode. Model
-files are only file-verified; actual inference is not asserted.
+`dataset_processing` is derived from managed Python, backend and worker
+environments, managed FFmpeg, Silero, Whisper Large-v3, Community-1, speaker
+purity runtime capability, and a backend health check authenticated with the
+identity generated for that service launch. The first unmet prerequisite
+supplies the blocker code and message. Revalidation after controller restart
+clears old runtime-ready claims until current artifacts and probes pass again.
+A backend exit invalidates service and processing readiness.
+
+`technical_processing_ready` means those current technical prerequisites
+pass; it is separate from public-release readiness. `production_ready` also
+requires licensing, provenance, and redistribution approvals. The selected
+TitaNet artifact and FFmpeg distribution still have release blockers, so
+current production readiness remains false. A completed setup plan only
+means its configured stages finished. The `simulated` field describes the
+configured controller mode.

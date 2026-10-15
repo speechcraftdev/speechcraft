@@ -900,7 +900,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                 first = int.from_bytes(handle.readframes(1), 'little', signed=True)
             self.assertEqual(first, 2000)
 
-    @unittest.skipUnless(HAS_WORKER_AUDIO_DEPS, 'requires worker audio deps')
+    @unittest.skipUnless(HAS_WORKER_AUDIO_DEPS and importlib.util.find_spec('torch'), 'requires worker audio and PyTorch dependencies')
     def test_pipeline_ingest_to_candidates_does_not_require_whisper_or_mfa(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_raw:
             temp_dir = Path(temp_dir_raw)
@@ -909,6 +909,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             write_silent_wav(source, sample_rate=16000, duration_sec=1.0)
 
             def fake_vad(fake_run_root: Path, _config: dict) -> dict:
+                (fake_run_root / 'artifacts').mkdir(parents=True, exist_ok=True)
                 (fake_run_root / 'artifacts' / 'vad_segments.jsonl').write_text(
                     json.dumps(
                         {
@@ -940,7 +941,7 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
                         'candidate_review_clips',
                     ]
                 )
-            self.assertEqual(exit_code, 0)
+            self.assertEqual(exit_code, 0, (run_root / 'status.json').read_text(encoding='utf-8'))
             status = read_json(run_root / 'status.json')
             self.assertEqual(status['stage'], 'candidate_review_clips')
             self.assertTrue((run_root / 'artifacts' / 'candidate_review_manifest.json').exists())

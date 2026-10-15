@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -44,6 +45,42 @@ def test_probe_fixture_digest_mismatch_is_rejected(tmp_path: Path, monkeypatch: 
     monkeypatch.delenv("SPEECHCRAFT_RUNTIME_PROBE_AUDIO", raising=False)
     with pytest.raises(RuntimeError, match="failed its pinned integrity check"):
         runtime_probe.audio_file("whisper")
+
+
+class AnnotationFixture:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def itertracks(self, *, yield_label=False):
+        assert yield_label is True
+        yield from self.rows
+
+
+def annotation(*rows):
+    return AnnotationFixture([(SimpleNamespace(start=start, end=end), None, label)
+                              for start, end, label in rows])
+
+
+def test_community1_probe_converts_pyannote_annotation_through_production_contract():
+    rows, speakers = runtime_probe.community1_probe_regions(
+        annotation((0.25, 1.5, "speaker_0"), (2.0, 3.25, "speaker_1")),
+        sample_rate=16_000, recording_duration=4.0)
+    assert len(rows) == 2
+    assert speakers == {"speaker_0", "speaker_1"}
+    assert rows[0]["backend"] == "pyannote_community_1"
+    assert rows[0]["start_sample"] == 4_000
+
+
+@pytest.mark.parametrize("value", [
+    annotation(),
+    annotation((0.0, 1.0, "speaker_0")),
+    annotation((0.0, 1.0, "speaker_0"), (float("nan"), 2.0, "speaker_1")),
+    annotation((0.0, 5.0, "speaker_0"), (1.0, 2.0, "speaker_1")),
+    AnnotationFixture([(object(), None, "speaker_0")]),
+])
+def test_community1_probe_rejects_empty_invalid_or_single_speaker_annotations(value):
+    with pytest.raises((RuntimeError, ValueError, TypeError, AttributeError)):
+        runtime_probe.community1_probe_regions(value, sample_rate=16_000, recording_duration=4.0)
 
 
 def test_cli_emits_one_safe_json_blocker_for_missing_managed_ffmpeg(tmp_path: Path) -> None:

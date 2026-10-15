@@ -32,16 +32,76 @@ export function assertTransition(from, to) {
   }
 }
 
-function publicJob(job) {
+const PUBLIC_JOB_FIELDS = Object.freeze(['schema_version', 'id', 'plan_id', 'state', 'stage', 'task_id', 'mode',
+  'created_at', 'updated_at', 'started_at', 'completed_at', 'attempt_count', 'attempt_id', 'revision', 'progress', 'error']);
+const PUBLIC_COMPONENT_NAMES = new Set(['uv', 'managed_python', 'model_manager', 'backend_environment', 'worker_environment',
+  'worker_cuda_candidate', 'ffmpeg', 'silero', 'whisper', 'titanet', 'pyannote', 'runtime_probes', 'backend_service', 'dataset_processing']);
+const PUBLIC_COMPONENT_FIELDS = Object.freeze(['identity', 'state', 'verification', 'last_verified_at', 'failure_code',
+  'message', 'runtime_ready', 'progress', 'progress_indeterminate', 'device', 'effective_profile', 'release_blockers',
+  'action_required', 'components', 'blocked_components', 'optional_blocked_components', 'inference_completed']);
+
+function publicComponentField(key, value) {
+  if (key === 'components' || key === 'blocked_components' || key === 'optional_blocked_components') {
+    return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(item)).slice(0, 32) : [];
+  }
+  if (key === 'release_blockers') {
+    return Array.isArray(value) ? value.slice(0, 32).map((item) => ({
+      component: typeof item?.component === 'string' && PUBLIC_COMPONENT_NAMES.has(item.component) ? item.component : 'unknown',
+      code: typeof item?.code === 'string' && /^[A-Z0-9_]{1,80}$/.test(item.code) ? item.code : 'RELEASE_BLOCKED',
+      message: typeof item?.message === 'string' ? item.message.slice(0, 320) : 'A release approval is unresolved.',
+    })) : [];
+  }
+  if (key === 'message') return typeof value === 'string' ? value.slice(0, 320) : null;
+  if (key === 'failure_code') return typeof value === 'string' && /^[A-Z0-9_]{1,80}$/.test(value) ? value : null;
+  return structuredClone(value);
+}
+
+export function publicComponents(components) {
+  if (!components || typeof components !== 'object') return null;
+  return Object.fromEntries(Object.entries(components).filter(([name]) => PUBLIC_COMPONENT_NAMES.has(name)).map(([name, value]) => [name,
+    Object.fromEntries(PUBLIC_COMPONENT_FIELDS.filter((key) => value?.[key] !== undefined)
+      .map((key) => [key, publicComponentField(key, value[key])]))]));
+}
+
+export function serializePublicJob(job) {
   if (!job) return null;
-  const value = structuredClone(job);
-  delete value.child_process;
+  const value = Object.fromEntries(PUBLIC_JOB_FIELDS.filter((key) => job[key] !== undefined)
+    .map((key) => [key, structuredClone(job[key])]));
+  if (job.error) value.error = {
+    code: typeof job.error.code === 'string' && /^[A-Z0-9_]{1,80}$/.test(job.error.code) ? job.error.code : 'SETUP_TASK_FAILED',
+    message: typeof job.error.message === 'string' ? job.error.message.slice(0, 320) : 'A setup operation failed.',
+  };
+  if (job.progress) value.progress = Object.fromEntries(['phase', 'current', 'total', 'percent', 'message', 'speed_bytes_per_second', 'indeterminate']
+    .filter((key) => job.progress[key] !== undefined).map((key) => [key, structuredClone(job.progress[key])]));
+  if (job.bootstrap_status) {
+    value.bootstrap_status = {
+      profile: job.bootstrap_status.profile || null,
+      wsl: job.bootstrap_status.wsl === true,
+      uv_verified: job.bootstrap_status.uv_verified === true,
+      python_verified: job.bootstrap_status.python_verified === true,
+      model_manager_verified: job.bootstrap_status.model_manager_verified === true,
+      bootstrap_ready: job.bootstrap_status.bootstrap_ready === true,
+      partial_ready: job.bootstrap_status.partial_ready === true,
+      production_ready: job.bootstrap_status.production_ready === true,
+      technical_processing_ready: job.bootstrap_status.technical_processing_ready === true,
+      release_blockers: Array.isArray(job.bootstrap_status.release_blockers) ? structuredClone(job.bootstrap_status.release_blockers) : [],
+      components: publicComponents(job.bootstrap_status.components),
+      runtime_profile: job.bootstrap_status.runtime_profile ? {
+        profile: job.bootstrap_status.runtime_profile.profile || null,
+        workerProfile: job.bootstrap_status.runtime_profile.workerProfile || null,
+        modelPlatform: job.bootstrap_status.runtime_profile.modelPlatform || null,
+        accelerator: job.bootstrap_status.runtime_profile.accelerator || null,
+        cuda_candidate: job.bootstrap_status.runtime_profile.cuda_candidate === true,
+        cuda_validated: job.bootstrap_status.runtime_profile.cuda_validated === true,
+      } : null,
+    };
+  }
   return value;
 }
 
 export function publicStatus(store, controllerStatus = 'running', mode = 'simulated') {
   const state = store.snapshot();
-  const job = state.job ? publicJob(state.job) : {
+  const job = state.job ? serializePublicJob(state.job) : {
     schema_version: 2,
     id: null, state: 'idle', stage: null, task_id: null, progress: null,
     error: null, attempt_count: 0, revision: state.revision,
@@ -55,11 +115,12 @@ export function publicStatus(store, controllerStatus = 'running', mode = 'simula
     mode,
     simulated: mode === 'simulated',
     setup_plan: state.job?.plan_id || (mode === 'simulated' ? 'simulated-v1' : mode === 'runtime' ? 'speechcraft-runtime-v1' : 'bootstrap-v1'),
-    components: state.job?.bootstrap_status?.components || null,
-    runtime_profile: state.job?.bootstrap_status?.runtime_profile || null,
+    components: publicComponents(state.job?.bootstrap_status?.components),
+    runtime_profile: serializePublicJob(state.job)?.bootstrap_status?.runtime_profile || null,
+    technical_processing_ready: state.job?.bootstrap_status?.technical_processing_ready === true,
     bootstrap_ready: state.job?.bootstrap_status?.bootstrap_ready === true,
     partial_ready: state.job?.bootstrap_status?.partial_ready === true,
-    production_ready: false,
+    production_ready: state.job?.bootstrap_status?.production_ready === true,
   };
 }
 
@@ -102,7 +163,7 @@ export class SetupController {
       if (current.state === 'running' || current.state === 'waiting_for_user' || current.state === 'cancelling') {
         return { job: current, idempotent: true };
       }
-      if (current.child_process) {
+      if (current.child_process || current.termination_status === 'termination_uncertain') {
         throw new ControllerError(409, 'PROCESS_RECONCILIATION_REQUIRED',
           'A bootstrap subprocess may still own installation files. Restart the controller to reconcile it before starting setup.');
       }
@@ -138,7 +199,7 @@ export class SetupController {
     if (!current || !['failed', 'cancelled', 'interrupted'].includes(current.state)) {
       throw new ControllerError(409, 'RETRY_NOT_ALLOWED', 'Retry is allowed only for failed, cancelled, or interrupted jobs.');
     }
-    if (current.child_process) {
+    if (current.child_process || current.termination_status === 'termination_uncertain') {
       throw new ControllerError(409, 'PROCESS_RECONCILIATION_REQUIRED',
         'A bootstrap subprocess may still own installation files. Restart the controller to reconcile it before retrying.');
     }
@@ -220,7 +281,7 @@ export class SetupController {
       const component = job.bootstrap_status?.components?.pyannote;
       if (component) Object.assign(component, { state: 'checking_token', failure_code: null, message: null });
     }, 'model_authorization_started');
-    this.launch({ startStage: 'install_models', authorizationToken: credential });
+    this.launch({ startStage: 'install_models', authorizationToken: Buffer.from(credential, 'utf8') });
     return { job: this.store.snapshot().job, idempotent: false };
   }
 
@@ -233,6 +294,7 @@ export class SetupController {
     execution.promise = this.run(job.id, job.attempt_id, abort.signal, execution)
       .catch(() => {})
       .finally(() => {
+        if (Buffer.isBuffer(execution.authorizationToken)) execution.authorizationToken.fill(0);
         execution.authorizationToken = null;
         if (this.activeExecution === execution) this.activeExecution = null;
       });
@@ -280,7 +342,7 @@ export class SetupController {
           state.job.task_id = this.taskId(stage);
           state.job.progress = this.initialProgress(stage, `${stage} started.`);
         }, 'stage_started');
-        await this.tasks.run(stage, {
+        try { await this.tasks.run(stage, {
           signal,
           attempt: current.attempt_count,
           attemptId,
@@ -293,8 +355,8 @@ export class SetupController {
           },
           onChildProcess: (record) => {
             const latest = this.store.snapshot().job;
-            if (latest?.id !== jobId || latest.attempt_id !== attemptId) return;
-            this.store.commit((state) => {
+            if (latest?.id !== jobId || latest.attempt_id !== attemptId) return false;
+            return this.store.commit((state) => {
               state.job.child_process = record;
               if (!record) state.job.termination_status = 'termination_confirmed';
               else if (record.termination_status === 'termination_uncertain') state.job.termination_status = 'termination_uncertain';
@@ -327,7 +389,12 @@ export class SetupController {
               if (componentStatus && state.job.bootstrap_status) state.job.bootstrap_status = componentStatus;
             }, 'waiting_for_user');
           },
-        });
+        }); } finally {
+          if (stage === 'install_models' && Buffer.isBuffer(execution?.authorizationToken)) {
+            execution.authorizationToken.fill(0);
+            execution.authorizationToken = null;
+          }
+        }
         const afterStage = this.store.snapshot().job;
         if (afterStage?.id !== jobId || afterStage.attempt_id !== attemptId) return;
         if (afterStage.state === 'cancelling') { this.finishCancelled(jobId, attemptId); return; }
@@ -367,7 +434,8 @@ export class SetupController {
         }, 'model_authorization_required');
         return;
       }
-      const interrupted = Boolean(current.child_process);
+      const ownershipUncertain = ['BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN', 'BOOTSTRAP_OWNERSHIP_PERSIST_FAILED'].includes(error?.code);
+      const interrupted = Boolean(current.child_process) || ownershipUncertain;
       this.store.commit((state) => {
         state.job.state = interrupted ? 'interrupted' : 'failed';
         state.job.completed_at = new Date().toISOString();

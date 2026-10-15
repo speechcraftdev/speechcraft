@@ -16,6 +16,7 @@ from speechcraft_dataset.diarization import (
     annotation_to_speechcraft_regions,
     community1_snapshot_ready,
     resolve_community1_model_path,
+    resolve_diarization_device,
     run_diarization,
     speechcraft_speaker_id,
 )
@@ -345,14 +346,45 @@ class BufferContractTests(unittest.TestCase):
     "set SPEECHCRAFT_PYANNOTE_COMMUNITY1_SMOKE=1 to run local Community-1 inference",
 )
 class Community1LocalSmokeTests(unittest.TestCase):
-    def test_local_snapshot_loads_offline(self) -> None:
-        from speechcraft_dataset.diarization import load_community1_pipeline, pyannote_audio_dict, resolve_diarization_device
-
+    def test_two_voice_fixture_passes_the_real_offline_runtime_probe(self) -> None:
+        import json
+        import subprocess
+        import sys
+        from pathlib import Path
         path = resolve_community1_model_path({})
-        pipeline = load_community1_pipeline(path, resolve_diarization_device({}))
-        audio = pyannote_audio_dict([[0.0] * 16000], 16000)
-        output = pipeline(audio)
-        self.assertIsNotNone(getattr(output, "speaker_diarization", output))
+        script = Path(__file__).parents[1] / "scripts" / "runtime_probe.py"
+        env = {key: value for key, value in os.environ.items()
+               if key not in {"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN"}}
+        env.update({"SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH": str(path),
+                    "SPEECHCRAFT_MANAGED_RUNTIME": "1", "SPEECHCRAFT_PYANNOTE_DEVICE": "cpu",
+                    "SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED": "0", "HF_HUB_OFFLINE": "1",
+                    "TRANSFORMERS_OFFLINE": "1", "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"})
+        process = subprocess.run([sys.executable, str(script), "pyannote"], env=env,
+                                 capture_output=True, text=True, timeout=900, check=False)
+        report = json.loads(process.stdout)
+        self.assertEqual(process.returncode, 0, report)
+        self.assertTrue(report["success"])
+        self.assertTrue(report["inference_completed"])
+        self.assertEqual(report["identity"], "pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee")
+        self.assertEqual(report["measurements"]["speaker_count"], 2)
+        self.assertEqual(report["measurements"]["region_contract"], "annotation_to_speechcraft_regions")
+
+
+class ManagedDiarizationDeviceTests(unittest.TestCase):
+    def test_managed_device_requires_controller_validated_pyannote_cuda(self) -> None:
+        with patch.dict(os.environ, {"SPEECHCRAFT_MANAGED_RUNTIME": "1"}, clear=False):
+            os.environ.pop("SPEECHCRAFT_PYANNOTE_DEVICE", None)
+            os.environ.pop("SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED", None)
+            self.assertEqual(resolve_diarization_device({"diarization_device": "cuda"}), "cpu")
+            with patch.dict(os.environ, {"SPEECHCRAFT_PYANNOTE_DEVICE": "cuda",
+                                         "SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED": "0"}):
+                self.assertEqual(resolve_diarization_device({}), "cpu")
+            with patch.dict(os.environ, {"SPEECHCRAFT_PYANNOTE_DEVICE": "cuda",
+                                         "SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED": "1"}):
+                self.assertEqual(resolve_diarization_device({}), "cuda")
+            with patch.dict(os.environ, {"SPEECHCRAFT_PYANNOTE_DEVICE": "cpu",
+                                         "SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED": "1"}):
+                self.assertEqual(resolve_diarization_device({}), "cpu")
 
 
 if __name__ == "__main__":

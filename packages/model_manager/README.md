@@ -108,6 +108,16 @@ The user flow adopts the straightforward conditions → read-token → verify/ac
 not saving a credential in a database or global Hugging Face credential file,
 and does not perform a global Hugging Face login.
 
+Community-1's immutable snapshot is shared model content, so the catalog marks
+the same artifact as supported on Linux x86-64 and macOS ARM64. The model
+platform selector maps the Windows WSL2 alias to the Linux artifact. Every
+platform resolves the same pinned revision and exact file inventory; this does
+not claim pyannote runtime validation on macOS. For existing Linux stores made
+before this metadata was shared, the manager checks the prior Linux-scoped
+artifact key under the same per-model lock, re-verifies the exact trusted tree,
+and reuses those files without deleting or republishing them. New installs use
+the shared catalog key.
+
 ## Storage and recovery
 
 Choose a user data directory outside releases and projects: for example

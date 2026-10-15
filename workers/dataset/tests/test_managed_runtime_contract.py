@@ -19,14 +19,17 @@ class ManagedRuntimeContractTests(unittest.TestCase):
             source.write_bytes(b"fixture")
             asr = root / "models" / "whisper"
             silero = root / "models" / "silero"
+            diarization = root / "models" / "community-1"
             asr.mkdir(parents=True)
             silero.mkdir(parents=True)
+            diarization.mkdir(parents=True)
             env = {
                 "SPEECHCRAFT_MANAGED_RUNTIME": "1",
                 "SPEECHCRAFT_MODEL_PLATFORM": "linux-x86_64",
                 "SPEECHCRAFT_ASR_MODEL_PATH": str(asr),
                 "SPEECHCRAFT_SILERO_MODEL_DIR": str(silero),
                 "SPEECHCRAFT_SILERO_ONNX_PATH": str(silero / "silero_vad.onnx"),
+                "SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH": str(diarization),
                 "HF_HUB_OFFLINE": "1",
             }
             with patch.dict(os.environ, env, clear=False), \
@@ -37,7 +40,7 @@ class ManagedRuntimeContractTests(unittest.TestCase):
             self.assertEqual(config["transcript_qc_model"], "large-v3")
             self.assertEqual(config["transcript_qc_model_path"], str(asr))
             self.assertTrue(config["asr_local_files_only"])
-            self.assertEqual(verify.call_count, 2)
+            self.assertEqual(verify.call_count, 3)
             requested, resolved = resolve_transcript_qc_model_reference(config)
             self.assertEqual(requested, "large-v3")
             self.assertEqual(resolved, str(asr))

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { BackendService, reconcileOwnedService } from '../src/backend-service.js';
+import { BackendService, reconcileOwnedService, verifyServiceIdentity } from '../src/backend-service.js';
 import { StateStore } from '../src/state-store.js';
 
 test('backend service is a managed process group, requires health, and stops cleanly', async () => {
@@ -17,7 +17,7 @@ test('backend service is a managed process group, requires health, and stops cle
   fs.mkdirSync(path.join(appRoot, 'backend'), { recursive: true });
   const executable = path.join(bin, 'python');
   const runtimeExecutable = path.join(runtimeBin, 'python-real');
-  fs.writeFileSync(runtimeExecutable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); if (!m) process.exit(3); let launched=false; process.stdin.on('data',b=>{if(b.toString()==='1'&&!launched){launched=true;http.createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({status:'ok'}));}).listen(Number(m[1]),'127.0.0.1');}}); process.stdin.on('end',()=>{if(!launched)process.exit(125);});\n`);
+  fs.writeFileSync(runtimeExecutable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); if (!m) process.exit(3); let launched=false; process.stdin.on('data',b=>{if(b.toString()==='1'&&!launched){launched=true;http.createServer((q,r)=>{r.setHeader('content-type','application/json');if(q.url==='/_setup/health'&&q.headers['x-speechcraft-service-identity']===process.env.SPEECHCRAFT_INTERNAL_HEALTH_IDENTITY)r.end(JSON.stringify({status:'ok',service:'speechcraft-backend',service_identity:process.env.SPEECHCRAFT_INTERNAL_HEALTH_IDENTITY}));else{r.statusCode=403;r.end('{}')}}).listen(Number(m[1]),'127.0.0.1');}}); process.stdin.on('end',()=>{if(!launched)process.exit(125);});\n`);
   fs.chmodSync(runtimeExecutable, 0o755);
   fs.symlinkSync(runtimeExecutable, executable);
   const store = StateStore.open(path.join(root, 'state'));
@@ -37,6 +37,8 @@ test('backend service is a managed process group, requires health, and stops cle
     assert.ok(started.port > 0);
     const record = store.snapshot().service_process;
     assert.equal(record.state, 'running');
+    const firstIdentity = service.healthIdentity;
+    assert.match(firstIdentity, /^[a-f0-9]{64}$/);
     assert.equal((await service.verify()).health, 'ok');
     const firstPid = record.pid;
     process.kill(firstPid, 'SIGKILL');
@@ -46,7 +48,10 @@ test('backend service is a managed process group, requires health, and stops cle
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.notEqual(store.snapshot().service_process?.pid, firstPid, 'one bounded restart should replace an exited backend');
+    assert.notEqual(service.healthIdentity, firstIdentity, 'each supervised process receives a fresh health identity');
     assert.ok(serviceStatuses.some((status) => status.message === 'Backend recovered after one bounded restart.'));
+    assert.ok(serviceStatuses.some((status) => status.message === 'Backend recovered after one bounded restart.'
+      && status.verification === 'internal_health_identity'), 'restart readiness must use the authenticated identity check');
     assert.equal((await service.verify()).health, 'ok');
     await service.stop();
     assert.equal(store.snapshot().service_process, null);
@@ -55,6 +60,18 @@ test('backend service is a managed process group, requires health, and stops cle
     store.releaseOwnership();
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('generic or stale loopback health responders cannot satisfy supervised backend identity', async () => {
+  const server = await import('node:http').then(({ createServer }) => createServer((_request, response) => {
+    response.setHeader('content-type', 'application/json'); response.end('{"status":"ok"}');
+  }));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    assert.equal(await verifyServiceIdentity(port, 'a'.repeat(64)), false);
+    assert.equal(await verifyServiceIdentity(port, 'b'.repeat(64)), false);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
 test('startup cleanup does not wait forever when the child close event preceded cleanup', async () => {
@@ -92,7 +109,7 @@ test('recovery stops an owned backend after controller restart', async () => {
   fs.mkdirSync(runtimeBin, { recursive: true }); fs.mkdirSync(bin, { recursive: true }); fs.mkdirSync(path.join(appRoot, 'backend'), { recursive: true });
   const executable = path.join(bin, 'python');
   const runtimeExecutable = path.join(runtimeBin, 'python-real');
-  fs.writeFileSync(runtimeExecutable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); let launched=false; process.stdin.on('data',b=>{if(b.toString()==='1'&&!launched){launched=true;http.createServer((q,r)=>r.end('{"status":"ok"}')).listen(Number(m[1]),'127.0.0.1');}}); process.stdin.on('end',()=>{if(!launched)process.exit(125);});\n`);
+  fs.writeFileSync(runtimeExecutable, `#!/usr/bin/env node\nconst http=require('node:http'); const a=process.argv; const c=a[a.indexOf('-c')+1]||''; const m=c.match(/port=(\\d+)/); let launched=false; process.stdin.on('data',b=>{if(b.toString()==='1'&&!launched){launched=true;http.createServer((q,r)=>{if(q.url==='/_setup/health'&&q.headers['x-speechcraft-service-identity']===process.env.SPEECHCRAFT_INTERNAL_HEALTH_IDENTITY)r.end(JSON.stringify({status:'ok',service:'speechcraft-backend',service_identity:process.env.SPEECHCRAFT_INTERNAL_HEALTH_IDENTITY}));else{r.statusCode=403;r.end('{}')}}).listen(Number(m[1]),'127.0.0.1');}}); process.stdin.on('end',()=>{if(!launched)process.exit(125);});\n`);
   fs.chmodSync(runtimeExecutable, 0o755);
   fs.symlinkSync(runtimeExecutable, executable);
   const store = StateStore.open(path.join(root, 'state'));
