@@ -1,11 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
 export const STATE_VERSION = 2;
 export const EVENT_LIMIT = 256;
 const OWNER_VERSION = 1;
+
+function installationIdentity(directory) {
+  const canonical = path.resolve(directory);
+  return createHash('sha256').update(`speechcraft-installation-v1\0${canonical}\0${process.platform}\0${process.arch}`).digest('hex');
+}
 
 export class StateStoreError extends Error {
   constructor(code, message) {
@@ -263,6 +268,20 @@ function validateState(state, version = STATE_VERSION) {
       throw new StateStoreError('STATE_INVALID', 'persisted backend service ownership metadata is malformed');
     }
   }
+  if (state.installation_identity !== undefined
+      && (typeof state.installation_identity !== 'string' || !/^[a-f0-9]{64}$/.test(state.installation_identity))) {
+    throw new StateStoreError('STATE_INVALID', 'setup installation identity is malformed');
+  }
+  if (state.onboarding !== undefined && state.onboarding !== null) {
+    const onboarding = state.onboarding;
+    if (onboarding.schema_version !== 1 || onboarding.completed !== true
+        || !/^[a-f0-9]{64}$/.test(onboarding.installation_identity || '')
+        || typeof onboarding.completed_at !== 'string' || typeof onboarding.setup_plan !== 'string'
+        || typeof onboarding.profile !== 'string' || !Array.isArray(onboarding.required_checks)
+        || onboarding.required_checks.some((item) => typeof item !== 'string')) {
+      throw new StateStoreError('STATE_INVALID', 'onboarding completion record is malformed or belongs to a different installation');
+    }
+  }
   let lastRevision = 0;
   for (const [index, event] of state.events.entries()) {
     if (!event || !Number.isSafeInteger(event.id) || event.id <= lastRevision
@@ -336,6 +355,11 @@ export class StateStore {
         store.state = migrateState(store.state);
         atomicWriteFile(store.directory, 'state.json', `${JSON.stringify(store.state, null, 2)}\n`);
       }
+      if (!store.state.installation_identity) {
+        store.state.installation_identity = installationIdentity(store.directory);
+        store.state.onboarding ??= null;
+        atomicWriteFile(store.directory, 'state.json', `${JSON.stringify(store.state, null, 2)}\n`);
+      }
       return store;
     } catch (error) {
       store.releaseOwnership();
@@ -346,7 +370,8 @@ export class StateStore {
   read() {
     if (!safeRegularFile(this.file)) {
       if (fs.existsSync(this.file)) throw new StateStoreError('STATE_UNSAFE', 'setup state must be a regular non-symlink file');
-      return { schema_version: STATE_VERSION, revision: 0, job: null, service_process: null, events: [] };
+      return { schema_version: STATE_VERSION, revision: 0, installation_identity: installationIdentity(this.directory),
+        onboarding: null, job: null, service_process: null, events: [] };
     }
     const fileInfo = fs.lstatSync(this.file);
     if ((typeof process.getuid === 'function' && fileInfo.uid !== process.getuid())
@@ -358,6 +383,11 @@ export class StateStore {
     catch { throw new StateStoreError('STATE_CORRUPT', 'setup state JSON is corrupt; preserve the file and inspect it before recovery'); }
     if (state?.schema_version === 1) validateState(state, 1);
     else validateState(state);
+    state.installation_identity ||= installationIdentity(this.directory);
+    state.onboarding ??= null;
+    if (state.onboarding && state.onboarding.installation_identity !== state.installation_identity) {
+      throw new StateStoreError('ONBOARDING_IDENTITY_MISMATCH', 'The saved first-run completion record belongs to another SpeechCraft data directory. Preserve the state file and inspect the installation before recovery.');
+    }
     return state;
   }
 

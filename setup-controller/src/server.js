@@ -110,7 +110,7 @@ function parseCsv(value) {
   return value?.split(',').map((item) => item.trim()).filter(Boolean) || [];
 }
 
-function statusEvent(job, revision, controllerStatus = 'running', mode = job?.mode || 'simulated', componentUpdates = null) {
+function statusEvent(job, revision, controllerStatus = 'running', mode = job?.mode || 'simulated', componentUpdates = null, onboarding = null) {
   const publicJob = job ? serializePublicJob(job) : {
     schema_version: 2,
     id: null, state: 'idle', stage: null, task_id: null, progress: null,
@@ -125,7 +125,8 @@ function statusEvent(job, revision, controllerStatus = 'running', mode = job?.mo
     bootstrap_ready: job?.bootstrap_status?.bootstrap_ready === true,
     partial_ready: job?.bootstrap_status?.partial_ready === true,
     technical_processing_ready: job?.bootstrap_status?.technical_processing_ready === true,
-    production_ready: job?.bootstrap_status?.production_ready === true };
+    production_ready: job?.bootstrap_status?.production_ready === true,
+    onboarding: onboarding?.completed ? { completed: true, completed_at: onboarding.completed_at, profile: onboarding.profile } : { completed: false } };
 }
 
 function sse(response, id, event, data) {
@@ -248,7 +249,7 @@ export async function createSetupController({
 
     function publishToClients(event, state) {
       const currentStatus = controller.status();
-      const data = statusEvent(event.data.job, event.id, currentStatus.controller_status, currentStatus.mode, event.data.component_updates || null);
+      const data = statusEvent(event.data.job, event.id, currentStatus.controller_status, currentStatus.mode, event.data.component_updates || null, currentStatus.onboarding);
       for (const client of clients) {
         if (!sse(client, event.id, event.type, data)) {
           clients.delete(client);
@@ -279,12 +280,12 @@ export async function createSetupController({
       if (replayPossible && last < state.revision) {
         for (const event of events) {
           if (event.id > last && !sse(response, event.id, event.type,
-            statusEvent(event.data.job, event.id, 'running', controller.status().mode, event.data.component_updates || null))) break;
+            statusEvent(event.data.job, event.id, 'running', controller.status().mode, event.data.component_updates || null, controller.status().onboarding))) break;
         }
       }
       const currentStatus = controller.status();
       sse(response, state.revision, 'snapshot', statusEvent(state.job, state.revision,
-        currentStatus.controller_status, currentStatus.mode));
+        currentStatus.controller_status, currentStatus.mode, null, currentStatus.onboarding));
       clients.add(response);
       const onClose = () => clients.delete(response);
       response.once('close', onClose);
@@ -408,6 +409,13 @@ export async function createSetupController({
       server.once('error', reject);
       server.listen({ host, port, exclusive: true }, resolve);
     });
+    if (mode === 'runtime' && store.snapshot().onboarding?.completed
+        && typeof executor.restoreManagedServices === 'function') {
+      // Recovery is intentionally separate from setup jobs and never installs
+      // or downloads. The public API remains available while trusted local
+      // probes and service restoration run in the background.
+      setImmediate(() => { void executor.restoreManagedServices().catch(() => {}); });
+    }
     const address = server.address();
     const actualPort = typeof address === 'object' ? address.port : port;
     hosts = allowedHosts || [`127.0.0.1:${actualPort}`, `localhost:${actualPort}`];

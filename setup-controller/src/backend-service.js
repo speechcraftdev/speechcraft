@@ -33,11 +33,11 @@ function waitForChildClose(child, timeoutMs = CHILD_CLOSE_CONFIRM_MS) {
   });
 }
 
-function freeLoopbackPort() {
+function freeLoopbackPort(preferredPort = 0) {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(preferredPort, '127.0.0.1', () => {
       const port = server.address().port;
       server.close((error) => error ? reject(error) : resolve(port));
     });
@@ -69,7 +69,7 @@ function sleep(ms, signal) {
 
 export class BackendService {
   constructor({ store, dataDirectory, applicationRoot, environment, pythonPath, environmentVars, attemptId, workerPython = null, workerRoot = null,
-    onStatus = () => {}, onOutput = () => {} }) {
+    preferredPort = 0, onStatus = () => {}, onOutput = () => {} }) {
     this.store = store;
     this.dataDirectory = dataDirectory;
     this.applicationRoot = applicationRoot;
@@ -79,6 +79,7 @@ export class BackendService {
     this.attemptId = attemptId;
     this.workerPython = workerPython;
     this.workerRoot = workerRoot;
+    this.preferredPort = preferredPort;
     this.onStatus = onStatus;
     this.onOutput = onOutput;
     this.child = null;
@@ -118,7 +119,7 @@ export class BackendService {
     const projectData = path.join(appData, 'projects');
     validateManagedStorage(this.environment, [appData, projectData,
       path.join(projectData, 'media'), path.join(projectData, 'exports')]);
-    const port = await freeLoopbackPort();
+    const port = await freeLoopbackPort(this.preferredPort);
     const nonce = randomUUID();
     const healthIdentity = randomBytes(32).toString('hex');
     const attemptId = this.attemptId || 'service';

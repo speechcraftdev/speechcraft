@@ -96,3 +96,27 @@ test('event journal omits bulky component reports while authoritative status ret
   assert.ok(fs.statSync(path.join(target, 'state.json')).size < 1_048_576);
   store.releaseOwnership();
 });
+
+test('versioned onboarding completion survives restart only for its installation identity', () => {
+  const target = directory();
+  const store = StateStore.open(target);
+  const identity = store.snapshot().installation_identity;
+  store.commit((state) => {
+    state.onboarding = { schema_version: 1, completed: true, installation_identity: identity,
+      completed_at: new Date().toISOString(), setup_plan: 'speechcraft-runtime-v1', profile: 'linux-x86_64-cpu',
+      required_checks: ['managed_python', 'backend_service'] };
+  }, 'test_onboarding_completed');
+  store.releaseOwnership();
+
+  const reopened = StateStore.open(target);
+  assert.equal(reopened.snapshot().onboarding.completed, true);
+  reopened.releaseOwnership();
+
+  const filename = path.join(target, 'state.json');
+  const state = JSON.parse(fs.readFileSync(filename, 'utf8'));
+  state.onboarding.installation_identity = 'f'.repeat(64);
+  fs.writeFileSync(filename, JSON.stringify(state), { mode: 0o600 });
+  assert.throws(() => StateStore.open(target), (error) => error instanceof StateStoreError
+    && error.code === 'ONBOARDING_IDENTITY_MISMATCH');
+  assert.equal(fs.existsSync(filename), true, 'mismatched state is preserved for explicit recovery');
+});

@@ -1,0 +1,6 @@
+{
+  "name": "speechcraft-source-launcher",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20.9.0" }
+}

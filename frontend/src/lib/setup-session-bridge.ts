@@ -11,6 +11,10 @@ function loopback(hostname: string) {
 
 function config(): BridgeConfig | null {
   if (process.env.SPEECHCRAFT_SETUP_SESSION_BRIDGE !== "1") return null;
+  // The launcher is responsible for binding Next.js to 127.0.0.1. Requiring
+  // its explicit confirmation prevents accidentally enabling this privileged
+  // bootstrap bridge in a network-facing deployment.
+  if (process.env.SPEECHCRAFT_SETUP_BRIDGE_LOOPBACK_CONFIRMED !== "1") return null;
   const rawController = process.env.SPEECHCRAFT_SETUP_CONTROLLER_URL || "http://127.0.0.1:4317";
   const rawOrigins = process.env.SPEECHCRAFT_SETUP_ALLOWED_APP_ORIGINS;
   const tokenFile = process.env.SPEECHCRAFT_SETUP_BOOTSTRAP_FILE;

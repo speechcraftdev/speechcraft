@@ -430,3 +430,20 @@ TitaNet artifact and FFmpeg distribution still have release blockers, so
 current production readiness remains false. A completed setup plan only
 means its configured stages finished. The `simulated` field describes the
 configured controller mode.
+
+## First-run application routing
+
+Authenticated `GET /setup-api/status` and SSE snapshots include `onboarding`:
+
+```json
+{"completed":false,"completed_at":null,"setup_plan":null,"profile":null}
+```
+
+The controller persists a versioned completion record only after the real
+`speechcraft-runtime-v1` plan has passed technical readiness and the managed
+backend has passed its per-launch identity health check. Simulation and job
+completion alone never set this record. Its identity is tied to the canonical
+controller data directory; corrupt or mismatched state is preserved and fails
+closed. The Linux launcher opens `/setup` until this record exists, then `/login`
+on later launches. Current degraded health does not erase completed onboarding;
+the login chain displays a repair notice and `/setup` remains available manually.

@@ -102,15 +102,17 @@ automatic experimental TitaNet override is used.
 
 ## Authentication handoff
 
-The future launcher must read `bootstrap.token` only in its trusted process and
+The Linux source-checkout launcher reads `bootstrap.token` only in its trusted process and
 call the controller's authenticated session bootstrap privately over loopback.
 The same-origin Next.js proxy should accept a credential-free browser request,
 perform that bootstrap itself, and forward only the HTTP-only session cookie and
 CSRF token. The secret must never enter a URL, browser JavaScript, page source,
 console output or persistent job/event data. For SSH tunnels, keep the controller
 on loopback and explicitly configure expected Host/Origin at the trusted proxy.
-Origin, Host and CSRF checks remain active. Launcher/proxy integration still
-needs end-to-end validation.
+Origin, Host and CSRF checks remain active. The frontend bridge refuses to run
+unless the launcher explicitly confirms its loopback binding. The source
+launcher binds all services to IPv4 loopback and only reuses an existing
+frontend when its installation identity matches.
 
 The current authenticated API accepts the token only at
 `POST /setup-api/models/pyannote/authorize`, requires same-origin and CSRF

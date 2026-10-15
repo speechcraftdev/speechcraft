@@ -100,9 +100,9 @@ export default function SetupPage() {
   const revision = useRef(-1);
   const mounted = useRef(false);
 
-  const refresh = useCallback(async () => {
-    const [nextStatus, nextModels] = await Promise.all([setupApi.status(), setupApi.models()]);
-    if (!mounted.current || nextStatus.state_revision < revision.current) return;
+  const refresh = useCallback(async (isCurrent: () => boolean = () => mounted.current, signal?: AbortSignal) => {
+    const [nextStatus, nextModels] = await Promise.all([setupApi.status(signal), setupApi.models(signal)]);
+    if (!isCurrent() || nextStatus.state_revision < revision.current) return;
     revision.current = nextStatus.state_revision;
     setStatus(nextStatus);
     setModels(nextModels.models);
@@ -112,24 +112,30 @@ export default function SetupPage() {
 
   useEffect(() => {
     mounted.current = true;
+    let active = true;
+    const requestAbort = new AbortController();
     let closeEvents: (() => void) | undefined;
     let poll: ReturnType<typeof setInterval> | undefined;
     void (async () => {
       try {
-        await ensureSetupSession();
-        await refresh();
+        await ensureSetupSession(false, requestAbort.signal);
+        if (!active) return;
+        await refresh(() => active, requestAbort.signal);
+        if (!active) return;
         closeEvents = subscribeSetupEvents((_id, _event, event) => {
-          if (!mounted.current || event.state_revision < revision.current) return;
+          if (!active || event.state_revision < revision.current) return;
           revision.current = event.state_revision;
-          void refresh();
-        }, () => { void refresh().catch(() => setConnected(false)); }, () => setConnected(false));
-        poll = setInterval(() => { void refresh().catch(() => setConnected(false)); }, 15_000);
+          void refresh(() => active, requestAbort.signal);
+        }, () => { if (active) void refresh(() => active, requestAbort.signal).catch(() => { if (active) setConnected(false); }); }, () => { if (active) setConnected(false); });
+        if (!active) { closeEvents(); closeEvents = undefined; return; }
+        poll = setInterval(() => { if (active) void refresh(() => active, requestAbort.signal).catch(() => { if (active) setConnected(false); }); }, 15_000);
       } catch (cause) {
+        if (!active) return;
         setConnected(false);
         setError(cause instanceof Error ? cause.message : "The local setup controller is unavailable.");
-      } finally { if (mounted.current) setLoading(false); }
+      } finally { if (active) setLoading(false); }
     })();
-    return () => { mounted.current = false; closeEvents?.(); if (poll) clearInterval(poll); };
+    return () => { active = false; mounted.current = false; requestAbort.abort(); closeEvents?.(); if (poll) clearInterval(poll); };
   }, [refresh]);
 
   const runAction = useCallback(async (action: () => Promise<unknown>, success?: string) => {
@@ -223,6 +229,11 @@ export default function SetupPage() {
         {pyannote?.state === "interrupted" && <p className="mt-3 text-sm text-amber-800 dark:text-amber-300">Authorization was interrupted. The token was discarded; paste it again to resume.</p>}
       </div>}
     </section>
+
+    {componentMap.dataset_processing?.blockers && componentMap.dataset_processing.blockers.length > 0 && <section className="mt-6 rounded-lg border border-amber-700/20 bg-amber-50/50 p-4 text-sm dark:bg-amber-950/20">
+      <h2 className="font-medium">What is blocking processing</h2>
+      <ul className="mt-2 list-disc space-y-1 pl-5">{componentMap.dataset_processing.blockers.map((blocker) => <li key={`${blocker.component}:${blocker.code}`}>{blocker.message} <span className="font-mono text-xs">{blocker.code}</span></li>)}</ul>
+    </section>}
 
     <section className="mt-8">
       <h2 className="mb-2 font-serif text-xl">Runtime</h2>

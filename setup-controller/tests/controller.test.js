@@ -62,6 +62,7 @@ test('runtime plan exposes component readiness and repair only reruns the truste
   assert.equal(status.setup_plan, 'speechcraft-runtime-v1');
   assert.equal(status.mode, 'runtime');
   assert.equal(status.production_ready, false);
+  assert.equal(status.onboarding.completed, false, 'a completed but incomplete runtime plan is not first-run completion');
   assert.equal(status.components.ffmpeg.state, 'blocked');
   const repaired = await f.request('/setup-api/repair', { method: 'POST', body: {} }).then((r) => r.json());
   assert.notEqual(repaired.job.id, started.job.id);
@@ -90,6 +91,7 @@ test('two concurrent starts return the same active job and only start once', asy
   release();
   await f.app.controller.waitForIdle();
   assert.equal(f.app.controller.status().job.state, 'completed');
+  assert.equal(f.app.controller.status().onboarding.completed, false, 'simulation never persists first-run completion');
 });
 
 test('browser disconnect, reconnect, replay and multiple clients do not own the job', async () => {

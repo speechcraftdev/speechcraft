@@ -1,6 +1,7 @@
 import { Icons } from "@midday/ui/icons";
 import Link from "next/link";
 import { LoginVideoBackground } from "@/components/login-video-background";
+import { SetupRepairNotice } from "@/components/setup-repair-notice";
 
 // Shared shell for the login/onboarding-teaser chain (/login through
 // /login6). Lives in a layout (not each page) so the video background +
@@ -39,7 +40,10 @@ export default function LoginChainLayout({
       {/* Right Side - Per-page content */}
       <div className="w-full lg:w-1/2 flex flex-col justify-center items-center p-8 lg:p-12 pb-2">
         <div className="w-full max-w-md flex flex-col h-full">
-          <div className="flex-1 flex flex-col justify-center">{children}</div>
+          <div className="flex-1 flex flex-col justify-center">
+            <SetupRepairNotice />
+            {children}
+          </div>
         </div>
       </div>
     </div>

@@ -38,9 +38,16 @@ const PUBLIC_COMPONENT_NAMES = new Set(['uv', 'managed_python', 'model_manager',
   'worker_cuda_candidate', 'ffmpeg', 'silero', 'whisper', 'titanet', 'pyannote', 'runtime_probes', 'backend_service', 'dataset_processing']);
 const PUBLIC_COMPONENT_FIELDS = Object.freeze(['identity', 'state', 'verification', 'last_verified_at', 'failure_code',
   'message', 'runtime_ready', 'progress', 'progress_indeterminate', 'device', 'effective_profile', 'release_blockers',
-  'action_required', 'components', 'blocked_components', 'optional_blocked_components', 'inference_completed']);
+  'action_required', 'components', 'blocked_components', 'optional_blocked_components', 'inference_completed', 'blockers']);
 
 function publicComponentField(key, value) {
+  if (key === 'blockers') {
+    return Array.isArray(value) ? value.slice(0, 24).map((item) => ({
+      component: typeof item?.component === 'string' && PUBLIC_COMPONENT_NAMES.has(item.component) ? item.component : 'unknown',
+      code: typeof item?.code === 'string' && /^[A-Z0-9_]{1,80}$/.test(item.code) ? item.code : 'RUNTIME_NOT_READY',
+      message: typeof item?.message === 'string' ? item.message.slice(0, 320) : 'A required component is not ready.',
+    })) : [];
+  }
   if (key === 'components' || key === 'blocked_components' || key === 'optional_blocked_components') {
     return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(item)).slice(0, 32) : [];
   }
@@ -121,6 +128,11 @@ export function publicStatus(store, controllerStatus = 'running', mode = 'simula
     bootstrap_ready: state.job?.bootstrap_status?.bootstrap_ready === true,
     partial_ready: state.job?.bootstrap_status?.partial_ready === true,
     production_ready: state.job?.bootstrap_status?.production_ready === true,
+    onboarding: state.onboarding?.completed === true
+      && state.onboarding.installation_identity === state.installation_identity
+      ? { completed: true, completed_at: state.onboarding.completed_at,
+        setup_plan: state.onboarding.setup_plan, profile: state.onboarding.profile }
+      : { completed: false, completed_at: null, setup_plan: null, profile: null },
   };
 }
 
@@ -416,6 +428,20 @@ export class SetupController {
           state.job.progress = this.tasks.completionProgress
             ? this.tasks.completionProgress()
             : { current: 2, total: 2, percent: 100, message: 'Simulated setup completed.' };
+          // First-run completion is recorded only by a real runtime plan after
+          // the authoritative component evaluator has accepted every required
+          // technical prerequisite. Simulated completion never sets it.
+          if (state.job.mode === 'runtime' && state.job.plan_id === 'speechcraft-runtime-v1'
+              && state.job.bootstrap_status?.technical_processing_ready === true
+              && state.job.bootstrap_status?.components?.backend_service?.verification === 'internal_health_identity') {
+            const profile = state.job.bootstrap_status.runtime_profile?.workerProfile
+              || state.job.bootstrap_status.runtime_profile?.profile || 'unknown';
+            state.onboarding = { schema_version: 1, completed: true,
+              installation_identity: state.installation_identity,
+              completed_at: state.job.completed_at, setup_plan: state.job.plan_id,
+              profile: String(profile), required_checks: ['managed_python', 'backend_environment',
+                'worker_environment', 'ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet', 'backend_service'] };
+          }
         }, 'job_completed');
       }
     } catch (error) {

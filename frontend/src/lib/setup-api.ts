@@ -22,6 +22,7 @@ export type RuntimeComponent = {
   device?: string | null;
   effective_profile?: string | null;
   release_blockers?: Array<{ code?: string; message?: string }>;
+  blockers?: Array<{ component: string; code: string; message: string }>;
 };
 export type SetupStatus = {
   controller_status: string;
@@ -36,6 +37,7 @@ export type SetupStatus = {
   bootstrap_ready: boolean;
   partial_ready: boolean;
   production_ready: boolean;
+  onboarding: { completed: boolean; completed_at?: string | null; profile?: string | null };
 };
 export type ModelState = {
   role: string;
@@ -60,6 +62,7 @@ export type SetupSnapshot = {
   components: SetupStatus["components"];
   technical_processing_ready: boolean;
   production_ready: boolean;
+  onboarding: SetupStatus["onboarding"];
 };
 
 let csrfToken: string | null = null;
@@ -83,8 +86,8 @@ async function responseError(response: Response): Promise<SetupApiError> {
     body.error?.message || "SpeechCraft could not complete that setup request.");
 }
 
-async function getSession(): Promise<void> {
-  const current = await fetch("/setup-api/session", { credentials: "same-origin", cache: "no-store" });
+async function getSession(signal?: AbortSignal): Promise<void> {
+  const current = await fetch("/setup-api/session", { credentials: "same-origin", cache: "no-store", signal });
   if (current.ok) {
     const result = await current.json() as { csrf_token?: string };
     if (typeof result.csrf_token !== "string") throw new SetupApiError(502, "SESSION_RESPONSE_INVALID", "The setup session response was incomplete.");
@@ -93,23 +96,24 @@ async function getSession(): Promise<void> {
   }
   if (current.status !== 401) throw await responseError(current);
   const established = await fetch("/setup-api/session", { method: "POST", credentials: "same-origin", cache: "no-store",
-    headers: { "Content-Type": "application/json" }, body: "{}" });
+    headers: { "Content-Type": "application/json" }, body: "{}", signal });
   if (!established.ok) throw await responseError(established);
   const result = await established.json() as { csrf_token?: string };
   if (typeof result.csrf_token !== "string") throw new SetupApiError(502, "SESSION_RESPONSE_INVALID", "The setup session response was incomplete.");
   csrfToken = result.csrf_token;
 }
 
-export async function ensureSetupSession(force = false): Promise<void> {
+export async function ensureSetupSession(force = false, signal?: AbortSignal): Promise<void> {
   if (force) csrfToken = null;
   if (csrfToken) return;
+  if (signal) return getSession(signal);
   if (!acquiringSession) acquiringSession = getSession().finally(() => { acquiringSession = null; });
   return acquiringSession;
 }
 
 async function request<T>(route: string, init: RequestInit = {}, retrySession = true): Promise<T> {
   const method = init.method || "GET";
-  if (method !== "GET") await ensureSetupSession();
+  if (method !== "GET") await ensureSetupSession(false, init.signal || undefined);
   const headers = new Headers(init.headers);
   if (method !== "GET") {
     headers.set("Content-Type", "application/json");
@@ -117,7 +121,7 @@ async function request<T>(route: string, init: RequestInit = {}, retrySession = 
   }
   const response = await fetch(`/setup-api/${route}`, { ...init, headers, credentials: "same-origin", cache: "no-store" });
   if (response.status === 401 && retrySession) {
-    await ensureSetupSession(true);
+    await ensureSetupSession(true, init.signal || undefined);
     return request<T>(route, init, false);
   }
   if (!response.ok) throw await responseError(response);
@@ -126,8 +130,8 @@ async function request<T>(route: string, init: RequestInit = {}, retrySession = 
 
 export const setupApi = {
   ensureSession: ensureSetupSession,
-  status: () => request<SetupStatus>("status"),
-  models: () => request<ModelList>("models"),
+  status: (signal?: AbortSignal) => request<SetupStatus>("status", { signal }),
+  models: (signal?: AbortSignal) => request<ModelList>("models", { signal }),
   start: () => request("start", { method: "POST", body: "{}" }),
   retry: () => request("retry", { method: "POST", body: "{}" }),
   repair: () => request("repair", { method: "POST", body: "{}" }),
@@ -146,11 +150,11 @@ export function subscribeSetupEvents(onEvent: (id: number | null, event: string,
     let delay = 500;
     while (!stopped) {
       try {
-        await ensureSetupSession();
+        await ensureSetupSession(false, abort.signal);
         const headers = new Headers({ Accept: "text/event-stream" });
         if (lastId !== null) headers.set("Last-Event-ID", String(lastId));
         const response = await fetch("/setup-api/events", { headers, credentials: "same-origin", cache: "no-store", signal: abort.signal });
-        if (response.status === 401) { await ensureSetupSession(true); continue; }
+        if (response.status === 401) { await ensureSetupSession(true, abort.signal); continue; }
         if (!response.ok || !response.body) throw new Error("SSE unavailable");
         onReconnect();
         delay = 500;

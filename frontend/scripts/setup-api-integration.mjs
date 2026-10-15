@@ -58,20 +58,48 @@ async function request(pathname, { method = 'GET', cookie, csrf, origin = appOri
   }, body: body === undefined ? undefined : JSON.stringify(body) });
 }
 
+const sseReaders = new WeakMap();
 async function sseFrame(reader, timeoutMs = 8000) {
-  let buffered = '';
-  const decoder = new TextDecoder();
+  let state = sseReaders.get(reader);
+  if (!state) {
+    state = { decoder: new TextDecoder(), buffered: '', ready: [] };
+    sseReaders.set(reader, state);
+  }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (state.ready.length) return state.ready.shift();
     const next = await Promise.race([reader.read(), delay(Math.max(1, deadline - Date.now())).then(() => { throw new Error('Timed out waiting for setup SSE.'); })]);
     if (next.done) throw new Error('Setup SSE closed before a frame arrived.');
-    buffered += decoder.decode(next.value, { stream: true });
-    const frames = buffered.split('\n\n');
-    buffered = frames.pop() || '';
-    if (frames.length) return frames[0];
+    state.buffered += state.decoder.decode(next.value, { stream: true }).replaceAll('\r\n', '\n');
+    const frames = state.buffered.split('\n\n');
+    state.buffered = frames.pop() || '';
+    state.ready.push(...frames);
+    if (state.ready.length) return state.ready.shift();
   }
   throw new Error('Timed out waiting for setup SSE.');
 }
+
+function createSseFrameParser() {
+  let buffer = '';
+  const ready = [];
+  return (chunk) => {
+    buffer += chunk.replaceAll('\r\n', '\n');
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() || '';
+    ready.push(...frames);
+    return ready.splice(0);
+  };
+}
+const frameParser = createSseFrameParser();
+assert.deepEqual(frameParser('id: 1\nevent: first\ndata: {}\n\nid: 2\nevent: sec'),
+  ['id: 1\nevent: first\ndata: {}']);
+assert.deepEqual(frameParser('ond\ndata: {}\n\n'), ['id: 2\nevent: second\ndata: {}'],
+  'the parser retains a split frame and emits it when the remaining chunk arrives');
+assert.deepEqual(frameParser('id: 3\nevent: third\ndata: {}\n\nid: 4\nevent: fourth\ndata: {}\n\n'),
+  ['id: 3\nevent: third\ndata: {}', 'id: 4\nevent: fourth\ndata: {}'], 'one chunk may contain multiple complete frames');
+const queuedParser = createSseFrameParser();
+assert.deepEqual(queuedParser('id: 5\ndata: a\n\nid: 6\ndata: b\n\n'),
+  ['id: 5\ndata: a', 'id: 6\ndata: b'], 'multiple event frames from a single transport chunk are retained in order');
 
 try {
   const commonEnv = { ...process.env, SPEECHCRAFT_SETUP_ALLOWED_HOSTS: allowedHosts,
@@ -82,10 +110,11 @@ try {
   const bootstrapFile = path.join(dataDir, 'bootstrap.token');
   const nextEnv = { ...process.env, NODE_ENV: 'development',
     SPEECHCRAFT_SETUP_SESSION_BRIDGE: '1',
+    SPEECHCRAFT_SETUP_BRIDGE_LOOPBACK_CONFIRMED: '1',
     SPEECHCRAFT_SETUP_CONTROLLER_URL: controllerOrigin,
     SPEECHCRAFT_SETUP_BOOTSTRAP_FILE: bootstrapFile,
     SPEECHCRAFT_SETUP_ALLOWED_APP_ORIGINS: `${appOrigin},http://localhost:3002` };
-  const next = launch(process.execPath, [path.join(frontend, 'node_modules/next/dist/bin/next'), 'dev', '-p', '3002'], frontend, nextEnv);
+  const next = launch(process.execPath, [path.join(frontend, 'node_modules/next/dist/bin/next'), 'dev', '--hostname', '127.0.0.1', '-p', '3002'], frontend, nextEnv);
   await waitFor(`${appOrigin}/setup`);
 
   const initial = await request('/setup-api/session');

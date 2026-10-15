@@ -4,6 +4,12 @@ import type { NextConfig } from "next";
 // hits /sc-api/* (no CORS) and audio range requests pass through cleanly.
 const speechcraftBackend =
   process.env.SPEECHCRAFT_BACKEND_URL || "http://127.0.0.1:8010";
+const backendUrl = new URL(speechcraftBackend);
+if (backendUrl.protocol !== "http:" ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(backendUrl.hostname) ||
+    backendUrl.username || backendUrl.password || backendUrl.search || backendUrl.hash) {
+  throw new Error("SPEECHCRAFT_BACKEND_URL must identify an HTTP loopback backend.");
+}
 // Keep the controller address server-side. Browser code always uses the
 // same-origin /setup-api path and cannot choose this destination.
 const setupController =

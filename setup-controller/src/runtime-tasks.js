@@ -1,6 +1,7 @@
 import { BootstrapError, BootstrapTasks, ensureManagedDirectory, fetchArtifact } from './bootstrap.js';
 import { PRODUCTION_STAGES, evaluateRuntimeReadiness, hashMatches, runtimeRoots, selectRuntimeProfile } from './runtime-plan.js';
 import { BackendService, reconcileOwnedService } from './backend-service.js';
+import { inspectHost } from './platform.js';
 import fs from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -288,6 +289,7 @@ export class RuntimeTasks extends BootstrapTasks {
       applicationRoot: this.applicationRoot, environment: this.environment,
       pythonPath: path.join(target, 'bin', 'python'), environmentVars: appEnvironment,
       attemptId: context.attemptId,
+      preferredPort: Number(process.env.SPEECHCRAFT_BACKEND_PORT || 8010),
       workerRoot: path.join(this.applicationRoot, 'workers', 'dataset'),
       workerPython,
       onStatus: (status, record) => this.updateServiceStatus(status, record),
@@ -315,6 +317,74 @@ export class RuntimeTasks extends BootstrapTasks {
       .every((name) => components?.[name]?.state === 'runtime_ready');
     this.status(context, { bootstrap_ready: Boolean(context.componentStatus.uv_verified && context.componentStatus.python_verified && context.componentStatus.model_manager_verified),
       partial_ready: bootstrapVerified && inferenceVerified, production_ready: false });
+  }
+
+  /** Revalidate installed artifacts and restore the managed backend without
+   * creating a setup job or invoking any download/install operation. */
+  async restoreManagedServices() {
+    const state = this.store?.snapshot();
+    const job = state?.job;
+    if (!state?.onboarding?.completed || job?.state !== 'completed' || job.mode !== 'runtime'
+        || job.plan_id !== 'speechcraft-runtime-v1' || !job.bootstrap_status) return { restored: false, reason: 'onboarding_not_complete' };
+    const context = { attemptId: job.attempt_id, attempt: job.attempt_count,
+      signal: new AbortController().signal, componentStatus: structuredClone(job.bootstrap_status),
+      onComponentStatus: (value) => this.store.commit((current) => {
+        if (current.job?.id === job.id && current.job.attempt_id === job.attempt_id) current.job.bootstrap_status = value;
+      }, 'startup_component_revalidated'),
+      onChildProcess: (record) => this.store.commit((current) => {
+        if (current.job?.id === job.id && current.job.attempt_id === job.attempt_id) current.job.child_process = record;
+      }, record ? 'startup_child_started' : 'startup_child_stopped'),
+      onProgress: () => {} };
+    context.bootstrapStatus = context.componentStatus;
+    try {
+      this.environment = inspectHost();
+      this.paths = this.getPaths(this.environment.profile);
+      const selection = selectRuntimeProfile(this.environment);
+      const recipe = this.runtimeRecipe.worker?.profiles?.[selection.workerProfile];
+      if (recipe?.available === true && recipe.validated === true) {
+        const target = this.workerEnvironmentPath(recipe);
+        const python = path.join(target, 'bin', 'python');
+        const project = path.resolve(this.applicationRoot, recipe.project || this.runtimeRecipe.worker.project);
+        const probe = `import importlib.util,json,os,sys\nassert sys.version.split()[0]==${JSON.stringify(recipe.python_version)}\nassert os.path.realpath(sys.prefix)==os.path.realpath(${JSON.stringify(target)})\nmissing=[name for name in ${JSON.stringify(recipe.validation_modules)} if importlib.util.find_spec(name) is None]\nassert not missing,missing\nprint(json.dumps({'kind':'SPEECHCRAFT_WORKER_ENV_PROBE','profile':${JSON.stringify(selection.workerProfile)},'missing':missing}))`;
+        const result = await this.runProcess(python, ['-I', '-c', probe], context, { cwd: project });
+        if (result.code !== 0 || !result.stdout.includes('SPEECHCRAFT_WORKER_ENV_PROBE')) throw new BootstrapError('WORKER_ENVIRONMENT_INVALID', 'The existing worker environment failed its startup identity check.');
+        this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${recipe.environment_version}/${selection.workerProfile}`,
+          verification: 'trusted_lock_and_startup_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
+      }
+      const ffmpegRecipe = this.runtimeRecipe.ffmpeg;
+      if (ffmpegRecipe?.available === true) {
+        const ffmpegPath = path.join(this.dataDirectory, 'tools', 'ffmpeg', `${ffmpegRecipe.version}-${ffmpegRecipe.sha256.slice(0, 16)}`);
+        const valid = await this.verifyFfmpegDirectory(ffmpegPath, context);
+        this.setComponent(context, 'ffmpeg', valid
+          ? { state: 'files_verified', path: ffmpegPath, runtime_ready: false, verification: 'archive_and_executable_sha256', failure_code: null, message: 'Managed FFmpeg files were reverified; audio probe is pending.' }
+          : { state: 'blocked', path: null, runtime_ready: false, failure_code: 'FFMPEG_ARTIFACT_INVALID', message: 'The managed FFmpeg installation is missing or corrupt; use setup repair.' });
+      }
+      // Recovery marks model files as verified but deliberately clears runtime
+      // claims. These trusted offline probes restore only capabilities that
+      // still pass against the existing local files.
+      await super.run('validate_runtime', context);
+      const latest = this.store.snapshot().job?.bootstrap_status;
+      context.componentStatus = latest || context.componentStatus;
+      const before = context.componentStatus.components?.backend_service;
+      if (before?.state === 'verified') {
+        this.store.commit((current) => {
+          if (current.job?.id === job.id && current.job.attempt_id === job.attempt_id) {
+            current.job.bootstrap_status.components.backend_service = { ...before, state: 'blocked', verification: 'startup_revalidation_pending',
+              failure_code: 'BACKEND_RESTART_PENDING', message: 'Managed services are being restored after controller restart.' };
+          }
+        }, 'backend_restore_started');
+      }
+      await this.startServices(context);
+      const ready = this.store.snapshot().job?.bootstrap_status?.components?.backend_service?.verification === 'internal_health_identity';
+      return { restored: ready, reason: ready ? null : 'runtime_prerequisites_unavailable' };
+    } catch (error) {
+      const code = /^([A-Z][A-Z0-9_]{1,79})$/.test(error?.code || '') ? error.code : 'STARTUP_REVALIDATION_FAILED';
+      const message = error instanceof BootstrapError ? error.message.slice(0, 320)
+        : 'Previously installed runtime components could not be revalidated. Open /setup to inspect or repair the installation.';
+      this.setComponent(context, 'backend_service', { state: 'failed', verification: 'startup_revalidation_failed',
+        failure_code: code, message });
+      return { restored: false, reason: code };
+    }
   }
 
   async run(stage, context) {
