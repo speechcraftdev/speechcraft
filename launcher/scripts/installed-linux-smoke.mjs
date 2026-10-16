@@ -258,7 +258,33 @@ try {
   app = null;
   assert.equal((await fetch('http://127.0.0.1:4317/setup-api/health').catch(() => null)), null,
     'stop after partial recovery also terminates the surviving controller');
-  console.log('Installed Linux package smoke passed: idempotent install, bundled Node, external cwd, setup/login/lab and static assets, session, CSRF mutation, SSE, Origin rejection, backend proxy, audio range and 11 MiB upload, packaged worker preflight resolution, first-run route, completion through the packaged controller evaluator, repeat /login route, normal stop, and controller/frontend ownership reconciliation after launcher crash.');
+
+  // A dead controller must not prevent stop from reconciling its independently
+  // owned frontend process.
+  const controllerCrashData = `${data}-controller-crash`;
+  app = start(controllerCrashData);
+  await waitFor('http://127.0.0.1:3002/setup');
+  const controllerCrashRecords = JSON.parse(fs.readFileSync(path.join(controllerCrashData, 'launcher.processes.json'), 'utf8')).records;
+  const deadController = controllerCrashRecords.find((record) => record.label === 'setup controller');
+  const liveFrontend = controllerCrashRecords.find((record) => record.label === 'Next.js frontend');
+  assert.equal(ownedProcessIdentity(deadController.pid, deadController.nonce), deadController.identity);
+  assert.equal(ownedProcessIdentity(liveFrontend.pid, liveFrontend.nonce), liveFrontend.identity);
+  process.kill(-deadController.pid, 'SIGKILL');
+  const controllerDeadline = Date.now() + 5_000;
+  while (Date.now() < controllerDeadline) {
+    try { await fetch('http://127.0.0.1:4317/setup-api/health', { signal: AbortSignal.timeout(200) }); }
+    catch { break; }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal((await fetch('http://127.0.0.1:3002/api/speechcraft-launcher/health')).status, 200,
+    'frontend stays available after controller crash');
+  run(command, ['stop', '--data-dir', controllerCrashData]);
+  await assert.rejects(fetch('http://127.0.0.1:3002/api/speechcraft-launcher/health', { signal: AbortSignal.timeout(300) }));
+  const controllerCrashLauncherExit = once(app, 'exit');
+  app.kill('SIGTERM');
+  await controllerCrashLauncherExit;
+  app = null;
+  console.log('Installed Linux package smoke passed: idempotent install, bundled Node, external cwd, setup/login/lab and static assets, session, CSRF mutation, SSE, Origin rejection, backend proxy, audio range and 11 MiB upload, packaged worker preflight resolution, first-run route, completion through the packaged controller evaluator, repeat /login route, normal stop, recovery after launcher crash, and stop with either controller or frontend already crashed.');
 } catch (error) {
   if (app && app.exitCode === null) app.kill('SIGTERM');
   throw new Error(`${error.message}\n${output?.join('').slice(-3000) || ''}`, { cause: error });
