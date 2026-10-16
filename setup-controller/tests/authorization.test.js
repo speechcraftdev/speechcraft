@@ -96,10 +96,11 @@ test('authorization API is session/CSRF/origin protected and only accepts one to
 test('managed-service restore is authenticated, idempotent, and does not create a setup attempt', async () => {
   const tasks = gatedTestTasks();
   let restoreCalls = 0;
-  let restorePromise;
-  tasks.restoreManagedServices = () => {
-    if (!restorePromise) { restoreCalls += 1; restorePromise = Promise.resolve({ restored: true }); }
-    return restorePromise;
+  const restoreOptions = [];
+  tasks.restoreManagedServices = (options = {}) => {
+    restoreCalls += 1;
+    restoreOptions.push(options);
+    return Promise.resolve({ restored: true });
   };
   const f = await temporaryController({ mode: 'runtime', tasks }); active.add(f);
   f.app.store.commit((state) => {
@@ -117,6 +118,29 @@ test('managed-service restore is authenticated, idempotent, and does not create 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(restoreCalls, 1);
   assert.equal(f.app.store.snapshot().job, null, 'service restore does not create a new setup job');
+  const retry = await f.request('/setup-api/services/restore/retry', { method: 'POST', body: {} });
+  assert.equal(retry.status, 202);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(restoreOptions, [{ retry: false }, { retry: true }]);
+});
+
+test('launcher shutdown endpoint requires session/CSRF and closes only after acknowledging the request', async () => {
+  const f = await temporaryController({ mode: 'simulated', tasks: gatedTestTasks() }); active.add(f);
+  const denied = await fetch(`${f.base}/setup-api/shutdown`, { method: 'POST', headers: {
+    origin: f.origin, 'content-type': 'application/json',
+  }, body: '{}' });
+  assert.equal(denied.status, 401);
+  const accepted = await f.request('/setup-api/shutdown', { method: 'POST', body: {} });
+  assert.equal(accepted.status, 202);
+  assert.deepEqual(await accepted.json().then(({ accepted: ok, state }) => ({ accepted: ok, state })), { accepted: true, state: 'stopping' });
+  const deadline = Date.now() + 2_000;
+  let closed = false;
+  while (Date.now() < deadline) {
+    try { await fetch(`${f.base}/setup-api/health`, { signal: AbortSignal.timeout(100) }); }
+    catch { closed = true; break; }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(closed, true, 'authenticated shutdown closes the controller after returning 202');
 });
 
 test('a waiting Community-1 authorization survives controller restart without retaining a credential', async () => {

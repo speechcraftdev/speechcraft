@@ -242,10 +242,22 @@ Requires the current session cookie, same-origin `Origin`, CSRF header, and an
 empty JSON object. It is available only for a runtime installation whose
 durable onboarding record is complete. It asks the runtime executor to restore
 verified services without creating a setup job or running model installation.
-Startup recovery and this request share one in-flight operation. Returns
+Startup recovery and this request share one in-flight operation. The explicit
+`POST /setup-api/services/restore/retry` route retries a prior failed restore;
+concurrent calls remain single-flight and a healthy service is reused. Returns
 `202` with `{"accepted":true,"state":"restoring"}`; read authenticated
 `GET /setup-api/status` for the authoritative service and component result.
 Authentication failures remain `401` and must be handled as such.
+
+### `POST /setup-api/shutdown`
+
+Internal launcher lifecycle operation. Requires the same authenticated session,
+same-origin `Origin`, CSRF header and empty JSON object. Returns `202` before
+gracefully closing the controller. Shutdown joins setup cancellation and
+runtime restoration, reconciles owned subprocesses, and stops the managed
+backend before releasing installation ownership. The launcher supervises the
+controller exit and stops its frontend child. This endpoint is not exposed by
+the browser setup client.
 
 ## Component readiness
 

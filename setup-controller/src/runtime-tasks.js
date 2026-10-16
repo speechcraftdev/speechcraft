@@ -52,6 +52,8 @@ export class RuntimeTasks extends BootstrapTasks {
     this.restorePromise = null;
     this.restoreAttemptId = null;
     this.restoreResult = null;
+    this.restoreAbortController = null;
+    this.stopping = false;
   }
 
   status(context, patch) {
@@ -64,7 +66,12 @@ export class RuntimeTasks extends BootstrapTasks {
   setComponent(context, name, patch) {
     const current = context.componentStatus || this.initialBootstrapStatus();
     current.components ||= {};
-    current.components[name] = { ...(current.components[name] || {}), ...patch };
+    const next = { ...(current.components[name] || {}), ...patch };
+    if (name === 'backend_service' && patch.state !== 'verified') {
+      delete next.verification;
+      delete next.health_instance_id;
+    }
+    current.components[name] = next;
     this.status(context, { components: current.components });
   }
 
@@ -175,7 +182,15 @@ export class RuntimeTasks extends BootstrapTasks {
     if (record && !owned && status.state !== 'stopped') return;
     this.store.commit((state) => {
       const components = state.job.bootstrap_status.components || {};
-      components.backend_service = { ...(components.backend_service || {}), ...status };
+      const next = { ...(components.backend_service || {}), ...status };
+      // Health belongs to one supervised process instance. Any transition
+      // away from verified invalidates that evidence before readiness is
+      // recomputed, so a crash/restart cannot inherit an old green result.
+      if (status.state !== 'verified') {
+        delete next.verification;
+        delete next.health_instance_id;
+      }
+      components.backend_service = next;
       const derived = applyReadiness(components);
       Object.assign(state.job.bootstrap_status, { components: derived.components,
         technical_processing_ready: derived.readiness.technical_ready,
@@ -210,7 +225,7 @@ export class RuntimeTasks extends BootstrapTasks {
 
   async installManagedFfmpeg(context) {
     const artifact = this.runtimeRecipe.ffmpeg;
-    if (artifact?.available !== true || !artifact.url || !/^[a-f0-9]{64}$/.test(artifact.sha256 || '')
+    if (artifact?.available !== true || artifact.platform !== this.environment?.profile || !artifact.url || !/^[a-f0-9]{64}$/.test(artifact.sha256 || '')
         || !Number.isSafeInteger(artifact.size_bytes) || artifact.size_bytes < 1
         || !artifact.executables?.ffmpeg || !artifact.executables?.ffprobe) {
       this.setComponent(context, 'ffmpeg', { state: 'blocked', failure_code: 'runtime_tool_unavailable',
@@ -352,38 +367,41 @@ export class RuntimeTasks extends BootstrapTasks {
 
   /** Revalidate installed artifacts and restore the managed backend without
    * creating a setup job or invoking any download/install operation. */
-  restoreManagedServices() {
+  restoreManagedServices({ retry = false } = {}) {
+    if (this.stopping) return Promise.resolve({ restored: false, reason: 'controller_shutting_down' });
     const job = this.store?.snapshot().job;
     const attemptId = job?.attempt_id || null;
     if (this.restorePromise) return this.restoreAttemptId === attemptId
       ? this.restorePromise : this.restorePromise.then(() => this.restoreManagedServices());
     const backend = job?.bootstrap_status?.components?.backend_service;
     const serviceHealthy = this.service?.child && this.service.child.exitCode === null
-      && this.service.child.signalCode === null && backend?.verification === 'internal_health_identity';
+      && this.service.child.signalCode === null && backend?.state === 'verified'
+      && backend?.verification === 'internal_health_identity';
     if (this.restoreAttemptId === attemptId && this.restoreResult
-        && (this.restoreResult.restored !== true || serviceHealthy)) {
+        && ((this.restoreResult.restored === true && serviceHealthy) || (this.restoreResult.restored !== true && !retry))) {
       return Promise.resolve(this.restoreResult);
     }
     this.restoreAttemptId = attemptId;
-    this.restorePromise = this.performManagedServiceRestore().then((result) => {
+    this.restoreAbortController = new AbortController();
+    this.restorePromise = this.performManagedServiceRestore(this.restoreAbortController.signal).then((result) => {
       this.restoreResult = result;
       return result;
-    }).finally(() => { this.restorePromise = null; });
+    }).finally(() => { this.restorePromise = null; this.restoreAbortController = null; });
     return this.restorePromise;
   }
 
-  async performManagedServiceRestore() {
+  async performManagedServiceRestore(signal) {
     const state = this.store?.snapshot();
     const job = state?.job;
     if (!state?.onboarding?.completed || job?.state !== 'completed' || job.mode !== 'runtime'
         || job.plan_id !== 'speechcraft-runtime-v1' || !job.bootstrap_status) return { restored: false, reason: 'onboarding_not_complete' };
     const context = { attemptId: job.attempt_id, attempt: job.attempt_count,
-      signal: new AbortController().signal, componentStatus: structuredClone(job.bootstrap_status),
+      signal, componentStatus: structuredClone(job.bootstrap_status),
       onComponentStatus: (value) => this.store.commit((current) => {
-        if (current.job?.id === job.id && current.job.attempt_id === job.attempt_id) current.job.bootstrap_status = value;
+        if (!this.stopping && current.job?.id === job.id && current.job.attempt_id === job.attempt_id) current.job.bootstrap_status = value;
       }, 'startup_component_revalidated'),
       onChildProcess: (record) => this.store.commit((current) => {
-        if (current.job?.id === job.id && current.job.attempt_id === job.attempt_id) current.job.child_process = record;
+        if (!this.stopping && current.job?.id === job.id && current.job.attempt_id === job.attempt_id) current.job.child_process = record;
       }, record ? 'startup_child_started' : 'startup_child_stopped'),
       onProgress: () => {} };
     context.bootstrapStatus = context.componentStatus;
@@ -447,9 +465,15 @@ export class RuntimeTasks extends BootstrapTasks {
         }, 'backend_restore_started');
       }
       await this.startServices(context);
-      const ready = this.store.snapshot().job?.bootstrap_status?.components?.backend_service?.verification === 'internal_health_identity';
+      const backend = this.store.snapshot().job?.bootstrap_status?.components?.backend_service;
+      const ready = backend?.state === 'verified' && backend?.verification === 'internal_health_identity'
+        && this.service?.child?.exitCode === null && this.service?.child?.signalCode === null;
       return { restored: ready, reason: ready ? null : 'runtime_prerequisites_unavailable' };
     } catch (error) {
+      if (signal.aborted || this.stopping) {
+        if (['BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN', 'BOOTSTRAP_OWNERSHIP_PERSIST_FAILED'].includes(error?.code)) throw error;
+        return { restored: false, reason: 'controller_shutting_down' };
+      }
       const code = /^([A-Z][A-Z0-9_]{1,79})$/.test(error?.code || '') ? error.code : 'STARTUP_REVALIDATION_FAILED';
       const message = error instanceof BootstrapError ? error.message.slice(0, 320)
         : 'Previously installed runtime components could not be revalidated. Open /setup to inspect or repair the installation.';
@@ -471,5 +495,13 @@ export class RuntimeTasks extends BootstrapTasks {
     return super.run(stage, context);
   }
 
-  async shutdown() { await this.service?.stop(); }
+  async shutdown() {
+    this.stopping = true;
+    this.restoreAbortController?.abort();
+    // Wait for runProcess to terminate/reconcile any owned probe child before
+    // stopping the backend or allowing the server to release installation
+    // ownership.
+    if (this.restorePromise) await this.restorePromise;
+    await this.service?.stop();
+  }
 }

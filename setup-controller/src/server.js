@@ -391,7 +391,7 @@ export async function createSetupController({
         json(response, result.idempotent ? 200 : 202, publicMutation(result, store.snapshot().revision));
         return;
       }
-      if (url.pathname === '/setup-api/services/restore') {
+      if (url.pathname === '/setup-api/services/restore' || url.pathname === '/setup-api/services/restore/retry') {
         if (controller.mode !== 'runtime' || !store.snapshot().onboarding?.completed) {
           throw new HttpError(409, 'RESTORE_NOT_APPLICABLE', 'Managed service restoration is available only for a completed runtime installation.');
         }
@@ -402,8 +402,17 @@ export async function createSetupController({
         // restoration promise. This endpoint only asks the existing trusted
         // executor to restore verified services; it never creates an install
         // job or starts model acquisition.
-        void executor.restoreManagedServices().catch(() => {});
+        const retry = url.pathname.endsWith('/retry');
+        void executor.restoreManagedServices({ retry }).catch(() => {});
         json(response, 202, { accepted: true, state: 'restoring', state_revision: store.snapshot().revision });
+        return;
+      }
+      if (url.pathname === '/setup-api/shutdown') {
+        json(response, 202, { accepted: true, state: 'stopping', state_revision: store.snapshot().revision });
+        // The response must be flushed before closing the listener. close()
+        // joins setup cancellation, runtime restoration, owned subprocesses,
+        // and the supervised backend before releasing installation ownership.
+        setImmediate(() => { void close().catch(() => {}); });
         return;
       }
       throw new HttpError(404, 'NOT_FOUND', 'Unknown setup API endpoint.');

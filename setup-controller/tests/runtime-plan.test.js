@@ -270,6 +270,65 @@ test('startup and launcher restore requests share one restore and a healthy resu
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('backend failure transitions invalidate stale instance health and readiness', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-stale-health-'));
+  const state = { service_process: { pid: 44, nonce: 'owned' }, job: { bootstrap_status: { components: {
+    managed_python: { state: 'verified' }, backend_environment: { state: 'verified' }, worker_environment: { state: 'verified' },
+    ffmpeg: { state: 'runtime_ready' }, silero: { state: 'runtime_ready' }, whisper: { state: 'runtime_ready' },
+    pyannote: { state: 'runtime_ready' }, titanet: { state: 'runtime_ready' },
+    backend_service: { state: 'verified', verification: 'internal_health_identity', health_instance_id: 'old-instance' },
+  } } } };
+  const store = { snapshot: () => structuredClone(state), commit(mutator) { mutator(state); } };
+  const tasks = new RuntimeTasks({ dataDirectory: directory, store });
+  const record = { pid: 44, nonce: 'owned' };
+  tasks.updateServiceStatus({ state: 'restarting', failure_code: 'BACKEND_EXITED' }, record);
+  assert.equal(state.job.bootstrap_status.components.backend_service.state, 'restarting');
+  assert.equal(state.job.bootstrap_status.components.backend_service.verification, undefined);
+  assert.equal(state.job.bootstrap_status.components.backend_service.health_instance_id, undefined);
+  assert.equal(state.job.bootstrap_status.technical_processing_ready, false);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test('transient restore failure is retried explicitly and a successful restore remains single-flight', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-restore-retry-'));
+  const tasks = new RuntimeTasks({ dataDirectory: directory });
+  tasks.store = { snapshot: () => ({ job: { attempt_id: 'same-attempt' } }) };
+  tasks.service = { child: { exitCode: 0, signalCode: null } };
+  let calls = 0;
+  tasks.performManagedServiceRestore = async () => {
+    calls += 1;
+    return calls === 1 ? { restored: false, reason: 'BACKEND_START_FAILED' } : { restored: true };
+  };
+  assert.equal((await tasks.restoreManagedServices()).restored, false);
+  assert.equal((await tasks.restoreManagedServices()).restored, false, 'failure is retained until explicitly retried');
+  assert.equal((await tasks.restoreManagedServices({ retry: true })).restored, true);
+  tasks.service.child.exitCode = null;
+  tasks.store.snapshot = () => ({ job: { attempt_id: 'same-attempt', bootstrap_status: { components: {
+    backend_service: { state: 'verified', verification: 'internal_health_identity' },
+  } } } });
+  assert.equal((await tasks.restoreManagedServices()).restored, true);
+  assert.equal(calls, 2);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test('shutdown aborts and joins in-flight restoration before stopping the backend', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-restore-shutdown-'));
+  const tasks = new RuntimeTasks({ dataDirectory: directory });
+  tasks.store = { snapshot: () => ({ job: { attempt_id: 'restore-attempt' } }) };
+  let observedAbort = false;
+  let backendStopped = false;
+  tasks.service = { stop: async () => { backendStopped = true; } };
+  tasks.performManagedServiceRestore = (signal) => new Promise((resolve) => {
+    signal.addEventListener('abort', () => { observedAbort = true; resolve({ restored: false, reason: 'controller_shutting_down' }); }, { once: true });
+  });
+  const restoration = tasks.restoreManagedServices();
+  await tasks.shutdown();
+  assert.equal((await restoration).reason, 'controller_shutting_down');
+  assert.equal(observedAbort, true);
+  assert.equal(backendStopped, true);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
 test('runtime probe runner requires a trusted helper and explicit completed inference result', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-runtime-probe-'));
   const helper = path.join(root, 'probe.py'); fs.writeFileSync(helper, '# trusted fixture');
