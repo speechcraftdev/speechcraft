@@ -85,6 +85,7 @@ try {
   const runtimeExit = once(app, 'exit');
   run(command, ['stop', '--data-dir', runtimeData]);
   if (app.exitCode === null && app.signalCode === null) await runtimeExit;
+  assert.doesNotMatch(output.join(''), /exited unexpectedly/, 'authenticated stop is not surfaced as an application crash');
   app = null;
   app = start(data);
   output = [];
@@ -255,6 +256,7 @@ try {
   const recoveredExit = once(app, 'exit');
   run(command, ['stop', '--data-dir', crashData]);
   if (app.exitCode === null && app.signalCode === null) await recoveredExit;
+  assert.doesNotMatch(output.join(''), /exited unexpectedly/, 'recovered controller stops without a false crash report');
   app = null;
   assert.equal((await fetch('http://127.0.0.1:4317/setup-api/health').catch(() => null)), null,
     'stop after partial recovery also terminates the surviving controller');

@@ -29,6 +29,16 @@
     if (app.help || app.command || app.ownedChildren === 0) return;
     const unexpected = await app.unexpected;
     if (!stopping) {
+      // `speechcraft stop` asks the controller to close through its
+      // authenticated lifecycle endpoint. A clean controller exit is that
+      // explicit shutdown completing; treating it as a crash would make the
+      // long-running launcher race its own stop command while it tears down
+      // the frontend.
+      if (unexpected.child.label === 'setup controller'
+          && unexpected.result.code === 0 && unexpected.result.signal === null) {
+        await stop(0);
+        return;
+      }
       console.error(`SpeechCraft ${unexpected.child.label} exited unexpectedly (${unexpected.result.signal || unexpected.result.code}).`);
       await stop(1);
     }
