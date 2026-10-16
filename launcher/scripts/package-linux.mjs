@@ -115,10 +115,14 @@ async function snapshotBuild() {
   const appRoot = path.join(work, appName);
   try {
     fs.mkdirSync(appRoot, { recursive: true, mode: 0o755 });
-    run('npm', ['run', 'typecheck'], path.join(repositoryRoot, 'frontend'));
-    run('npm', ['run', 'build'], path.join(repositoryRoot, 'frontend'), { ...process.env, NEXT_TELEMETRY_DISABLED: '1' });
+    const nodeRuntime = path.join(work, 'runtime');
+    run(process.execPath, [path.join(repositoryRoot, 'launcher/scripts/fetch-node-runtime.mjs'), '--output', nodeRuntime, '--platform', 'linux-x86_64']);
+    const runtimeVersion = JSON.parse(fs.readFileSync(path.join(nodeRuntime, 'runtime-manifest.json'), 'utf8')).version;
+    const buildEnv = { ...process.env, NEXT_TELEMETRY_DISABLED: '1', PATH: `${nodeRuntime}${path.delimiter}${process.env.PATH || ''}` };
+    run('npm', ['run', 'typecheck'], path.join(repositoryRoot, 'frontend'), buildEnv);
+    run('npm', ['run', 'build'], path.join(repositoryRoot, 'frontend'), buildEnv);
     const frontendStage = path.join(work, 'frontend-stage');
-    run(process.execPath, [path.join(repositoryRoot, 'launcher/scripts/package-frontend.mjs'), '--output', frontendStage], repositoryRoot);
+    run(process.execPath, [path.join(repositoryRoot, 'launcher/scripts/package-frontend.mjs'), '--output', frontendStage], repositoryRoot, buildEnv);
 
     const copyPaths = [
       'launcher/package.json', 'launcher/src', 'launcher/resources',
@@ -149,10 +153,7 @@ async function snapshotBuild() {
     fs.copyFileSync(path.join(wheelOut, wheelName), path.join(appRoot, 'resources/wheels', wheelName));
     const wheelSha = hashFile(path.join(appRoot, 'resources/wheels', wheelName));
 
-    const nodeRuntime = path.join(work, 'runtime');
-    run(process.execPath, [path.join(repositoryRoot, 'launcher/scripts/fetch-node-runtime.mjs'), '--output', nodeRuntime, '--platform', 'linux-x86_64']);
     fs.cpSync(nodeRuntime, path.join(appRoot, 'runtime'), { recursive: true, errorOnExist: true });
-    const runtimeVersion = JSON.parse(fs.readFileSync(path.join(appRoot, 'runtime/runtime-manifest.json'), 'utf8')).version;
     const fileRecords = [];
     const visit = (directory) => {
       for (const item of fs.readdirSync(directory, { withFileTypes: true })) {
