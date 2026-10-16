@@ -11,6 +11,32 @@ import sys
 import tarfile
 import tempfile
 
+MANDATORY_RUNTIME_FILES = {
+    "setup-controller/src/server.js",
+    "setup-controller/resources/runtime-manifest.json",
+    "setup-controller/resources/bootstrap-manifest.json",
+    "setup-controller/resources/model-manager-requirements.txt",
+    "backend/app/main.py",
+    "backend/app/dataset_runs.py",
+    "backend/app/dataset_worker_client.py",
+    "backend/pyproject.toml",
+    "backend/uv.lock",
+    "workers/dataset/pyproject.toml",
+    "workers/dataset/uv.lock",
+    "workers/dataset/scripts/preflight.py",
+    "workers/dataset/scripts/runtime_probe.py",
+    "workers/dataset/speechcraft_dataset/__init__.py",
+    "workers/dataset/runtime-fixtures/speech.wav",
+    "workers/dataset/runtime-fixtures/speech-silence.wav",
+    "workers/dataset/runtime-fixtures/speech-compressed.mp3",
+    "workers/dataset/runtime-fixtures/community1-two-voice.wav",
+    "workers/dataset/runtime-profiles/linux-cpu/pyproject.toml",
+    "workers/dataset/runtime-profiles/linux-cpu/uv.lock",
+    "workers/dataset/model-catalog.json",
+    "workers/dataset/model-manifest.schema.json",
+}
+MANDATORY_APP_FILES = {"runtime/node", "bin/speechcraft"}
+
 
 def fail(message):
     raise SystemExit(f"speechcraft installer: {message}")
@@ -29,6 +55,44 @@ def safe_relative(raw):
     if path.is_absolute() or not path.parts or any(part in ("", ".", "..") for part in path.parts):
         fail(f"unsafe archive path: {raw!r}")
     return path
+
+
+def inspect_command(command, app_base):
+    if not command.exists() and not command.is_symlink():
+        return None
+    if command.is_symlink():
+        target = command.resolve(strict=False)
+        if not str(target).startswith(str(app_base.resolve(strict=False)) + os.sep):
+            fail(f"refusing to replace unrelated command: {command}")
+        return {"kind": "symlink", "target": os.readlink(command)}
+    info = os.lstat(command)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        fail(f"refusing to replace unrelated command: {command}")
+    content = command.read_bytes()
+    expected = f'#!/bin/sh\n# SpeechCraft per-user command wrapper\nexec "{app_base}/current/bin/speechcraft" "$@"\n'.encode("utf8")
+    if content != expected:
+        fail(f"refusing to replace unrelated command: {command}")
+    return {"kind": "file", "content": content, "mode": stat.S_IMODE(info.st_mode)}
+
+
+def restore_command(command, prior):
+    if prior is None:
+        try:
+            command.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    temporary = command.parent / f".speechcraft-rollback-{os.getpid()}"
+    try:
+        if prior["kind"] == "symlink":
+            temporary.symlink_to(prior["target"])
+        else:
+            temporary.write_bytes(prior["content"])
+            os.chmod(temporary, prior["mode"])
+        os.replace(temporary, command)
+    finally:
+        if temporary.exists() or temporary.is_symlink():
+            temporary.unlink()
 
 
 def main(archive_arg):
@@ -53,6 +117,27 @@ def main(archive_arg):
         fail("the local archive installer needs Python 3.9 or newer; SpeechCraft runtime Python is managed separately")
     app_base = home / ".local/share/speechcraft/app"
     releases = app_base / "releases"
+    bin_dir = home / ".local/bin"
+    command = bin_dir / "speechcraft"
+    local_base = home / ".local"
+    for directory in (local_base, local_base / "share", local_base / "share/speechcraft", bin_dir, app_base, releases):
+        if directory.exists() or directory.is_symlink():
+            info = os.lstat(directory)
+            if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+                fail(f"installation destination is not a real directory owned by this user: {directory}")
+    # Preflight the command collision and current pointer before extraction or
+    # release publication. A failed command registration must never activate
+    # a new current release.
+    prior_command = inspect_command(command, app_base)
+    old_current = app_base / "current"
+    prior_current_target = None
+    if old_current.exists() or old_current.is_symlink():
+        if not old_current.is_symlink():
+            fail("active application pointer is not a symlink; refusing to replace it")
+        prior_current_target = os.readlink(old_current)
+        resolved_current = old_current.resolve(strict=False)
+        if not str(resolved_current).startswith(str(releases.resolve(strict=False)) + os.sep):
+            fail("active application pointer escapes the versioned release directory")
     app_base.mkdir(parents=True, exist_ok=True, mode=0o700)
     releases.mkdir(parents=True, exist_ok=True, mode=0o700)
     for directory in (app_base, releases):
@@ -115,6 +200,28 @@ def main(archive_arg):
                 item = app_root.joinpath(*rel.parts)
                 if not item.is_file() or item.is_symlink() or item.stat().st_size != record.get("size_bytes") or digest_file(item) != record.get("sha256"):
                     fail(f"release file verification failed: {record['path']}")
+            runtime_inventory = manifest.get("runtime_inventory")
+            declared_runtime = runtime_inventory.get("required_files") if isinstance(runtime_inventory, dict) else None
+            if runtime_inventory.get("status") != "complete" or not isinstance(declared_runtime, list):
+                fail("release runtime resource inventory is missing or incomplete")
+            runtime_manifest_path = app_root / "setup-controller/resources/runtime-manifest.json"
+            try:
+                runtime_manifest = json.loads(runtime_manifest_path.read_text("utf8"))
+            except (OSError, json.JSONDecodeError):
+                fail("trusted runtime manifest is missing or invalid")
+            references = {runtime_manifest.get("worker", {}).get("validation_helper")}
+            references.update(probe.get("helper") for probe in runtime_manifest.get("runtime_validation", {}).get("probes", []))
+            references.update(fixture.get("path") for fixture in runtime_manifest.get("runtime_validation", {}).get("fixtures", {}).values())
+            if None in references:
+                fail("trusted runtime manifest contains an incomplete resource reference")
+            for reference in references:
+                safe_relative(reference)
+            required = MANDATORY_RUNTIME_FILES | references
+            if not required.issubset(set(declared_runtime)) or not required.issubset(expected_names) \
+                    or not MANDATORY_APP_FILES.issubset(expected_names):
+                missing = sorted(required - set(expected_names))
+                missing.extend(sorted(MANDATORY_APP_FILES - set(expected_names)))
+                fail(f"application archive omits mandatory runtime resources: {', '.join(missing)}")
             node = app_root / "runtime/node"
             if not node.is_file() or not os.access(node, os.X_OK) or digest_file(node) != manifest["node"]["sha256"]:
                 fail("bundled Node executable failed identity verification")
@@ -139,8 +246,8 @@ def main(archive_arg):
                 os.rename(app_root, destination)
                 shutil.rmtree(stage)
                 stage = None
-            # Release contents are immutable at runtime. Upgrades publish a
-            # sibling version and switch the current pointer atomically.
+            # Release contents are immutable at runtime. Publish the new
+            # versioned directory first, but do not activate it yet.
             for root, dirs, files in os.walk(destination, topdown=False, followlinks=False):
                 for name in files:
                     item = pathlib.Path(root) / name
@@ -148,26 +255,43 @@ def main(archive_arg):
                 for name in dirs:
                     os.chmod(pathlib.Path(root) / name, 0o555)
             os.chmod(destination, 0o555)
-            current_tmp = app_base / f".current-{os.getpid()}"
-            current_tmp.symlink_to(pathlib.Path("releases") / release_name)
-            os.replace(current_tmp, app_base / "current")
-
-            bin_dir = home / ".local/bin"
             bin_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
-            command = bin_dir / "speechcraft"
-            marker = "# SpeechCraft per-user command wrapper"
             if command.exists() or command.is_symlink():
-                if command.is_symlink():
-                    resolved = command.resolve(strict=False)
-                    if not str(resolved).startswith(str(app_base.resolve()) + os.sep):
-                        fail(f"refusing to replace unrelated command: {command}")
-                elif not command.is_file() or marker not in command.read_text("utf8", errors="replace"):
-                    fail(f"refusing to replace unrelated command: {command}")
+                # Recheck immediately before mutation in case another program
+                # appeared after preflight.
+                inspect_command(command, app_base)
+            marker = "# SpeechCraft per-user command wrapper"
             script = f"#!/bin/sh\n{marker}\nexec \"{app_base}/current/bin/speechcraft\" \"$@\"\n"
             temp_command = bin_dir / f".speechcraft-{os.getpid()}"
-            temp_command.write_text(script, encoding="utf8")
-            os.chmod(temp_command, 0o755)
-            os.replace(temp_command, command)
+            current_tmp = app_base / f".current-{os.getpid()}"
+            activated_command = False
+            try:
+                temp_command.write_text(script, encoding="utf8")
+                os.chmod(temp_command, 0o755)
+                os.replace(temp_command, command)
+                activated_command = True
+                current_tmp.symlink_to(pathlib.Path("releases") / release_name)
+                os.replace(current_tmp, old_current)
+                if old_current.resolve(strict=True) != destination.resolve(strict=True):
+                    raise OSError("active release pointer verification failed")
+            except Exception as activation_error:
+                try:
+                    if activated_command:
+                        restore_command(command, prior_command)
+                    if prior_current_target is None:
+                        if old_current.is_symlink():
+                            old_current.unlink()
+                    else:
+                        rollback_pointer = app_base / f".current-rollback-{os.getpid()}"
+                        rollback_pointer.symlink_to(prior_current_target)
+                        os.replace(rollback_pointer, old_current)
+                except Exception as rollback_error:
+                    fail(f"activation failed ({activation_error}); rollback could not be confirmed ({rollback_error})")
+                fail(f"activation failed and previous command/release state was restored: {activation_error}")
+            finally:
+                for temporary in (temp_command, current_tmp):
+                    if temporary.exists() or temporary.is_symlink():
+                        temporary.unlink()
             print(f"Installed {manifest['application']} {version} at {destination}")
             print(f"Command: {command}")
             if str(bin_dir) not in os.environ.get("PATH", "").split(os.pathsep):
