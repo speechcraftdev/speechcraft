@@ -756,7 +756,27 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     try { if (!await open(url, { wsl: host.wsl, platform: process.platform, env })) console.log(`No local browser was opened. Open ${url} locally or through an SSH tunnel, for example: ssh -N -L 3002:127.0.0.1:3002 user@cozytent-host`); }
     catch { console.log(`Could not open a browser. Open ${url} manually.`); }
   }
-  const unexpected = Promise.race(children.map((child) => child.exit.then((result) => ({ child, result }))));
+  const unexpected = Promise.race(children.map((child) => child.exit.then((result) => ({ child, result }))))
+    .then(async (event) => {
+      if (event.child.label === 'setup controller' && event.result.code === 0 && event.result.signal === null) {
+        return { ...event, intentional: true };
+      }
+      if (event.child.label === 'Next.js frontend') {
+        // `speechcraft stop` can be run by a separate CLI after this launcher
+        // reused a controller left by an earlier launcher. The stop command
+        // closes that authenticated controller before terminating this
+        // frontend. Recognize that ordered shutdown without treating a port
+        // response as process ownership; a still-healthy controller means the
+        // frontend exit is unexpected.
+        try {
+          const response = await fetch(`${controllerOrigin}/setup-api/health`, {
+            cache: 'no-store', signal: AbortSignal.timeout(700),
+          });
+          if (!response.ok) return { ...event, intentional: true };
+        } catch { return { ...event, intentional: true }; }
+      }
+      return event;
+    });
   return { url, status: controllerSession.status, children, shutdown, unexpected, get shuttingDown() { return shuttingDown; },
     ownedChildren: children.length, reusedController: !controllerHandle, reusedFrontend: !frontendHandle };
   } catch (error) {

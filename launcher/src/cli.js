@@ -34,8 +34,8 @@
       // explicit shutdown completing; treating it as a crash would make the
       // long-running launcher race its own stop command while it tears down
       // the frontend.
-      if (unexpected.child.label === 'setup controller'
-          && unexpected.result.code === 0 && unexpected.result.signal === null) {
+      if (unexpected.intentional || (unexpected.child.label === 'setup controller'
+          && unexpected.result.code === 0 && unexpected.result.signal === null)) {
         await stop(0);
         return;
       }
