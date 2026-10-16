@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertLoopbackAddress, chooseDestination, openDefaultBrowser, parseArgs, readOrCreateFrontendIdentity, stopOwned, verifyFrontendOwnership } from '../src/launcher.js';
+import { assertLoopbackAddress, chooseDestination, openDefaultBrowser, parseArgs, readOrCreateFrontendIdentity, stopOwned, stopOwnedRecord, verifyFrontendOwnership } from '../src/launcher.js';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import { ownedProcessIdentity } from '../../setup-controller/src/bootstrap.js';
 
 test('fresh and interrupted setup routes to setup; completed onboarding routes to the application', () => {
   assert.equal(chooseDestination(null), '/setup');
@@ -114,4 +116,36 @@ test('owned child shutdown rechecks the Darwin nonce and never signals without i
   const missing = { ...handle, child: { pid: 8124, exitCode: null, signalCode: null }, nonce: undefined,
     identity: Promise.resolve(null), exit: new Promise(() => {}) };
   await assert.rejects(stopOwned(missing, { identityResolver: () => null, signalGroup: () => assert.fail('must not signal without verified identity') }), /identity changed/);
+});
+
+test('persisted owned process record stops a live child by identity and confirms its process group exited', async () => {
+  const nonce = 'd'.repeat(48);
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, shell: false,
+    stdio: 'ignore', env: { ...process.env, SPEECHCRAFT_OWNED_PROCESS_NONCE: nonce } });
+  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+  const closed = new Promise((resolve) => child.once('close', resolve));
+  const identity = ownedProcessIdentity(child.pid, nonce);
+  assert.ok(identity);
+  const result = await stopOwnedRecord({ label: 'frontend fixture', pid: child.pid, nonce, identity, process_group_id: child.pid });
+  assert.equal(result, 'stopped');
+  await closed;
+  assert.equal(ownedProcessIdentity(child.pid, nonce), null);
+});
+
+test('persisted process record with uncertain identity is not signalled', async () => {
+  const nonce = 'e'.repeat(48);
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, shell: false,
+    stdio: 'ignore', env: { ...process.env, SPEECHCRAFT_OWNED_PROCESS_NONCE: nonce } });
+  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+  const closed = new Promise((resolve) => child.once('close', resolve));
+  let signalled = false;
+  try {
+    await assert.rejects(stopOwnedRecord({ label: 'uncertain fixture', pid: child.pid, nonce, identity: 'different', process_group_id: child.pid }, {
+      identityResolver: () => null, signalGroup: () => { signalled = true; },
+    }), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+    assert.equal(signalled, false);
+  } finally {
+    child.kill('SIGTERM');
+    await closed;
+  }
 });

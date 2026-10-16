@@ -7,7 +7,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { defaultDataDirectory } from '../../setup-controller/src/paths.js';
-import { ownedProcessIdentity } from '../../setup-controller/src/bootstrap.js';
+import { ownedProcessIdentity, terminateRecoveredProcess } from '../../setup-controller/src/bootstrap.js';
 import { hostEnvironment, validateManagedStorageTargets } from '../../setup-controller/src/platform.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -88,6 +88,71 @@ function isPortAvailable(port) {
     server.once('error', (error) => error.code === 'EADDRINUSE' ? resolve(false) : reject(error));
     server.listen(port, LOOPBACK, () => server.close((error) => error ? reject(error) : resolve(true)));
   });
+}
+
+function launcherOwnershipPath(dataDirectory) { return path.join(dataDirectory, 'launcher.processes.json'); }
+
+function persistLauncherOwnership(dataDirectory, handles) {
+  const records = handles.map((handle) => ({ label: handle.label, pid: handle.child.pid, nonce: handle.nonce,
+    identity: handle.identityValue, process_group_id: handle.child.pid }));
+  const target = launcherOwnershipPath(dataDirectory);
+  const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+  const fd = fs.openSync(temporary, 'wx', 0o600);
+  try { fs.writeFileSync(fd, `${JSON.stringify({ schema_version: 1, records })}\n`, 'utf8'); fs.fsyncSync(fd); }
+  finally { fs.closeSync(fd); }
+  fs.renameSync(temporary, target);
+}
+
+function readLauncherOwnership(dataDirectory) {
+  const filename = launcherOwnershipPath(dataDirectory);
+  let info;
+  try { info = fs.lstatSync(filename); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  if (!info.isFile() || info.isSymbolicLink() || (typeof process.getuid === 'function' && info.uid !== process.getuid())
+      || (info.mode & 0o077) !== 0 || info.size > 16_384 || fs.realpathSync(filename) !== filename) {
+    throw Object.assign(new Error('SpeechCraft process ownership record is unsafe; no process was stopped.'), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+  }
+  const value = JSON.parse(fs.readFileSync(filename, 'utf8'));
+  if (value.schema_version !== 1 || !Array.isArray(value.records)) throw new Error('SpeechCraft process ownership record is invalid.');
+  return value.records.map((record) => {
+    if (!Number.isSafeInteger(record.pid) || record.pid < 2 || typeof record.nonce !== 'string'
+        || typeof record.identity !== 'string' || record.process_group_id !== record.pid) throw new Error('SpeechCraft process ownership record is incomplete.');
+    return record;
+  });
+}
+
+function processGroupExists(pid) {
+  try { process.kill(-pid, 0); return true; }
+  catch (error) { if (error.code === 'ESRCH') return false; if (error.code === 'EPERM') return true; throw error; }
+}
+
+export async function stopOwnedRecord(record, { identityResolver = ownedProcessIdentity, signalGroup = (pid, signal) => process.kill(-pid, signal), timeoutMs = STOP_TIMEOUT_MS } = {}) {
+  const matches = () => {
+    const actual = identityResolver(record.pid, record.nonce);
+    return Boolean(actual && (record.identity === actual || record.identity.startsWith(`${actual}:`)));
+  };
+  const actual = identityResolver(record.pid, record.nonce);
+  if (!actual) {
+    if (!processGroupExists(record.pid)) return 'already_stopped';
+    throw Object.assign(new Error(`${record.label} process identity is uncertain; it was not signalled.`), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+  }
+  if (!(record.identity === actual || record.identity.startsWith(`${actual}:`))) {
+    throw Object.assign(new Error(`${record.label} process identity changed; it was not signalled.`), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+  }
+  try { signalGroup(record.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  const wait = async () => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!processGroupExists(record.pid)) return true;
+      if (!matches()) return false;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return !processGroupExists(record.pid);
+  };
+  if (await wait()) return 'stopped';
+  if (!matches()) throw Object.assign(new Error(`${record.label} leader exited but its process group remains; ownership is uncertain.`), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+  try { signalGroup(record.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  if (await wait()) return 'stopped';
+  throw Object.assign(new Error(`${record.label} did not stop; ownership is retained.`), { code: 'SHUTDOWN_INCOMPLETE' });
 }
 
 async function waitFor(url, predicate, timeoutMs = STARTUP_TIMEOUT_MS, signal = null, processHandle = null) {
@@ -241,29 +306,122 @@ function printCliStatus(status, asJson = false) {
 }
 
 async function stopManagedApplication(dataDirectory) {
-  const session = await getControllerSession(dataDirectory);
   const origin = `http://${LOOPBACK}:${CONTROLLER_PORT}`;
-  const frontendIdentity = readOrCreateFrontendIdentity(dataDirectory);
-  await verifyFrontendOwnership(`http://${LOOPBACK}:${FRONTEND_PORT}`, frontendIdentity);
-  const backendState = session.status.components?.backend_service?.state;
-  const backendMayBeRunning = !['stopped', 'blocked'].includes(backendState);
-  const response = await fetch(`${origin}/setup-api/shutdown`, { method: 'POST', headers: {
-    host: `${LOOPBACK}:${CONTROLLER_PORT}`, origin, cookie: session.cookie,
-    'content-type': 'application/json', 'x-speechcraft-csrf': session.csrf,
-  }, body: '{}', cache: 'no-store', signal: AbortSignal.timeout(2_000) });
-  if (response.status === 401) throw Object.assign(new Error('Controller authentication failed; no service was stopped.'), { code: 'CONTROLLER_AUTH_FAILED' });
-  if (!response.ok || (await response.json()).accepted !== true) throw new Error('The controller did not accept authenticated shutdown.');
+  const result = { stopped: false, status: 'shutdown_requested', services: { controller: 'not_running', frontend: 'not_running', backend: 'unknown' } };
+  const failures = [];
+  let records = [];
+  try { records = readLauncherOwnership(dataDirectory); }
+  catch (error) { failures.push(error); }
+  let controllerPresent = false;
+  try {
+    const health = await fetch(`${origin}/setup-api/health`, { cache: 'no-store', signal: AbortSignal.timeout(700) });
+    controllerPresent = health.ok;
+  } catch {}
+  const controllerRecord = records.find((record) => record.label === 'setup controller');
+  const frontendRecord = records.find((record) => record.label === 'Next.js frontend');
+  let backendRecord = null;
+  let backendReportedVerified = false;
+  let controllerShutdownAccepted = false;
+  if (controllerPresent) {
+    // Frontend health is deliberately not a prerequisite for stopping a broken application.
+    let session = null;
+    try { session = await getControllerSession(dataDirectory); }
+    catch (error) { failures.push(Object.assign(error, { code: error.code || 'CONTROLLER_AUTH_FAILED' })); }
+    try { backendRecord = readBackendProcessRecord(dataDirectory); }
+    catch (error) { failures.push(error); }
+    backendReportedVerified = session?.status.components?.backend_service?.state === 'verified';
+    result.services.backend = backendRecord ? 'running' : backendReportedVerified ? 'ownership_unavailable' : 'not_running';
+    if (session) {
+      try {
+        const response = await fetch(`${origin}/setup-api/shutdown`, { method: 'POST', headers: {
+          host: `${LOOPBACK}:${CONTROLLER_PORT}`, origin, cookie: session.cookie,
+          'content-type': 'application/json', 'x-speechcraft-csrf': session.csrf,
+        }, body: '{}', cache: 'no-store', signal: AbortSignal.timeout(2_000) });
+        if (response.status === 401) throw Object.assign(new Error('Controller authentication failed.'), { code: 'CONTROLLER_AUTH_FAILED' });
+        if (!response.ok || (await response.json()).accepted !== true) throw new Error('The controller did not accept authenticated shutdown.');
+        controllerShutdownAccepted = true;
+        result.services.controller = 'shutdown_requested';
+      } catch (error) { failures.push(error); }
+    }
+  } else {
+    result.services.controller = 'already_stopped';
+    try { backendRecord = readBackendProcessRecord(dataDirectory); }
+    catch (error) { failures.push(error); }
+    result.services.backend = backendRecord ? 'running' : 'not_running';
+  }
+
+  // Every service is reconciled independently. A failed controller auth or a
+  // crashed frontend never prevents shutdown of another positively owned child.
+  if (controllerShutdownAccepted && controllerRecord) {
+    try { result.services.controller = await waitOwnedRecordStopped(controllerRecord); }
+    catch (error) { failures.push(error); }
+  } else if (controllerRecord) {
+    try { result.services.controller = await stopOwnedRecord(controllerRecord); }
+    catch (error) { failures.push(error); result.services.controller = 'ownership_uncertain'; }
+  } else if (controllerPresent) {
+    failures.push(Object.assign(new Error('Controller responded, but no launcher-owned process identity is available to confirm its shutdown.'), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' }));
+    result.services.controller = 'ownership_uncertain';
+  }
+
+  if (backendRecord) {
+    try {
+      if (controllerShutdownAccepted) await waitOwnedRecordStopped({ ...backendRecord, label: 'managed backend' });
+      else await terminateRecoveredProcess(backendRecord);
+      result.services.backend = 'stopped';
+    } catch (error) { failures.push(error); result.services.backend = 'ownership_uncertain'; }
+  } else if (backendReportedVerified) {
+    failures.push(Object.assign(new Error('Backend was reported active but no process identity was available to verify shutdown.'), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' }));
+    result.services.backend = 'ownership_uncertain';
+  }
+
+  if (frontendRecord) {
+    try { result.services.frontend = await stopOwnedRecord(frontendRecord); }
+    catch (error) { failures.push(error); result.services.frontend = 'ownership_uncertain'; }
+  } else result.services.frontend = 'already_stopped';
+
+  const remaining = records.filter((record) => processGroupExists(record.pid));
+  if (remaining.length) failures.push(Object.assign(new Error(`Owned ${remaining.map((record) => record.label).join(', ')} process groups remain.`), { code: 'SHUTDOWN_INCOMPLETE' }));
+  if (failures.length) {
+    result.status = failures.some((error) => error.code === 'PROCESS_OWNERSHIP_UNCERTAIN') ? 'ownership_uncertain' : 'shutdown_incomplete';
+    throw Object.assign(new Error(`SpeechCraft shutdown is incomplete: ${failures.map((error) => error.message).join('; ')}`), { code: failures[0].code || 'SHUTDOWN_INCOMPLETE' });
+  }
+  for (const [service, port] of [['controller', CONTROLLER_PORT], ['frontend', FRONTEND_PORT]]) {
+    if (!(await isPortAvailable(port)) && ['stopped', 'already_stopped'].includes(result.services[service])) {
+      result.services[service] = 'unrelated_listener_detected';
+      throw Object.assign(new Error(`Owned SpeechCraft ${service} processes stopped, but an unrelated listener occupies port ${port}.`), { code: 'UNRELATED_LISTENER_DETECTED' });
+    }
+  }
+  try { fs.unlinkSync(launcherOwnershipPath(dataDirectory)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  result.stopped = true;
+  result.status = controllerPresent ? 'shutdown_completed' : 'already_stopped';
+  return result;
+}
+
+function readBackendProcessRecord(dataDirectory) {
+  const filename = path.join(dataDirectory, 'state.json');
+  let info;
+  try { info = fs.lstatSync(filename); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  if (!info.isFile() || info.isSymbolicLink() || (typeof process.getuid === 'function' && info.uid !== process.getuid())
+      || (info.mode & 0o077) !== 0 || info.size > 1_048_576 || fs.realpathSync(filename) !== filename) {
+    throw Object.assign(new Error('Controller state cannot be safely inspected for a managed backend process.'), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+  }
+  const state = JSON.parse(fs.readFileSync(filename, 'utf8'));
+  const record = state.service_process;
+  if (!record) return null;
+  if (record.kind !== 'speechcraft-backend' || typeof record.nonce !== 'string' || typeof record.identity !== 'string'
+      || !Number.isSafeInteger(record.pid) || record.pid < 2 || record.process_group_id !== record.pid) {
+    throw Object.assign(new Error('Managed backend ownership record is incomplete; no process was stopped.'), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+  }
+  return record;
+}
+
+async function waitOwnedRecordStopped(record) {
   const deadline = Date.now() + 12_000;
   while (Date.now() < deadline) {
-    const controllerFree = await isPortAvailable(CONTROLLER_PORT);
-    const frontendFree = await isPortAvailable(FRONTEND_PORT);
-    const backendFree = !backendMayBeRunning || await isPortAvailable(BACKEND_PORT);
-    if (controllerFree && frontendFree && backendFree) return { stopped: true, services: {
-      controller: 'stopped', frontend: 'stopped', backend: backendMayBeRunning ? 'stopped' : 'not_running',
-    } };
+    if (!processGroupExists(record.pid)) return 'stopped';
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error('SpeechCraft shutdown was requested, but one or more controller, frontend, or backend listeners remain. Ownership is retained; inspect the running service before retrying.');
+  throw Object.assign(new Error(`Shutdown was requested, but owned ${record.label || record.kind || 'service'} process group remains.`), { code: 'SHUTDOWN_INCOMPLETE' });
 }
 
 export async function verifyFrontendOwnership(origin, identity, processHandle = null) {
@@ -319,7 +477,7 @@ function launch(executable, args, { cwd, env, label }) {
     child.once('spawn', resolve);
   });
   const identity = new Promise((resolve) => ready.then(() => resolve(ownedProcessIdentity(child.pid, nonce)), () => resolve(null)));
-  return { child, label, nonce, ready, identity, exit: new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))) };
+  return { child, label, nonce, ready, identity, identityValue: null, exit: new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))) };
 }
 
 export async function stopOwned(handle, { identityResolver = ownedProcessIdentity, signalGroup = (pid, signal) => process.kill(-pid, signal) } = {}) {
@@ -344,7 +502,10 @@ export async function stopOwned(handle, { identityResolver = ownedProcessIdentit
   try { signalGroup(handle.child.pid, 'SIGTERM'); }
   catch (error) { if (error.code !== 'ESRCH') throw error; }
   const done = await bounded(handle.exit.then(() => true), STOP_TIMEOUT_MS, () => false);
-  if (done) return;
+  if (done) {
+    if (processGroupExists(handle.child.pid)) throw new Error(`Cannot confirm the process group for ${handle.label} stopped after its leader exited; ownership is uncertain.`);
+    return;
+  }
   const current = identityResolver(handle.child.pid, handle.nonce);
   if (!current || (ownedIdentity !== current && !ownedIdentity.startsWith(`${current}:`))) throw new Error(`Cannot safely escalate shutdown of ${handle.label}; ownership is uncertain.`);
   try { signalGroup(handle.child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
@@ -408,6 +569,8 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     }
     const result = await stopManagedApplication(dataDirectory);
     console.log(result.stopped ? 'SpeechCraft stopped.' : 'SpeechCraft shutdown was not confirmed.');
+    console.log(`Shutdown status: ${result.status}.`);
+    for (const [service, state] of Object.entries(result.services)) console.log(`${service}: ${state}`);
     return { command: 'stop', ...result };
   }
   assertLoopbackAddress(LOOPBACK);
@@ -430,6 +593,18 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     SPEECHCRAFT_SETUP_ALLOWED_ORIGINS: `${controllerOrigin},http://localhost:${CONTROLLER_PORT},${appOrigin},http://localhost:${FRONTEND_PORT}`,
     SPEECHCRAFT_APPLICATION_ROOT: ROOT, SPEECHCRAFT_BACKEND_PORT: String(BACKEND_PORT),
     SPEECHCRAFT_BACKEND_URL: `http://${LOOPBACK}:${BACKEND_PORT}` };
+  const releaseManifestPath = path.join(ROOT, 'application-release-manifest.json');
+  if (fs.existsSync(releaseManifestPath)) {
+    const release = JSON.parse(fs.readFileSync(releaseManifestPath, 'utf8'));
+    const wheel = release?.trusted_inputs?.model_manager_wheel;
+    if (!wheel || typeof wheel.path !== 'string' || !/^[a-f0-9]{64}$/.test(wheel.sha256 || '')) throw new Error('Packaged model-manager trust metadata is incomplete.');
+    const wheelPath = path.resolve(ROOT, wheel.path);
+    if (!wheelPath.startsWith(`${ROOT}${path.sep}`) || !fs.statSync(wheelPath).isFile()) throw new Error('Packaged model-manager wheel is missing or outside the application resources.');
+    const digest = crypto.createHash('sha256').update(fs.readFileSync(wheelPath)).digest('hex');
+    if (digest !== wheel.sha256) throw new Error('Packaged model-manager wheel does not match its release identity.');
+    common.SPEECHCRAFT_MODEL_MANAGER_WHEEL = wheelPath;
+    common.SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256 = wheel.sha256;
+  }
   const children = [];
   let shuttingDown = false;
   let shutdownPromise;
@@ -438,6 +613,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     shuttingDown = true;
     shutdownPromise = (async () => {
       for (const child of [...children].reverse()) await stopOwned(child);
+      try { fs.unlinkSync(launcherOwnershipPath(dataDirectory)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     })();
     return shutdownPromise;
   };
@@ -451,6 +627,9 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     { cwd: ROOT, env: common, label: 'setup controller' });
     children.push(controllerHandle);
     await controllerHandle.ready;
+    controllerHandle.identityValue = await controllerHandle.identity;
+    if (!controllerHandle.identityValue) throw new Error('Could not establish setup controller process identity.');
+    persistLauncherOwnership(dataDirectory, children);
     await waitFor(`${controllerOrigin}/setup-api/health`, async (response) => response.ok && (await response.json()).status === 'ok', STARTUP_TIMEOUT_MS, signal, controllerHandle);
   } else {
     // Reuse only a controller that proves possession of this data directory's
@@ -479,6 +658,9 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
         SPEECHCRAFT_LAUNCHER_PRIVATE_IDENTITY: frontendIdentity } });
     children.push(frontendHandle);
     await frontendHandle.ready;
+    frontendHandle.identityValue = await frontendHandle.identity;
+    if (!frontendHandle.identityValue) throw new Error('Could not establish frontend process identity.');
+    persistLauncherOwnership(dataDirectory, children);
     await waitFor(frontendHealth, async (response) => response.ok, STARTUP_TIMEOUT_MS, signal, frontendHandle);
     await verifyFrontendOwnership(appOrigin, frontendIdentity, frontendHandle);
   } else {

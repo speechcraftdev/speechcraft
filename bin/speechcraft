@@ -1,41 +1,26 @@
-#!/usr/bin/env node
-'use strict';
-
-(async () => {
-  const { runLauncher } = await import('../launcher/src/launcher.js');
-  let app;
-  let stopping = false;
-  const startupAbort = new AbortController();
-  const stop = async (code = 0) => {
-    if (stopping) return;
-    stopping = true;
-    try { await app?.shutdown(); }
-    catch (error) {
-      console.error(`SpeechCraft shutdown could not confirm process cleanup: ${error.message}`);
-      process.exitCode = 1;
-      return;
-    }
-    process.exitCode = code;
-  };
-  const handleSignal = () => {
-    if (!app) { startupAbort.abort(); return; }
-    void stop(0);
-  };
-  process.once('SIGINT', handleSignal);
-  process.once('SIGTERM', handleSignal);
-  try {
-    app = await runLauncher({ signal: startupAbort.signal });
-    if (startupAbort.signal.aborted) { await stop(0); return; }
-    if (app.help || app.command || app.ownedChildren === 0) return;
-    const unexpected = await app.unexpected;
-    if (!stopping) {
-      console.error(`SpeechCraft ${unexpected.child.label} exited unexpectedly (${unexpected.result.signal || unexpected.result.code}).`);
-      await stop(1);
-    }
-  } catch (error) {
-    if (!startupAbort.signal.aborted) {
-      console.error(`speechcraft: ${error.message}`);
-      process.exitCode = 1;
-    }
-  }
-})();
+#!/bin/sh
+set -eu
+entry=$0
+while [ -L "$entry" ]; do
+  link_dir=$(CDPATH= cd -- "$(dirname -- "$entry")" && pwd -P)
+  link=$(readlink -- "$entry")
+  case $link in /*) entry=$link ;; *) entry=$link_dir/$link ;; esac
+done
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$entry")" && pwd -P)
+app_root=$(CDPATH= cd -- "$bin_dir/.." && pwd -P)
+node="$app_root/runtime/node"
+if [ -x "$node" ]; then
+  exec "$node" "$app_root/launcher/src/cli.js" "$@"
+fi
+if [ -f "$app_root/application-release-manifest.json" ]; then
+  printf '%s\n' 'speechcraft: the bundled Node runtime is missing or not executable; reinstall the verified application package.' >&2
+  exit 1
+fi
+# Explicit source-checkout mode for contributors. Installed releases never use PATH Node.
+if [ -f "$app_root/launcher/src/launcher.js" ] && [ -d "$app_root/setup-controller" ]; then
+  node=$(command -v node || true)
+  if [ -z "$node" ]; then printf '%s\n' 'speechcraft: source development requires Node.js 20.9 or newer.' >&2; exit 1; fi
+  exec "$node" "$app_root/launcher/src/cli.js" "$@"
+fi
+printf '%s\n' 'speechcraft: could not resolve the SpeechCraft application resources.' >&2
+exit 1
