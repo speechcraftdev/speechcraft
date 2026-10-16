@@ -87,7 +87,7 @@ async function outerSnapshotBuild() {
   if (packageInputs) throw new Error('Frontend dependency manifests are modified locally; commit them before a provenance-bound release build.');
   const archive = path.join(work, 'source.tar');
   const archiveFd = fs.openSync(archive, 'w');
-  const archived = spawnSync('git', ['archive', '--format=tar', revision, '--', 'bin', 'frontend', 'launcher', 'setup-controller', 'backend/app', 'backend/pyproject.toml', 'backend/uv.lock', 'workers/dataset', 'packages/model_manager', 'LICENSE'], { cwd: repositoryRoot, shell: false, stdio: ['ignore', archiveFd, 'inherit'] });
+  const archived = spawnSync('git', ['archive', '--format=tar', revision, '--', 'bin', 'frontend', 'launcher', 'setup-controller/src', 'setup-controller/resources', 'setup-controller/package.json', 'backend/app', 'backend/pyproject.toml', 'backend/uv.lock', 'workers/dataset', 'packages/model_manager', 'LICENSE'], { cwd: repositoryRoot, shell: false, stdio: ['ignore', archiveFd, 'inherit'] });
   fs.closeSync(archiveFd);
   if (archived.error || archived.status !== 0) throw new Error(`Could not export pinned source revision ${revision}.`);
   const snapshotRoot = path.join(work, 'source'); fs.mkdirSync(snapshotRoot, { mode: 0o700 });
@@ -134,7 +134,7 @@ async function snapshotBuild() {
       'workers/dataset/speechcraft_dataset', 'workers/dataset/scripts/preflight.py', 'workers/dataset/scripts/runtime_probe.py',
       'workers/dataset/runtime-fixtures', 'workers/dataset/runtime-profiles', 'workers/dataset/pyproject.toml',
       'workers/dataset/uv.lock', 'workers/dataset/model-catalog.json', 'workers/dataset/model-manifest.schema.json',
-      'LICENSE', 'launcher/README.md', 'setup-controller/FFMPEG-LICENSE-NOTICE.md',
+      'LICENSE', 'launcher/README.md', 'setup-controller/resources/FFMPEG-LICENSE-NOTICE.md',
       'workers/dataset/TITANET-ONNX-PROVENANCE.md', 'workers/dataset/RUNTIME_PROFILES.md',
       'workers/dataset/MODEL_STORAGE.md', 'packages/model_manager/PROVENANCE.md',
     ];
