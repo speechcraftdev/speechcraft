@@ -102,8 +102,7 @@ async function outerSnapshotBuild() {
   // Turbopack refuses node_modules symlinks that escape its project root.
   // Copy only the prepared build dependency tree into the exported source
   // snapshot; all frontend/backend source still comes from the pinned commit.
-  fs.cpSync(installedDependencies, path.join(snapshotRoot, 'frontend/node_modules'),
-    { recursive: true, dereference: false, preserveTimestamps: true, errorOnExist: true });
+  run('cp', ['-a', installedDependencies, path.join(snapshotRoot, 'frontend/node_modules')], repositoryRoot);
   run(process.execPath, [path.join(snapshotRoot, 'launcher/scripts/package-linux.mjs'), '--snapshot-build', '--source-revision', revision, '--output', outputRoot], snapshotRoot, process.env);
 }
 
