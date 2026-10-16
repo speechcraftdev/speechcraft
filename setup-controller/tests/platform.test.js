@@ -13,6 +13,8 @@ test('platform profiles are based on the actual host and WSL is detected indepen
     { os: 'linux', architecture: 'x86_64', profile: 'linux-x86_64', wsl: true });
   assert.deepEqual(hostEnvironment({ platform: 'darwin', arch: 'arm64' }),
     { os: 'macos', architecture: 'arm64', profile: 'macos-arm64', wsl: false });
+  assert.throws(() => hostEnvironment({ platform: 'linux', arch: 'x64', kernelRelease: '4.4.0-microsoft', kernelVersion: 'Linux version' }),
+    (error) => error.code === 'WSL_VERSION_UNSUPPORTED');
   assert.throws(() => hostEnvironment({ platform: 'win32', arch: 'x64' }), /does not support/);
 });
 

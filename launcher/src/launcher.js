@@ -28,13 +28,16 @@ function bounded(promise, timeoutMs, onTimeout) {
 }
 
 export function parseArgs(args) {
-  const result = { dataDirectory: null, development: false, simulated: false, openBrowser: true };
-  for (let index = 0; index < args.length; index += 1) {
+  const result = { command: 'start', dataDirectory: null, development: false, simulated: false, openBrowser: true, json: false };
+  let index = 0;
+  if (['status', 'stop'].includes(args[0])) result.command = args[index++];
+  for (; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--data-dir' && args[index + 1]) result.dataDirectory = path.resolve(args[++index]);
     else if (arg === '--development') result.development = true;
     else if (arg === '--simulated') result.simulated = true;
     else if (arg === '--no-browser') result.openBrowser = false;
+    else if (arg === '--json' && result.command === 'status') result.json = true;
     else if (arg === '--help' || arg === '-h') result.help = true;
     else throw new Error(`Unknown launcher option: ${arg}`);
   }
@@ -58,6 +61,10 @@ function packageVersion(filename, field) {
 function verifySourceCheckout(development) {
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major < 20 || (major === 20 && minor < 9)) throw new Error('SpeechCraft source launcher requires Node.js 20.9 or newer.');
+  const standaloneServer = path.join(ROOT, 'frontend/server.js');
+  if (fs.existsSync(standaloneServer) && fs.statSync(standaloneServer).isFile()) {
+    return { nextEntry: standaloneServer, command: 'standalone', cwd: path.join(ROOT, 'frontend') };
+  }
   const frontendPackage = path.join(ROOT, 'frontend/package.json');
   const nextManifest = path.join(ROOT, 'frontend/node_modules/next/package.json');
   if (!fs.existsSync(frontendPackage) || !fs.existsSync(nextManifest)) {
@@ -72,7 +79,7 @@ function verifySourceCheckout(development) {
   if (!development && (!fs.existsSync(buildId) || !fs.statSync(buildId).isFile())) {
     throw new Error('The prepared frontend build is missing. Run `npm run build` in frontend/, or use --development for a source-checkout development launch.');
   }
-  return { nextEntry, command: development ? 'dev' : 'start' };
+  return { nextEntry, command: development ? 'dev' : 'start', cwd: path.join(ROOT, 'frontend') };
 }
 
 function isPortAvailable(port) {
@@ -166,9 +173,10 @@ async function getControllerSession(dataDirectory) {
   }
 }
 
-async function requestServiceRestore(session) {
+async function requestServiceRestore(session, { retry = false } = {}) {
   const origin = `http://${LOOPBACK}:${CONTROLLER_PORT}`;
-  const response = await fetch(`${origin}/setup-api/services/restore`, { method: 'POST', headers: {
+  const route = retry ? '/setup-api/services/restore/retry' : '/setup-api/services/restore';
+  const response = await fetch(`${origin}${route}`, { method: 'POST', headers: {
     host: `${LOOPBACK}:${CONTROLLER_PORT}`, origin, cookie: session.cookie,
     'content-type': 'application/json', 'x-speechcraft-csrf': session.csrf,
   }, body: '{}', cache: 'no-store', signal: AbortSignal.timeout(2_000) });
@@ -189,6 +197,67 @@ async function getAuthenticatedStatus(session) {
   return response.json();
 }
 
+async function controllerCliStatus(dataDirectory) {
+  const origin = `http://${LOOPBACK}:${CONTROLLER_PORT}`;
+  try {
+    const health = await fetch(`${origin}/setup-api/health`, { cache: 'no-store', signal: AbortSignal.timeout(700) });
+    if (!health.ok) return { running: false, controller: 'unavailable', frontend: 'unavailable', url: `http://${LOOPBACK}:${FRONTEND_PORT}` };
+  } catch { return { running: false, controller: 'unavailable', frontend: 'unavailable', url: `http://${LOOPBACK}:${FRONTEND_PORT}` }; }
+  const session = await getControllerSession(dataDirectory);
+  const value = session.status;
+  let frontend = 'unavailable';
+  try {
+    const identity = fs.readFileSync(path.join(dataDirectory, 'frontend.identity'), 'ascii').trim();
+    await verifyFrontendOwnership(`http://${LOOPBACK}:${FRONTEND_PORT}`, identity);
+    frontend = 'verified';
+  } catch {}
+  const backend = value.components?.backend_service;
+  return {
+    running: frontend === 'verified',
+    url: `http://${LOOPBACK}:${FRONTEND_PORT}${chooseDestination(value.onboarding)}`,
+    frontend,
+    controller: value.controller_status || 'running',
+    backend: backend?.state === 'verified' && backend?.verification === 'internal_health_identity' ? 'healthy' : backend?.state || 'unavailable',
+    onboarding_completed: value.onboarding?.completed === true,
+    technical_processing_ready: value.technical_processing_ready === true,
+    production_ready: value.production_ready === true,
+    repair_blockers: value.components?.dataset_processing?.blockers || [],
+    failure_code: backend?.failure_code || value.job?.error?.code || null,
+  };
+}
+
+function printCliStatus(status, asJson = false) {
+  if (asJson) { console.log(JSON.stringify(status, null, 2)); return; }
+  console.log(`SpeechCraft: ${status.running ? 'running' : 'not running'}`);
+  console.log(`Frontend: ${status.frontend || 'unavailable'}`);
+  console.log(`Controller: ${status.controller || 'unavailable'}`);
+  console.log(`Backend: ${status.backend || 'unavailable'}`);
+  console.log(`Initial setup: ${status.onboarding_completed ? 'completed' : 'incomplete'}`);
+  console.log(`Processing: ${status.technical_processing_ready ? 'ready' : 'not ready'}`);
+  console.log(`Public release: ${status.production_ready ? 'cleared' : 'not cleared'}`);
+  console.log(`URL: ${status.url}`);
+  for (const blocker of status.repair_blockers || []) console.log(`Repair: ${blocker.component}: ${blocker.message}`);
+  if (status.failure_code) console.log(`Failure: ${status.failure_code}`);
+}
+
+async function stopManagedApplication(dataDirectory) {
+  const session = await getControllerSession(dataDirectory);
+  const origin = `http://${LOOPBACK}:${CONTROLLER_PORT}`;
+  const response = await fetch(`${origin}/setup-api/shutdown`, { method: 'POST', headers: {
+    host: `${LOOPBACK}:${CONTROLLER_PORT}`, origin, cookie: session.cookie,
+    'content-type': 'application/json', 'x-speechcraft-csrf': session.csrf,
+  }, body: '{}', cache: 'no-store', signal: AbortSignal.timeout(2_000) });
+  if (response.status === 401) throw Object.assign(new Error('Controller authentication failed; no service was stopped.'), { code: 'CONTROLLER_AUTH_FAILED' });
+  if (!response.ok || (await response.json()).accepted !== true) throw new Error('The controller did not accept authenticated shutdown.');
+  const deadline = Date.now() + 12_000;
+  while (Date.now() < deadline) {
+    try { await fetch(`${origin}/setup-api/health`, { signal: AbortSignal.timeout(500) }); }
+    catch { return { stopped: true }; }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('SpeechCraft shutdown was requested, but service termination was not confirmed. Inspect controller ownership before retrying.');
+}
+
 export async function verifyFrontendOwnership(origin, identity, processHandle = null) {
   const publicResponse = await fetch(`${origin}/api/speechcraft-launcher/health`, {
     cache: 'no-store', signal: AbortSignal.timeout(1_000),
@@ -199,7 +268,10 @@ export async function verifyFrontendOwnership(origin, identity, processHandle = 
   const challenge = crypto.randomBytes(32).toString('base64url');
   const privateResponse = await fetch(`${origin}/api/speechcraft-launcher/verify`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ challenge }), cache: 'no-store',
-    signal: AbortSignal.timeout(1_000),
+    // In Next.js development mode this route can compile after the public
+    // health handler has already answered. Keep the wait bounded, but don't
+    // mistake that cold-route compile for an unrelated listener.
+    signal: AbortSignal.timeout(5_000),
   });
   let proof = null;
   try { proof = (await privateResponse.json()).proof; } catch {}
@@ -220,7 +292,7 @@ async function waitForRestoration(session, timeoutMs = STARTUP_TIMEOUT_MS, signa
     if (signal?.aborted) throw Object.assign(new Error('SpeechCraft startup was interrupted.'), { code: 'LAUNCH_CANCELLED' });
     latest = await getAuthenticatedStatus(session);
     const backend = latest.components?.backend_service;
-    if (backend?.verification === 'internal_health_identity') return { status: latest, ready: true, warning: null };
+    if (backend?.state === 'verified' && backend?.verification === 'internal_health_identity') return { status: latest, ready: true, warning: null };
     if (['failed', 'blocked'].includes(backend?.state)) return { status: latest, ready: false,
       warning: backend.message || 'Managed backend restoration is blocked; use /setup to inspect and repair this installation.' };
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -270,29 +342,67 @@ async function stopOwned(handle) {
   await bounded(handle.exit, STOP_TIMEOUT_MS, () => { throw new Error(`${handle.label} did not stop; ownership remains uncertain.`); });
 }
 
-async function openBrowser(url) {
-  if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return false;
-  const opener = spawn('xdg-open', [url], { detached: true, stdio: 'ignore', shell: false });
+export async function openDefaultBrowser(url, { platform = process.platform, env = process.env, spawnImpl = spawn, wsl = false } = {}) {
+  if (!/^http:\/\/127\.0\.0\.1:3002\/(?:setup|login)$/.test(url)) throw new Error('Refusing to open a non-SpeechCraft local URL.');
+  if (platform === 'linux' && !wsl && !env.DISPLAY && !env.WAYLAND_DISPLAY) return false;
+  if (platform === 'darwin' && env.SSH_CONNECTION) return false;
+  let command; let args;
+  if (platform === 'darwin') { command = 'open'; args = [url]; }
+  else if (platform === 'linux' && wsl) { command = 'wslview'; args = [url]; }
+  else if (platform === 'linux') { command = 'xdg-open'; args = [url]; }
+  else throw new Error(`Default browser opening is unsupported for ${platform}.`);
+  const opener = spawnImpl(command, args, { detached: true, stdio: 'ignore', shell: false, windowsHide: true });
   const started = await Promise.race([
     new Promise((resolve) => opener.once('spawn', () => resolve(true))),
     new Promise((resolve) => opener.once('error', () => resolve(false))),
   ]);
+  if (!started && platform === 'linux' && wsl) {
+    // The URL above is fixed to a loopback SpeechCraft route and contains no
+    // user-provided data. cmd.exe still receives an argument array; no shell
+    // command string is constructed by SpeechCraft.
+    const windows = spawnImpl('cmd.exe', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', shell: false, windowsHide: true });
+    const windowsStarted = await Promise.race([
+      new Promise((resolve) => windows.once('spawn', () => resolve(true))),
+      new Promise((resolve) => windows.once('error', () => resolve(false))),
+    ]);
+    if (!windowsStarted) return false;
+    windows.unref();
+    return true;
+  }
   if (!started) return false;
   opener.unref();
   return true;
 }
 
 export async function runLauncher({ args = process.argv.slice(2), env = process.env, signal = null,
-  onUrl = (url) => console.log(`SpeechCraft is available at ${url}`), open = openBrowser } = {}) {
+  onUrl = (url) => console.log(`SpeechCraft is available at ${url}`), open = openDefaultBrowser } = {}) {
   const options = parseArgs(args);
   if (options.help) {
-    console.log('Usage: speechcraft [--data-dir PATH] [--development] [--simulated] [--no-browser]');
+    console.log('Usage: speechcraft [--data-dir PATH] [--development] [--simulated] [--no-browser]\n       speechcraft status [--json] [--data-dir PATH]\n       speechcraft stop [--data-dir PATH]');
     return { help: true };
   }
-  if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('This source-checkout launcher supports Linux x86-64. Use Ubuntu WSL2 on Windows; native Windows and macOS launchers are not included.');
+  const host = hostEnvironment();
+  if (!((host.os === 'linux' && host.architecture === 'x86_64') || (host.os === 'macos' && host.architecture === 'arm64')))
+    throw new Error('SpeechCraft supports Linux x86-64, Apple Silicon macOS, and Windows through Ubuntu WSL2.');
+  let dataDirectory = path.resolve(options.dataDirectory || env.SPEECHCRAFT_SETUP_DATA_DIR || defaultDataDirectory());
+  if (options.command === 'status' || options.command === 'stop') {
+    if (!fs.existsSync(dataDirectory)) {
+      const missing = { running: false, controller: 'unavailable', frontend: 'unavailable', url: `http://${LOOPBACK}:${FRONTEND_PORT}` };
+      if (options.command === 'status') printCliStatus(missing, options.json);
+      else console.log('SpeechCraft is not running for this data directory.');
+      return { command: options.command, status: missing };
+    }
+    if (options.command === 'status') {
+      const value = await controllerCliStatus(dataDirectory);
+      printCliStatus(value, options.json);
+      return { command: 'status', status: value };
+    }
+    const result = await stopManagedApplication(dataDirectory);
+    console.log(result.stopped ? 'SpeechCraft stopped.' : 'SpeechCraft shutdown was not confirmed.');
+    return { command: 'stop', ...result };
+  }
   assertLoopbackAddress(LOOPBACK);
   const preparedFrontend = verifySourceCheckout(options.development);
-  let dataDirectory = path.resolve(options.dataDirectory || env.SPEECHCRAFT_SETUP_DATA_DIR || defaultDataDirectory());
   fs.mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
   const dirInfo = fs.lstatSync(dataDirectory);
   if (!dirInfo.isDirectory() || dirInfo.isSymbolicLink() || (typeof process.getuid === 'function' && dirInfo.uid !== process.getuid())) {
@@ -301,7 +411,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   fs.chmodSync(dataDirectory, 0o700);
   dataDirectory = fs.realpathSync(dataDirectory);
   validateManagedStorageTargets(hostEnvironment(), [dataDirectory]);
-  const installId = crypto.createHash('sha256').update(`${dataDirectory}\0linux\0x64`).digest('hex');
+  const installId = crypto.createHash('sha256').update(`${dataDirectory}\0${host.os}\0${host.architecture}`).digest('hex');
   const frontendIdentity = readOrCreateFrontendIdentity(dataDirectory);
   const appOrigin = `http://${LOOPBACK}:${FRONTEND_PORT}`;
   const controllerOrigin = `http://${LOOPBACK}:${CONTROLLER_PORT}`;
@@ -347,9 +457,11 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   const frontendHealth = `${appOrigin}/api/speechcraft-launcher/health`;
   let frontendHandle = null;
   if (await isPortAvailable(FRONTEND_PORT)) {
-    frontendHandle = launch(process.execPath, [preparedFrontend.nextEntry, preparedFrontend.command,
-      '--hostname', LOOPBACK, '-p', String(FRONTEND_PORT)], { cwd: path.join(ROOT, 'frontend'), label: 'Next.js frontend',
-      env: { ...common, NODE_ENV: options.development ? 'development' : 'production',
+    const frontendArgs = preparedFrontend.command === 'standalone'
+      ? [preparedFrontend.nextEntry]
+      : [preparedFrontend.nextEntry, preparedFrontend.command, '--hostname', LOOPBACK, '-p', String(FRONTEND_PORT)];
+    frontendHandle = launch(process.execPath, frontendArgs, { cwd: preparedFrontend.cwd, label: 'Next.js frontend',
+      env: { ...common, HOSTNAME: LOOPBACK, PORT: String(FRONTEND_PORT), NODE_ENV: options.development ? 'development' : 'production',
         SPEECHCRAFT_SETUP_SESSION_BRIDGE: '1', SPEECHCRAFT_SETUP_BRIDGE_LOOPBACK_CONFIRMED: '1',
         SPEECHCRAFT_SETUP_CONTROLLER_URL: controllerOrigin,
         SPEECHCRAFT_SETUP_BOOTSTRAP_FILE: path.join(dataDirectory, 'bootstrap.token'),
@@ -369,7 +481,9 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   // managed backend. If it remains unhealthy, the normal UI still opens and
   // its repair notice points to /setup; the launcher never starts a download.
   if (status.onboarding?.completed) {
-    await requestServiceRestore(controllerSession);
+    // A user-invoked launch is an explicit restoration retry. RuntimeTasks
+    // keeps concurrent requests single-flight and reuses a healthy service.
+    await requestServiceRestore(controllerSession, { retry: true });
     const restoration = await waitForRestoration(controllerSession, STARTUP_TIMEOUT_MS, signal);
     controllerSession.status = restoration.status || status;
     if (!restoration.ready) console.error(`SpeechCraft repair required: ${restoration.warning}`);
@@ -377,7 +491,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   const url = `${appOrigin}${route}`;
   onUrl(url);
   if (options.openBrowser) {
-    try { if (!await open(url)) console.log(`Headless Linux detected. Open ${url} through an SSH tunnel, for example: ssh -N -L 3002:127.0.0.1:3002 user@cozytent-host`); }
+    try { if (!await open(url, { wsl: host.wsl, platform: process.platform, env })) console.log(`No local browser was opened. Open ${url} locally or through an SSH tunnel, for example: ssh -N -L 3002:127.0.0.1:3002 user@cozytent-host`); }
     catch { console.log(`Could not open a browser. Open ${url} manually.`); }
   }
   const unexpected = Promise.race(children.map((child) => child.exit.then((result) => ({ child, result }))));

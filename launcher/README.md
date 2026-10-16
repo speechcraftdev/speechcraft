@@ -1,11 +1,11 @@
-# Linux source-checkout launcher
+# Source-checkout launcher and runtime status
 
-This is the local Linux x86-64 launch path. It requires Node.js 20.9 or newer, the exact frontend dependencies in `frontend/package.json`, and either a prepared Next.js build or an explicit development launch. It is not the public zero-prerequisite installer and does not bundle Node or frontend assets.
+The source-checkout launch path is available on Linux x86-64 and can start the UI on Apple Silicon macOS. It requires Node.js 20.9 or newer and prepared frontend dependencies. The trusted runtime manifest still blocks the macOS worker profile, so this is not end-to-end Apple Silicon processing support. Ubuntu WSL2 uses the Linux runtime and native WSL storage; WSL1 is rejected. This checkout is not the public zero-prerequisite installer.
 
-Prepare frontend dependencies once, then launch from the repository root:
+Prepare frontend dependencies once from the checked-in Bun lockfile, then launch from the repository root:
 
 ```bash
-cd frontend && npm ci && npm run build
+cd frontend && bun install --frozen-lockfile && npm run build
 cd ..
 ./bin/speechcraft
 ```
@@ -46,6 +46,21 @@ On an already onboarded install, the launcher establishes a private controller s
 
 The launcher authenticates a reused frontend with a private random challenge identity under the data root (mode 0600). It first checks only public availability, then verifies a nonce HMAC response. It never sends the private identity to an unverified listener. The public installation ID remains diagnostic only.
 
+## Lifecycle commands
+
+From another terminal, use:
+
+```bash
+speechcraft status
+speechcraft status --json
+speechcraft stop
+speechcraft --no-browser
+```
+
+`status` establishes a private controller session, verifies frontend ownership with the private nonce proof, and reports the controller's current component states. `stop` posts an authenticated, CSRF-protected shutdown request. The controller joins setup cancellation and runtime restoration, stops its owned backend, and exits; the attached launcher then stops the frontend child it owns. If termination cannot be confirmed, it reports failure instead of killing an unrelated process. Ctrl+C in the original terminal uses the same owned-child shutdown behavior. Closing the browser tab does not stop SpeechCraft.
+
+The backend is considered healthy only while the controller reports its current supervised process instance as `verified`. Restart and failure transitions clear previous verification evidence.
+
 The launcher does not install or download anything itself. First-run installation continues through the setup page and setup controller. The controller's runtime setup records completion only after its trusted required checks succeed, including pyannote runtime validation.
 
 ## Source checkout and isolated acceptance
@@ -68,4 +83,10 @@ It verifies the loopback page, server-side session bridge, authenticated status/
 
 The controller diagnostics endpoint is available in the setup page after session establishment. A port collision is not killed automatically: stop the known owner or choose a later supported launcher configuration in a future release. If shutdown reports uncertain process identity, preserve the data directory and inspect the reported process before retrying. Do not remove controller lock or service ownership records by hand while an owned process may still exist.
 
-CozyTent first-run/model acceptance requires approved SSH access and a Hugging Face account that has accepted Community-1 conditions. Those credentials must be entered only in the masked setup page; never place them in commands or environment variables. The public release archive, bundled Node, and curl installer are not part of this source-checkout launcher.
+CozyTent first-run/model acceptance requires approved SSH access and a Hugging Face account that has accepted Community-1 conditions. Those credentials must be entered only in the masked setup page; never place them in commands or environment variables.
+
+## Release preparation status
+
+Next.js uses its supported standalone output rooted at the repository. `npm run package:standalone` copies the server and static assets without frontend `node_modules`, but first requires a passing strict TypeScript check. The current checkout has unrelated type errors in `speechcraft-write-api.ts` and a missing `react-hook-form` dependency, so the release staging command correctly refuses to package it. No application archive or user installer is produced yet.
+
+Bundled Node metadata pins the official Node.js 24.22.0 LTS Linux x86-64 and macOS ARM64 archives to their published SHA-256 identities. `launcher/scripts/fetch-node-runtime.mjs` downloads a pinned archive, checks the digest, and extracts only fixed archive members plus the license. This is release-build tooling; no signed application artifact or per-user installer is produced by this checkout. WSL2 uses the Linux Node payload. The macOS worker, MLX Whisper, and managed macOS FFmpeg recipes remain unavailable pending trusted dependency recipes and Apple Silicon execution validation.

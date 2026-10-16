@@ -51,7 +51,11 @@ export function hostEnvironment({ platform = process.platform, arch = process.ar
       try { version = fs.readFileSync('/proc/version', 'utf8'); }
       catch { version = ''; }
     }
-    const wsl = isWslKernel({ platform, release, version });
+    const windowsKernel = isWslKernel({ platform, release, version });
+    const wsl = /microsoft-standard-WSL2/i.test(`${release} ${version}`);
+    if (windowsKernel && !wsl) {
+      throw new PlatformError('WSL_VERSION_UNSUPPORTED', 'SpeechCraft requires Ubuntu on WSL2. WSL1 is not supported; update the distribution to WSL2 before continuing.');
+    }
     if (!wsl && !process.report?.getReport?.().header?.glibcVersionRuntime) {
       throw new PlatformError('PLATFORM_UNSUPPORTED', 'SpeechCraft bootstrap currently requires x86-64 glibc Linux or Apple Silicon macOS.');
     }

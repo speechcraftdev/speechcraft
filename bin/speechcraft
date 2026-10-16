@@ -26,7 +26,7 @@
   try {
     app = await runLauncher({ signal: startupAbort.signal });
     if (startupAbort.signal.aborted) { await stop(0); return; }
-    if (app.help || app.ownedChildren === 0) return;
+    if (app.help || app.command || app.ownedChildren === 0) return;
     const unexpected = await app.unexpected;
     if (!stopping) {
       console.error(`SpeechCraft ${unexpected.child.label} exited unexpectedly (${unexpected.result.signal || unexpected.result.code}).`);

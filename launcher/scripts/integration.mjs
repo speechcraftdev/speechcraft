@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -20,7 +20,9 @@ let child;
 let childOutput = '';
 
 function startLauncher({ simulated = true } = {}) {
-  const args = ['--data-dir', dataDir, '--development', '--no-browser', ...(simulated ? ['--simulated'] : [])];
+  // Exercise the prepared production server instead of compiling the entire
+  // application on the first request through Next dev/Turbopack.
+  const args = ['--data-dir', dataDir, '--no-browser', ...(simulated ? ['--simulated'] : [])];
   const launchEnv = { ...process.env };
   delete launchEnv.SPEECHCRAFT_MODEL_MANAGER_WHEEL;
   delete launchEnv.SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256;
@@ -108,17 +110,26 @@ async function waitFor(url, predicate, timeout = 50_000) {
     } catch (error) { lastError = error; }
     await delay(200);
   }
-  throw new Error(`Timed out waiting for ${url}: ${lastError?.message || childOutput}`);
+  throw new Error(`Timed out waiting for ${url}: ${lastError?.message || 'no HTTP response'}\n${childOutput.slice(-3000)}`);
 }
 
 try {
+  console.log('integration: starting launcher');
   child = startLauncher();
   const page = await waitFor(`${origin}/setup`, (response) => response.ok);
+  console.log('integration: frontend ready');
   assert.match(await page.text(), /Preparing SpeechCraft/);
   const healthResponse = await get(`${origin}/api/speechcraft-launcher/health`);
   const health = await healthResponse.json();
   assert.equal(healthResponse.status, 200);
   assert.equal(health.service, 'speechcraft-frontend');
+  const cliStatus = spawnSync(bin, ['status', '--json', '--data-dir', dataDir], { cwd: root, encoding: 'utf8', env: { ...process.env } });
+  console.log('integration: authenticated CLI status returned');
+  assert.equal(cliStatus.status, 0, cliStatus.stderr);
+  const statusValue = JSON.parse(cliStatus.stdout);
+  assert.equal(statusValue.running, true);
+  assert.equal(statusValue.frontend, 'verified');
+  assert.equal(statusValue.controller, 'running');
   const networkAddress = Object.values(os.networkInterfaces()).flat().find((value) => value && value.family === 'IPv4' && !value.internal)?.address;
   if (networkAddress) {
     assert.equal(await acceptsConnection(networkAddress, 3002), false, 'the frontend is not exposed on a non-loopback interface');
@@ -142,6 +153,7 @@ try {
     'x-speechcraft-csrf': session.csrf_token,
   }, body: '{}' });
   assert.equal(start.status, 202, 'a browser-origin authenticated setup action reaches the controller');
+  console.log('integration: setup mutation accepted');
   const simulatedDeadline = Date.now() + 10_000;
   let simulatedStatus = snapshot;
   while (Date.now() < simulatedDeadline && simulatedStatus.job.state !== 'completed') {
@@ -149,6 +161,7 @@ try {
     simulatedStatus = await (await fetch(`${origin}/setup-api/status`, { headers: { host: '127.0.0.1:3002', cookie } })).json();
   }
   assert.equal(simulatedStatus.job.state, 'completed');
+  console.log('integration: simulated setup completed');
   assert.equal(simulatedStatus.onboarding.completed, false, 'completed simulation stays on the first-run setup route');
   const stream = await fetch(`${origin}/setup-api/events`, { headers: { host: '127.0.0.1:3002', cookie, accept: 'text/event-stream' } });
   assert.equal(stream.status, 200);
@@ -159,10 +172,11 @@ try {
 
   // A second invocation must identify and reuse the same controller and
   // frontend rather than launching duplicate services.
-  const second = spawn(bin, ['--data-dir', dataDir, '--development', '--simulated', '--no-browser'], {
+  const second = spawn(bin, ['--data-dir', dataDir, '--simulated', '--no-browser'], {
     cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env },
   });
   const [exitCode] = await once(second, 'exit');
+  console.log('integration: duplicate launch reused existing instance');
   assert.equal(exitCode, 0);
   assert.equal((await get(`${origin}/setup`)).status, 200);
   assert.equal(childOutput.includes(bootstrap), false);
@@ -172,6 +186,7 @@ try {
   // readiness evaluator. Only the prerequisite evidence is a controlled
   // fixture; production code performs the state transition and persistence.
   await completeThroughControllerTransition();
+  console.log('integration: onboarding completion persisted by controller');
   child = startLauncher({ simulated: false });
   const normalEntry = await waitFor(`${origin}/login`, (response) => response.ok);
   assert.equal(normalEntry.status, 200);
@@ -190,7 +205,11 @@ try {
   } })).json();
   assert.equal(persistedStatus.job.state, 'completed', 'service restoration does not create a new setup job');
   assert.equal(persistedStatus.onboarding.completed, true, 'onboarding remains sticky after controller restart');
-  console.log('Launcher HTTP integration passed: loopback UI, session bridge, authenticated status/SSE, duplicate-launch reuse, controller-driven onboarding completion, wheel-free repeat launch, and sticky first-run routing.');
+  const cliStop = spawnSync(bin, ['stop', '--data-dir', dataDir], { cwd: root, encoding: 'utf8', env: { ...process.env } });
+  assert.equal(cliStop.status, 0, cliStop.stderr || cliStop.stdout);
+  assert.match(cliStop.stdout, /SpeechCraft stopped/);
+  if (child.exitCode === null && child.signalCode === null) await once(child, 'exit');
+  console.log('Launcher HTTP integration passed: loopback UI, session bridge, authenticated status/SSE, duplicate-launch reuse, controller-driven onboarding completion, wheel-free repeat launch, sticky first-run routing, and authenticated stop.');
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertLoopbackAddress, chooseDestination, parseArgs, readOrCreateFrontendIdentity, verifyFrontendOwnership } from '../src/launcher.js';
+import { assertLoopbackAddress, chooseDestination, openDefaultBrowser, parseArgs, readOrCreateFrontendIdentity, verifyFrontendOwnership } from '../src/launcher.js';
+import { EventEmitter } from 'node:events';
 
 test('fresh and interrupted setup routes to setup; completed onboarding routes to the application', () => {
   assert.equal(chooseDestination(null), '/setup');
@@ -13,10 +14,32 @@ test('fresh and interrupted setup routes to setup; completed onboarding routes t
 
 test('launcher arguments are explicit and reject unknown options', () => {
   assert.deepEqual(parseArgs(['--development', '--simulated', '--no-browser', '--data-dir', '/tmp/sc-data']), {
-    dataDirectory: '/tmp/sc-data', development: true, simulated: true, openBrowser: false,
+    command: 'start', dataDirectory: '/tmp/sc-data', development: true, simulated: true, openBrowser: false, json: false,
   });
+  assert.deepEqual(parseArgs(['status', '--json', '--data-dir', '/tmp/sc-data']), {
+    command: 'status', dataDirectory: '/tmp/sc-data', development: false, simulated: false, openBrowser: true, json: true,
+  });
+  assert.equal(parseArgs(['stop']).command, 'stop');
   assert.throws(() => parseArgs(['--bind', '0.0.0.0']), /Unknown launcher option/);
   assert.deepEqual(parseArgs(['--help']).help, true);
+});
+
+test('browser opener selects safe platform-native commands and avoids headless attempts', async () => {
+  const calls = [];
+  const spawnImpl = (command, args, options) => {
+    calls.push({ command, args, options });
+    const child = new EventEmitter(); child.unref = () => {};
+    queueMicrotask(() => child.emit('spawn'));
+    return child;
+  };
+  assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/setup', { platform: 'linux', env: {}, spawnImpl }), false);
+  assert.equal(calls.length, 0);
+  assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/login', { platform: 'darwin', env: {}, spawnImpl }), true);
+  assert.equal(calls[0].command, 'open');
+  assert.equal(calls[0].options.shell, false);
+  assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/setup', { platform: 'linux', wsl: true, env: {}, spawnImpl }), true);
+  assert.equal(calls[1].command, 'wslview');
+  await assert.rejects(openDefaultBrowser('http://example.com', { platform: 'darwin', env: {}, spawnImpl }), /non-SpeechCraft local URL/);
 });
 
 test('privileged local launch requires an explicit loopback bind', () => {
