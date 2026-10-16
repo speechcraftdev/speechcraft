@@ -120,7 +120,11 @@ async function snapshotBuild() {
     const runtimeVersion = JSON.parse(fs.readFileSync(path.join(nodeRuntime, 'runtime-manifest.json'), 'utf8')).version;
     const buildEnv = { ...process.env, NEXT_TELEMETRY_DISABLED: '1', PATH: `${nodeRuntime}${path.delimiter}${process.env.PATH || ''}` };
     run('npm', ['run', 'typecheck'], path.join(repositoryRoot, 'frontend'), buildEnv);
-    run('npm', ['run', 'build'], path.join(repositoryRoot, 'frontend'), buildEnv);
+    // Next 16 Turbopack currently panics during the generated global-error
+    // route's prerender in this app. Webpack is the supported production
+    // builder and keeps the release build deterministic while that upstream
+    // regression is unresolved.
+    run('npm', ['run', 'build', '--', '--webpack'], path.join(repositoryRoot, 'frontend'), buildEnv);
     const frontendStage = path.join(work, 'frontend-stage');
     run(process.execPath, [path.join(repositoryRoot, 'launcher/scripts/package-frontend.mjs'), '--output', frontendStage], repositoryRoot, buildEnv);
 
