@@ -92,15 +92,83 @@ function isPortAvailable(port) {
 
 function launcherOwnershipPath(dataDirectory) { return path.join(dataDirectory, 'launcher.processes.json'); }
 
-function persistLauncherOwnership(dataDirectory, handles) {
-  const records = handles.map((handle) => ({ label: handle.label, pid: handle.child.pid, nonce: handle.nonce,
-    identity: handle.identityValue, process_group_id: handle.child.pid }));
+export function persistLauncherOwnership(dataDirectory, handles, { identityResolver = ownedProcessIdentity,
+  processGroupResolver = processGroupExists,
+  processResolver = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; if (error.code === 'EPERM') return true; throw error; } },
+  timeoutMs = 5_000 } = {}) {
   const target = launcherOwnershipPath(dataDirectory);
-  const temporary = `${target}.${crypto.randomUUID()}.tmp`;
-  const fd = fs.openSync(temporary, 'wx', 0o600);
-  try { fs.writeFileSync(fd, `${JSON.stringify({ schema_version: 1, records })}\n`, 'utf8'); fs.fsyncSync(fd); }
-  finally { fs.closeSync(fd); }
-  fs.renameSync(temporary, target);
+  const lock = `${target}.lock`;
+  const deadline = Date.now() + timeoutMs;
+  let lockFd;
+  while (lockFd === undefined) {
+    try { lockFd = fs.openSync(lock, 'wx', 0o600); }
+    catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      if (Date.now() >= deadline) throw Object.assign(new Error('Another launcher is reconciling SpeechCraft process ownership.'), { code: 'PROCESS_OWNERSHIP_BUSY' });
+      // A lock is removed only after its owner PID is positively absent. If
+      // the PID exists (including possible PID reuse), preserve the lock.
+      try {
+        const owner = JSON.parse(fs.readFileSync(lock, 'utf8'));
+        if (Number.isSafeInteger(owner.pid) && owner.pid > 1) {
+          try { process.kill(owner.pid, 0); }
+          catch (probe) {
+            if (probe.code === 'ESRCH') { fs.unlinkSync(lock); continue; }
+          }
+        }
+      } catch (readError) {
+        if (readError.code === 'ENOENT') continue;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+  try {
+    fs.writeFileSync(lockFd, JSON.stringify({ pid: process.pid, nonce: crypto.randomUUID() }));
+    fs.fsyncSync(lockFd);
+    const existing = readLauncherOwnership(dataDirectory);
+    const byPid = new Map();
+    for (const record of existing) {
+      const identity = identityResolver(record.pid, record.nonce);
+      const groupAlive = processGroupResolver(record.pid);
+      const processAlive = processResolver(record.pid);
+      if (!groupAlive && !processAlive) continue;
+      if (!groupAlive) throw Object.assign(new Error(`Cannot reconcile ${record.label}; its recorded process group is gone while its PID remains alive.`), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+      if (!identity || !(record.identity === identity || record.identity.startsWith(`${identity}:`))) {
+        throw Object.assign(new Error(`Cannot reconcile existing ${record.label} ownership; its process identity is uncertain.`), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+      }
+      byPid.set(record.pid, record);
+    }
+    for (const handle of handles) {
+      const identity = handle.identityValue;
+      if (!Number.isSafeInteger(handle.child.pid) || typeof handle.nonce !== 'string' || typeof identity !== 'string') {
+        throw Object.assign(new Error(`Cannot persist incomplete ownership for ${handle.label}.`), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+      }
+      const currentIdentity = identityResolver(handle.child.pid, handle.nonce);
+      if (!processGroupResolver(handle.child.pid) || !currentIdentity
+          || (identity !== currentIdentity && !identity.startsWith(`${currentIdentity}:`))) {
+        throw Object.assign(new Error(`Cannot confirm the current process identity for ${handle.label}.`), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+      }
+      const record = { label: handle.label, pid: handle.child.pid, nonce: handle.nonce,
+        identity, process_group_id: handle.child.pid };
+      const prior = byPid.get(record.pid);
+      if (prior && (prior.identity !== record.identity || prior.nonce !== record.nonce)) {
+        throw Object.assign(new Error(`Conflicting verified ownership records exist for ${handle.label}.`), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+      }
+      const conflictingLabel = [...byPid.values()].find((item) => item.label === record.label && item.pid !== record.pid);
+      if (conflictingLabel) throw Object.assign(new Error(`A different verified ${record.label} process is already owned.`), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+      byPid.set(record.pid, record);
+    }
+    const records = [...byPid.values()];
+    const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+    const fd = fs.openSync(temporary, 'wx', 0o600);
+    try { fs.writeFileSync(fd, `${JSON.stringify({ schema_version: 1, records })}\n`, 'utf8'); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
+    fs.renameSync(temporary, target);
+    const directoryFd = fs.openSync(dataDirectory, 'r');
+    try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
+  } finally {
+    fs.closeSync(lockFd);
+    try { fs.unlinkSync(lock); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
 }
 
 function readLauncherOwnership(dataDirectory) {
@@ -613,7 +681,10 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     shuttingDown = true;
     shutdownPromise = (async () => {
       for (const child of [...children].reverse()) await stopOwned(child);
-      try { fs.unlinkSync(launcherOwnershipPath(dataDirectory)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      // Drop only records whose process groups have actually ended. A
+      // controller reused from a prior launcher must remain owned after this
+      // frontend-only launch exits.
+      persistLauncherOwnership(dataDirectory, []);
     })();
     return shutdownPromise;
   };

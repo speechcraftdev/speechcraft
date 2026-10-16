@@ -15,6 +15,7 @@ const args = process.argv.slice(2);
 const get = (name) => { const i = args.indexOf(name); return i < 0 ? null : args[i + 1]; };
 const archive = path.resolve(get('--archive') || '');
 const installer = path.resolve(get('--installer') || '');
+const sourceCheckout = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 if (!get('--archive') || !get('--installer')) throw new Error('Usage: installed-linux-smoke.mjs --archive ARCHIVE --installer INSTALLER');
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'SpeechCraft Installed Smoke '));
 const home = path.join(base, 'User Home With Spaces'); fs.mkdirSync(home, { mode: 0o700 });
@@ -138,6 +139,29 @@ try {
   assert.equal((await uploadResponse.json()).bytes, uploadBytes.length);
   const noNodeVersion = run(command, ['--help']); assert.match(noNodeVersion, /Usage/);
   const releaseRoot = fs.realpathSync(path.join(home, '.local/share/speechcraft/app/current'));
+  const packagedBackend = path.join(releaseRoot, 'backend');
+  const packagedWorker = path.join(releaseRoot, 'workers/dataset');
+  assert.ok(fs.statSync(path.join(packagedBackend, 'app/dataset_worker_client.py')).isFile());
+  assert.ok(fs.statSync(path.join(packagedBackend, 'app/dataset_runs.py')).isFile());
+  assert.ok(fs.statSync(path.join(packagedWorker, 'scripts/preflight.py')).isFile());
+  assert.ok(fs.statSync(path.join(packagedWorker, 'scripts/runtime_probe.py')).isFile());
+  const preflightCall = spawnSync('/usr/bin/python3', ['-c', [
+    'import json',
+    'from app.dataset_worker_client import run_dataset_worker_preflight',
+    'print(json.dumps(run_dataset_worker_preflight(asr_model="large-v3")))',
+  ].join('; ')], { cwd: base, env: { ...env, PYTHONPATH: packagedBackend,
+    SPEECHCRAFT_DATASET_WORKER_ROOT: packagedWorker,
+    SPEECHCRAFT_DATASET_WORKER_PYTHON: '/usr/bin/python3', SPEECHCRAFT_MANAGED_RUNTIME: '1' },
+  encoding: 'utf8', shell: false, timeout: 30_000 });
+  assert.equal(preflightCall.status, 0, preflightCall.stderr);
+  const packagedPreflight = JSON.parse(preflightCall.stdout);
+  assert.equal(packagedPreflight.worker_root, packagedWorker);
+  assert.equal(packagedPreflight.command[1], path.join(packagedWorker, 'scripts/preflight.py'));
+  assert.equal(packagedPreflight.ok, false, 'fixture environment has no installed production ML dependencies');
+  assert.match(JSON.stringify(packagedPreflight), /ModuleNotFoundError|not configured|not found/i,
+    'the production entrypoint reports actionable missing runtime dependencies');
+  assert.equal(JSON.stringify(packagedPreflight).includes(sourceCheckout), false,
+    'worker invocation is resolved only from the installed package, never the source checkout');
   const releaseNode = path.join(releaseRoot, 'runtime/node');
   const records = JSON.parse(fs.readFileSync(path.join(data, 'launcher.processes.json'), 'utf8')).records;
   assert.equal(records.length, 2);
@@ -196,21 +220,45 @@ try {
   if (app.exitCode === null && app.signalCode === null) await repeatExit;
   app = null;
 
-  // Simulate a launcher crash and an already-dead frontend while the controller
-  // survives. stop must authenticate with the controller without probing UI health.
+  // Reproduce partial recovery: the first launcher dies, its controller
+  // survives, its frontend disappears, and a new launcher reuses the controller
+  // while creating a replacement frontend.
   const crashData = `${data}-front-crash`;
   app = start(crashData);
   await waitFor('http://127.0.0.1:3002/setup');
   const crashRecords = JSON.parse(fs.readFileSync(path.join(crashData, 'launcher.processes.json'), 'utf8')).records;
+  const controllerRecord = crashRecords.find((record) => record.label === 'setup controller');
   const frontendRecord = crashRecords.find((record) => record.label === 'Next.js frontend');
+  assert.equal(ownedProcessIdentity(controllerRecord.pid, controllerRecord.nonce), controllerRecord.identity);
   assert.equal(ownedProcessIdentity(frontendRecord.pid, frontendRecord.nonce), frontendRecord.identity);
   const crashedLauncher = once(app, 'exit');
   app.kill('SIGKILL');
   await crashedLauncher; app = null;
   process.kill(-frontendRecord.pid, 'SIGKILL');
   await new Promise((resolve) => setTimeout(resolve, 100));
+  app = start(crashData, false);
+  output = [];
+  app.stdout.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
+  app.stderr.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
+  await waitFor('http://127.0.0.1:3002/setup');
+  const recoveredRecords = JSON.parse(fs.readFileSync(path.join(crashData, 'launcher.processes.json'), 'utf8')).records;
+  const recoveredController = recoveredRecords.find((record) => record.label === 'setup controller');
+  const recoveredFrontend = recoveredRecords.find((record) => record.label === 'Next.js frontend');
+  assert.equal(recoveredController.pid, controllerRecord.pid, 'surviving controller ownership is retained');
+  assert.equal(recoveredController.identity, controllerRecord.identity);
+  assert.notEqual(recoveredFrontend.pid, frontendRecord.pid, 'replacement frontend is recorded');
+  assert.equal(ownedProcessIdentity(recoveredController.pid, recoveredController.nonce), recoveredController.identity);
+  assert.equal(ownedProcessIdentity(recoveredFrontend.pid, recoveredFrontend.nonce), recoveredFrontend.identity);
+  const recoveredStatus = JSON.parse(run(command, ['status', '--json', '--data-dir', crashData]));
+  assert.equal(recoveredStatus.controller, 'running');
+  assert.equal(recoveredStatus.frontend, 'verified');
+  const recoveredExit = once(app, 'exit');
   run(command, ['stop', '--data-dir', crashData]);
-  console.log('Installed Linux package smoke passed: idempotent install, bundled Node, external cwd, setup/login/lab and static assets, session, CSRF mutation, SSE, Origin rejection, backend proxy, audio range and 11 MiB upload, first-run route, completion through the packaged controller evaluator, repeat /login route without reset, normal stop, and stop after frontend+launcher crash.');
+  if (app.exitCode === null && app.signalCode === null) await recoveredExit;
+  app = null;
+  assert.equal((await fetch('http://127.0.0.1:4317/setup-api/health').catch(() => null)), null,
+    'stop after partial recovery also terminates the surviving controller');
+  console.log('Installed Linux package smoke passed: idempotent install, bundled Node, external cwd, setup/login/lab and static assets, session, CSRF mutation, SSE, Origin rejection, backend proxy, audio range and 11 MiB upload, packaged worker preflight resolution, first-run route, completion through the packaged controller evaluator, repeat /login route, normal stop, and controller/frontend ownership reconciliation after launcher crash.');
 } catch (error) {
   if (app && app.exitCode === null) app.kill('SIGTERM');
   throw new Error(`${error.message}\n${output?.join('').slice(-3000) || ''}`, { cause: error });

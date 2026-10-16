@@ -7,6 +7,8 @@ import { assertLoopbackAddress, chooseDestination, openDefaultBrowser, parseArgs
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { ownedProcessIdentity } from '../../setup-controller/src/bootstrap.js';
+import { persistLauncherOwnership } from '../src/launcher.js';
+import { REQUIRED_RUNTIME_FILES, validateRuntimeInventory } from '../src/package-inventory.js';
 
 test('fresh and interrupted setup routes to setup; completed onboarding routes to the application', () => {
   assert.equal(chooseDestination(null), '/setup');
@@ -130,6 +132,71 @@ test('persisted owned process record stops a live child by identity and confirms
   assert.equal(result, 'stopped');
   await closed;
   assert.equal(ownedProcessIdentity(child.pid, nonce), null);
+});
+
+test('runtime package inventory requires the production preflight, runtime probe, and manifest inputs', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-runtime-inventory-'));
+  try {
+    for (const relative of REQUIRED_RUNTIME_FILES) {
+      const filename = path.join(root, relative);
+      fs.mkdirSync(path.dirname(filename), { recursive: true });
+      fs.writeFileSync(filename, 'fixture');
+    }
+    const runtimeManifest = {
+      worker: { validation_helper: 'workers/dataset/scripts/preflight.py' },
+      runtime_validation: {
+        probes: [{ helper: 'workers/dataset/scripts/runtime_probe.py' }],
+        fixtures: { sample: { path: 'workers/dataset/runtime-fixtures/speech.wav' } },
+      },
+    };
+    fs.writeFileSync(path.join(root, 'setup-controller/resources/runtime-manifest.json'), JSON.stringify(runtimeManifest));
+    assert.equal(validateRuntimeInventory(root).ok, true);
+    fs.unlinkSync(path.join(root, 'workers/dataset/scripts/preflight.py'));
+    const missingPreflight = validateRuntimeInventory(root);
+    assert.equal(missingPreflight.ok, false);
+    assert.ok(missingPreflight.missing.includes('workers/dataset/scripts/preflight.py'));
+    fs.writeFileSync(path.join(root, 'workers/dataset/scripts/preflight.py'), 'fixture');
+    fs.unlinkSync(path.join(root, 'workers/dataset/scripts/runtime_probe.py'));
+    assert.ok(validateRuntimeInventory(root).missing.includes('workers/dataset/scripts/runtime_probe.py'));
+    fs.writeFileSync(path.join(root, 'workers/dataset/scripts/runtime_probe.py'), 'fixture');
+    fs.writeFileSync(path.join(root, 'setup-controller/resources/runtime-manifest.json'), JSON.stringify({
+      worker: { validation_helper: '../outside.py' }, runtime_validation: { probes: [], fixtures: {} },
+    }));
+    assert.equal(validateRuntimeInventory(root).ok, false, 'path traversal in trusted references is rejected');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('launcher ownership reconciliation preserves verified surviving services when a replacement starts', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-ownership-merge-'));
+  try {
+    fs.chmodSync(directory, 0o700);
+    const file = path.join(directory, 'launcher.processes.json');
+    const old = { label: 'setup controller', pid: 41001, nonce: 'controller-nonce', identity: 'identity-controller', process_group_id: 41001 };
+    fs.writeFileSync(file, JSON.stringify({ schema_version: 1, records: [old] }), { mode: 0o600 });
+    const identities = new Map([[41001, 'identity-controller'], [41002, 'identity-frontend']]);
+    const replacement = { label: 'Next.js frontend', nonce: 'frontend-nonce', identityValue: 'identity-frontend', child: { pid: 41002 } };
+    persistLauncherOwnership(directory, [replacement], { identityResolver: (pid) => identities.get(pid) || null,
+      processGroupResolver: (pid) => identities.has(pid) });
+    const records = JSON.parse(fs.readFileSync(file, 'utf8')).records;
+    assert.deepEqual(records.map((record) => record.label).sort(), ['Next.js frontend', 'setup controller']);
+    assert.equal(records.find((record) => record.pid === old.pid).nonce, old.nonce);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('ownership reconciliation preserves prior records and fails closed on identity uncertainty', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-ownership-uncertain-'));
+  try {
+    fs.chmodSync(directory, 0o700);
+    const file = path.join(directory, 'launcher.processes.json');
+    const old = { label: 'setup controller', pid: 42001, nonce: 'old-nonce', identity: 'expected-identity', process_group_id: 42001 };
+    const original = `${JSON.stringify({ schema_version: 1, records: [old] })}\n`;
+    fs.writeFileSync(file, original, { mode: 0o600 });
+    const replacement = { label: 'Next.js frontend', nonce: 'new-nonce', identityValue: 'new-identity', child: { pid: 42002 } };
+    assert.throws(() => persistLauncherOwnership(directory, [replacement], {
+      identityResolver: () => null, processGroupResolver: () => true, timeoutMs: 50,
+    }), { code: 'PROCESS_OWNERSHIP_UNCERTAIN' });
+    assert.equal(fs.readFileSync(file, 'utf8'), original, 'uncertain existing ownership remains intact');
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('persisted process record with uncertain identity is not signalled', async () => {
