@@ -99,7 +99,11 @@ async function outerSnapshotBuild() {
   const expectedNext = JSON.parse(fs.readFileSync(path.join(snapshotRoot, 'frontend/package.json'), 'utf8')).dependencies?.next;
   const actualNext = JSON.parse(fs.readFileSync(path.join(installedDependencies, 'next/package.json'), 'utf8')).version;
   if (expectedNext !== actualNext) throw new Error(`Pinned build input mismatch: source requires Next.js ${expectedNext}, installed dependency tree has ${actualNext}.`);
-  fs.symlinkSync(installedDependencies, path.join(snapshotRoot, 'frontend/node_modules'), 'dir');
+  // Turbopack refuses node_modules symlinks that escape its project root.
+  // Copy only the prepared build dependency tree into the exported source
+  // snapshot; all frontend/backend source still comes from the pinned commit.
+  fs.cpSync(installedDependencies, path.join(snapshotRoot, 'frontend/node_modules'),
+    { recursive: true, dereference: false, preserveTimestamps: true, errorOnExist: true });
   run(process.execPath, [path.join(snapshotRoot, 'launcher/scripts/package-linux.mjs'), '--snapshot-build', '--source-revision', revision, '--output', outputRoot], snapshotRoot, process.env);
 }
 
