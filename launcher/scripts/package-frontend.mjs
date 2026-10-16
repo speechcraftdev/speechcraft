@@ -28,7 +28,11 @@ const temporary = `${output}.staging-${process.pid}`;
 try {
   fs.mkdirSync(temporary, { mode: 0o700 });
   const frontendOutput = path.join(temporary, 'frontend');
-  fs.cpSync(source, frontendOutput, { recursive: true, errorOnExist: true, filter: (item) => !item.includes(`${path.sep}node_modules${path.sep}`) });
+  // Next's standalone tree contains only traced production dependencies. Keep
+  // that tree intact; filtering node_modules here silently breaks runtime
+  // route handlers. The post-copy walk rejects symlinks rather than following
+  // them outside the release root.
+  fs.cpSync(source, frontendOutput, { recursive: true, errorOnExist: true, verbatimSymlinks: true });
   fs.mkdirSync(path.join(frontendOutput, '.next'), { recursive: true });
   fs.cpSync(staticSource, path.join(frontendOutput, '.next/static'), { recursive: true, errorOnExist: true });
   if (fs.existsSync(publicSource)) fs.cpSync(publicSource, path.join(frontendOutput, 'public'), { recursive: true, errorOnExist: true });

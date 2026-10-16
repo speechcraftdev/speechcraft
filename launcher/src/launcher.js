@@ -243,6 +243,10 @@ function printCliStatus(status, asJson = false) {
 async function stopManagedApplication(dataDirectory) {
   const session = await getControllerSession(dataDirectory);
   const origin = `http://${LOOPBACK}:${CONTROLLER_PORT}`;
+  const frontendIdentity = readOrCreateFrontendIdentity(dataDirectory);
+  await verifyFrontendOwnership(`http://${LOOPBACK}:${FRONTEND_PORT}`, frontendIdentity);
+  const backendState = session.status.components?.backend_service?.state;
+  const backendMayBeRunning = !['stopped', 'blocked'].includes(backendState);
   const response = await fetch(`${origin}/setup-api/shutdown`, { method: 'POST', headers: {
     host: `${LOOPBACK}:${CONTROLLER_PORT}`, origin, cookie: session.cookie,
     'content-type': 'application/json', 'x-speechcraft-csrf': session.csrf,
@@ -251,11 +255,15 @@ async function stopManagedApplication(dataDirectory) {
   if (!response.ok || (await response.json()).accepted !== true) throw new Error('The controller did not accept authenticated shutdown.');
   const deadline = Date.now() + 12_000;
   while (Date.now() < deadline) {
-    try { await fetch(`${origin}/setup-api/health`, { signal: AbortSignal.timeout(500) }); }
-    catch { return { stopped: true }; }
+    const controllerFree = await isPortAvailable(CONTROLLER_PORT);
+    const frontendFree = await isPortAvailable(FRONTEND_PORT);
+    const backendFree = !backendMayBeRunning || await isPortAvailable(BACKEND_PORT);
+    if (controllerFree && frontendFree && backendFree) return { stopped: true, services: {
+      controller: 'stopped', frontend: 'stopped', backend: backendMayBeRunning ? 'stopped' : 'not_running',
+    } };
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error('SpeechCraft shutdown was requested, but service termination was not confirmed. Inspect controller ownership before retrying.');
+  throw new Error('SpeechCraft shutdown was requested, but one or more controller, frontend, or backend listeners remain. Ownership is retained; inspect the running service before retrying.');
 }
 
 export async function verifyFrontendOwnership(origin, identity, processHandle = null) {
@@ -311,10 +319,10 @@ function launch(executable, args, { cwd, env, label }) {
     child.once('spawn', resolve);
   });
   const identity = new Promise((resolve) => ready.then(() => resolve(ownedProcessIdentity(child.pid, nonce)), () => resolve(null)));
-  return { child, label, ready, identity, exit: new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))) };
+  return { child, label, nonce, ready, identity, exit: new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))) };
 }
 
-async function stopOwned(handle) {
+export async function stopOwned(handle, { identityResolver = ownedProcessIdentity, signalGroup = (pid, signal) => process.kill(-pid, signal) } = {}) {
   if (!handle) return;
   if (handle.child.exitCode !== null || handle.child.signalCode !== null) {
     try {
@@ -327,18 +335,19 @@ async function stopOwned(handle) {
     }
   }
   const ownedIdentity = await handle.identity;
-  const actualIdentity = ownedProcessIdentity(handle.child.pid);
-  // Linux start-time and process-group identity is verified before signalling.
+  const actualIdentity = identityResolver(handle.child.pid, handle.nonce);
+  // The Darwin verifier requires the launch nonce; Linux ignores it and
+  // verifies boot ID, start ticks, and process group.
   if (!ownedIdentity || !actualIdentity || (ownedIdentity !== actualIdentity && !ownedIdentity.startsWith(`${actualIdentity}:`))) {
     throw new Error(`Cannot safely stop ${handle.label}; its process identity changed. Leave ownership intact and inspect the local process.`);
   }
-  try { process.kill(-handle.child.pid, 'SIGTERM'); }
+  try { signalGroup(handle.child.pid, 'SIGTERM'); }
   catch (error) { if (error.code !== 'ESRCH') throw error; }
   const done = await bounded(handle.exit.then(() => true), STOP_TIMEOUT_MS, () => false);
   if (done) return;
-  const current = ownedProcessIdentity(handle.child.pid);
-  if (!current || !ownedIdentity.startsWith(`${current}:`)) throw new Error(`Cannot safely escalate shutdown of ${handle.label}; ownership is uncertain.`);
-  try { process.kill(-handle.child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  const current = identityResolver(handle.child.pid, handle.nonce);
+  if (!current || (ownedIdentity !== current && !ownedIdentity.startsWith(`${current}:`))) throw new Error(`Cannot safely escalate shutdown of ${handle.label}; ownership is uncertain.`);
+  try { signalGroup(handle.child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
   await bounded(handle.exit, STOP_TIMEOUT_MS, () => { throw new Error(`${handle.label} did not stop; ownership remains uncertain.`); });
 }
 

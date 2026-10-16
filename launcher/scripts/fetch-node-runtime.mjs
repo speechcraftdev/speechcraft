@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -40,13 +39,28 @@ function runTar(args, destination) {
   return new Promise((resolve, reject) => {
     const child = spawn('tar', args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
     const out = fs.createWriteStream(destination, { flags: 'wx', mode: 0o600 });
-    let stderr = ''; let settled = false;
-    const finish = (error) => { if (settled) return; settled = true; error ? reject(error) : resolve(); };
+    let stderr = '';
+    let settled = false;
+    let processResult;
+    let streamResult;
+    const finish = () => {
+      if (settled || !processResult || !streamResult) return;
+      settled = true;
+      if (processResult.error) reject(processResult.error);
+      else if (processResult.code !== 0) reject(new Error(`Could not extract the verified Node.js payload (${stderr.slice(0, 300)}).`));
+      else if (streamResult.error) reject(streamResult.error);
+      else {
+        try {
+          const stats = fs.lstatSync(destination);
+          if (!stats.isFile() || stats.isSymbolicLink() || stats.size === 0) throw new Error('Archive extraction produced no regular output file.');
+          resolve(stats);
+        } catch (error) { reject(error); }
+      }
+    };
     child.stderr.setEncoding('utf8').on('data', (value) => { stderr = (stderr + value).slice(-2048); });
-    child.stdout.pipe(out);
-    out.once('error', finish);
-    child.once('error', finish);
-    child.once('close', (code) => finish(code === 0 ? null : new Error(`Could not extract the verified Node.js payload (${stderr.slice(0, 300)}).`)));
+    pipeline(child.stdout, out).then(() => { streamResult = { ok: true }; finish(); }, (error) => { streamResult = { error }; finish(); });
+    child.once('error', (error) => { processResult = { error }; finish(); });
+    child.once('close', (code, signal) => { processResult = { code, signal }; finish(); });
   });
 }
 
@@ -57,7 +71,7 @@ try {
   await runTar(artifact.archive === 'xz' ? ['-xOf', archive, `${top}/bin/node`] : ['-xOf', archive, `${top}/bin/node`], binary);
   const license = path.join(stage, 'LICENSE');
   await runTar(['-xOf', archive, `${top}/LICENSE`], license);
-  const stats = fs.statSync(binary);
+  const stats = fs.lstatSync(binary);
   if (!stats.isFile() || stats.size < 10_000_000 || stats.size > 150_000_000) throw new Error('Pinned Node.js executable has an implausible size.');
   fs.chmodSync(binary, 0o755);
   const runtimeManifest = { schema_version: 1, version: manifest.version, platform: selected, source: manifest.source,
@@ -72,10 +86,13 @@ try {
       child.once('error', reject); child.once('close', (code) => code === 0 && stdout.trim() === `v${manifest.version}` ? resolve() : reject(new Error('Bundled Node runtime version verification failed.')));
     });
   }
-  fs.mkdirSync(output, { recursive: false, mode: 0o700 });
-  fs.renameSync(binary, path.join(output, 'node'));
-  fs.renameSync(license, path.join(output, 'LICENSE'));
-  fs.renameSync(path.join(stage, 'runtime-manifest.json'), path.join(output, 'runtime-manifest.json'));
+  const publish = path.join(stage, 'publish');
+  fs.mkdirSync(publish, { mode: 0o700 });
+  fs.renameSync(binary, path.join(publish, 'node'));
+  fs.renameSync(license, path.join(publish, 'LICENSE'));
+  fs.renameSync(path.join(stage, 'runtime-manifest.json'), path.join(publish, 'runtime-manifest.json'));
+  // Publish the complete verified runtime in one same-filesystem rename.
+  fs.renameSync(publish, output);
   console.log(`Verified Node.js ${manifest.version} ${selected} runtime staged at ${output}.`);
 } catch (error) {
   fs.rmSync(output, { recursive: true, force: true });

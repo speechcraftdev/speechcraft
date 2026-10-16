@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertLoopbackAddress, chooseDestination, openDefaultBrowser, parseArgs, readOrCreateFrontendIdentity, verifyFrontendOwnership } from '../src/launcher.js';
+import { assertLoopbackAddress, chooseDestination, openDefaultBrowser, parseArgs, readOrCreateFrontendIdentity, stopOwned, verifyFrontendOwnership } from '../src/launcher.js';
 import { EventEmitter } from 'node:events';
 
 test('fresh and interrupted setup routes to setup; completed onboarding routes to the application', () => {
@@ -94,4 +94,24 @@ test('the launcher accepts a valid nonce proof from the matching frontend instan
   };
   try { assert.equal(await verifyFrontendOwnership('http://127.0.0.1:3002', identity), true); }
   finally { globalThis.fetch = originalFetch; }
+});
+
+test('owned child shutdown rechecks the Darwin nonce and never signals without it', async () => {
+  const nonce = 'launch-specific-nonce';
+  let finish;
+  const child = { pid: 8123, exitCode: null, signalCode: null };
+  const handle = { child, label: 'macOS fixture', nonce,
+    identity: Promise.resolve(`darwin:Thu Oct 16 10:00:00 2026:8123:${nonce}`),
+    exit: new Promise((resolve) => { finish = resolve; }) };
+  const signals = [];
+  const identityResolver = (pid, suppliedNonce) => pid === child.pid && suppliedNonce === nonce
+    ? `darwin:Thu Oct 16 10:00:00 2026:8123:${nonce}` : null;
+  await stopOwned(handle, { identityResolver, signalGroup: (pid, signal) => {
+    signals.push({ pid, signal }); child.exitCode = 0; finish({ code: 0, signal: null });
+  } });
+  assert.deepEqual(signals, [{ pid: child.pid, signal: 'SIGTERM' }]);
+
+  const missing = { ...handle, child: { pid: 8124, exitCode: null, signalCode: null }, nonce: undefined,
+    identity: Promise.resolve(null), exit: new Promise(() => {}) };
+  await assert.rejects(stopOwned(missing, { identityResolver: () => null, signalGroup: () => assert.fail('must not signal without verified identity') }), /identity changed/);
 });

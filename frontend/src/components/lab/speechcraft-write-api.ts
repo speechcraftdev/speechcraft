@@ -131,23 +131,24 @@ export type DatasetClipLabAudioStackRequest = {
 function mapAudioEditOps(ops: DatasetAudioEditOperation[] | undefined, sampleRateHz: number): ClipEdit[] {
   if (!Array.isArray(ops)) return [];
   const sr = sampleRateHz > 0 ? sampleRateHz : 16000;
-  return ops.map((op) => {
+  return ops.reduce<ClipEdit[]>((clips, op) => {
     if (op.kind === "delete_range") {
-      return {
+      clips.push({
         op: "delete_range",
         startSeconds: op.start_sample / sr,
         endSeconds: op.end_sample / sr,
-      };
+      });
+      return clips;
     }
     if (op.kind === "insert_silence") {
-      return {
+      clips.push({
         op: "insert_silence",
         startSeconds: op.at_sample / sr,
         durationSeconds: op.duration_samples / sr,
-      };
+      });
     }
-    return { op: op.kind };
-  });
+    return clips;
+  }, []);
 }
 
 /** Fold an authoritative write response back into the local working clip. */
