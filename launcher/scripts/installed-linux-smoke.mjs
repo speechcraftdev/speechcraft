@@ -236,7 +236,7 @@ try {
   await crashedLauncher; app = null;
   process.kill(-frontendRecord.pid, 'SIGKILL');
   await new Promise((resolve) => setTimeout(resolve, 100));
-  app = start(crashData, false);
+  app = start(crashData);
   output = [];
   app.stdout.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
   app.stderr.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
