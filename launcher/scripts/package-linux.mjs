@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validateRuntimeInventory } from '../src/package-inventory.js';
+import { REQUIRED_RUNTIME_FILES, validateRuntimeInventory } from '../src/package-inventory.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const argv = process.argv.slice(2);
