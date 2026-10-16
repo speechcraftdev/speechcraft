@@ -1,4 +1,8 @@
 import type { NextConfig } from "next";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // Same-origin proxy to speechcraft's local FastAPI backend so the browser
 // hits /sc-api/* (no CORS) and audio range requests pass through cleanly.
@@ -23,6 +27,8 @@ if (setupControllerUrl.protocol !== "http:" ||
 }
 
 const nextConfig: NextConfig = {
+  output: "standalone",
+  outputFileTracingRoot: repositoryRoot,
   reactStrictMode: true,
   allowedDevOrigins: ["127.0.0.1", "localhost"],
   // Local single-user tool: keep builds unblocked while we iterate.

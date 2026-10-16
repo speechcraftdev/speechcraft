@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 -p 3002",
     "build": "next build",
+    "package:standalone": "node ../launcher/scripts/package-frontend.mjs --output ../dist/speechcraft-frontend",
     "start": "next start --hostname 127.0.0.1 -p 3002",
     "typecheck": "tsc --noEmit",
     "test:setup-api": "node scripts/setup-api-integration.mjs",

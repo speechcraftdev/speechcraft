@@ -16,6 +16,9 @@ const appOrigin = 'http://127.0.0.1:3002';
 const allowedHosts = '127.0.0.1:4317,localhost:4317,127.0.0.1:3002,localhost:3002';
 const allowedOrigins = `${controllerOrigin},http://localhost:4317,${appOrigin},http://localhost:3002`;
 const children = new Set();
+if (!fs.existsSync(path.join(frontend, '.next/BUILD_ID'))) {
+  throw new Error('Build the frontend with `npm run build` before running setup API integration tests.');
+}
 
 function launch(executable, args, cwd, env) {
   const child = spawn(executable, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -108,13 +111,13 @@ try {
   const listening = await waitFor(`${controllerOrigin}/setup-api/health`);
   assert.equal((await listening.json()).status, 'ok');
   const bootstrapFile = path.join(dataDir, 'bootstrap.token');
-  const nextEnv = { ...process.env, NODE_ENV: 'development',
+  const nextEnv = { ...process.env, NODE_ENV: 'production',
     SPEECHCRAFT_SETUP_SESSION_BRIDGE: '1',
     SPEECHCRAFT_SETUP_BRIDGE_LOOPBACK_CONFIRMED: '1',
     SPEECHCRAFT_SETUP_CONTROLLER_URL: controllerOrigin,
     SPEECHCRAFT_SETUP_BOOTSTRAP_FILE: bootstrapFile,
     SPEECHCRAFT_SETUP_ALLOWED_APP_ORIGINS: `${appOrigin},http://localhost:3002` };
-  const next = launch(process.execPath, [path.join(frontend, 'node_modules/next/dist/bin/next'), 'dev', '--hostname', '127.0.0.1', '-p', '3002'], frontend, nextEnv);
+  const next = launch(process.execPath, [path.join(frontend, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '-p', '3002'], frontend, nextEnv);
   await waitFor(`${appOrigin}/setup`);
 
   const initial = await request('/setup-api/session');
