@@ -1,4 +1,43 @@
-# Source-checkout launcher and runtime status
+# Linux application package and launcher
+
+## Install and launch
+
+Builds produce a versioned Linux x86-64 archive and a local per-user installer. The source checkout itself is not an installed application.
+
+```bash
+node launcher/scripts/package-linux.mjs --output /absolute/path/to/speechcraft-release
+cd /absolute/path/to/speechcraft-release
+sha256sum -c speechcraft-0.1.0-linux-x86_64.tar.gz.sha256
+./install-linux.sh speechcraft-0.1.0-linux-x86_64.tar.gz
+```
+
+The installer verifies the archive checksum, rejects traversal and special archive entries, checks every packaged file against `application-release-manifest.json`, then atomically publishes a versioned read-only release under `~/.local/share/speechcraft/app/releases/` and updates `current`. It installs `~/.local/bin/speechcraft`. If that directory is not on the current `PATH`, it adds one clearly marked, idempotent SpeechCraft block to `~/.profile` and asks you to open a fresh login terminal. It refuses to modify a symlink or non-user-owned profile. The local archive installer uses the system Python 3.9+ standard library; the running application uses only its bundled Node runtime and the controller-managed Python runtime.
+
+After installation, from any directory:
+
+```bash
+speechcraft
+speechcraft --no-browser
+speechcraft status
+speechcraft status --json
+speechcraft stop
+```
+
+The first launch opens `/setup`. After the controller records verified onboarding completion, later launches open `/login`. `--no-browser` prints the URL and leaves services running in the terminal. On a headless server, use an SSH tunnel from your workstation:
+
+```bash
+ssh -N -L 3002:127.0.0.1:3002 user@cozytent-host
+```
+
+Then visit `http://127.0.0.1:3002/setup` locally. Controller, frontend and backend bind only to loopback. `speechcraft stop` authenticates with the controller when available and independently reconciles launcher-owned child process identities, so a crashed frontend does not prevent shutdown. It reports incomplete or uncertain ownership instead of killing an unrelated process. Ctrl+C stops services owned by that terminal; closing the browser does not stop them.
+
+Persistent state, controller credentials, managed runtimes, models, caches, projects, recordings and exports remain under `~/.local/share/speechcraft/`. Installing an upgrade creates another versioned application directory and switches `current`; it does not remove user data or prior releases. To remove application binaries, remove `~/.local/bin/speechcraft` and `~/.local/share/speechcraft/app/`. Keep `~/.local/share/speechcraft/data/` to retain user data and models. The installer refuses to replace an unrelated `speechcraft` command and is safe to rerun for an identical release.
+
+The packaged release includes the verified Node.js 24.22.0 Linux x86-64 executable, Next.js standalone server and traced runtime dependencies, setup controller, backend and dataset-worker resources, probe fixtures, runtime manifests, and the model-manager wheel with its exact digest. It does not include model weights, credentials, virtual environments, or caches. FFmpeg redistribution and the experimental TitaNet model remain public-release blockers; no real gated Community-1 account or model inference is implied by package smoke tests.
+
+The package is Linux x86-64 only. macOS Apple Silicon runtime validation and Windows WSL2 installation remain separate acceptance work.
+
+## Source-checkout development
 
 The source-checkout launch path is available on Linux x86-64 and can start the UI on Apple Silicon macOS. It requires Node.js 20.9 or newer and prepared frontend dependencies. The trusted runtime manifest still blocks the macOS worker profile, so this is not end-to-end Apple Silicon processing support. Ubuntu WSL2 uses the Linux runtime and native WSL storage; WSL1 is rejected. This checkout is not the public zero-prerequisite installer.
 
@@ -23,7 +62,7 @@ export SPEECHCRAFT_MODEL_MANAGER_WHEEL_SHA256="$(sha256sum "$SPEECHCRAFT_MODEL_M
 
 The controller verifies the wheel against this supplied digest before a fresh model-manager install or repair. In a release package these values must come from signed/trusted release metadata, not an interactive shell. If they are absent during installation or repair, that operation fails with an explicit wheel requirement; the launcher does not invent a source artifact. An already installed manager environment is independently revalidated from its installed wheel metadata and trusted lock identity, so an ordinary repeat launch does not need this wheel or digest.
 
-The executable can be exposed as the `speechcraft` command without changing system files:
+The source-checkout wrapper can be exposed for development without changing system files:
 
 ```bash
 mkdir -p "$HOME/.local/bin"
@@ -85,8 +124,14 @@ The controller diagnostics endpoint is available in the setup page after session
 
 CozyTent first-run/model acceptance requires approved SSH access and a Hugging Face account that has accepted Community-1 conditions. Those credentials must be entered only in the masked setup page; never place them in commands or environment variables.
 
-## Release preparation status
+## Linux package validation
 
-Next.js uses its supported standalone output rooted at the repository. `npm run package:standalone` stages the server, Next-traced production dependencies, static assets, and public assets after a strict TypeScript check. To exercise the staged server outside the source frontend tree, run `node launcher/scripts/standalone-smoke.mjs --frontend /absolute/stage/frontend --node /absolute/runtime/node`. This tests the setup bridge and proxy mechanics against controlled local controller/backend fixtures; it is not a full application package or model-installation acceptance test.
+The single package build entrypoint is `node launcher/scripts/package-linux.mjs --output /absolute/output/directory`. It runs strict TypeScript validation and the production Next.js build, stages traced standalone dependencies and static assets, builds the model-manager wheel, downloads and verifies the pinned Node runtime, packages only tracked/explicit runtime resources, writes per-file identities, and emits the archive checksum. The generated archive is not committed to source control. The package script refuses an existing output directory or an incomplete required input.
 
-Bundled Node metadata pins the official Node.js 24.22.0 LTS Linux x86-64 and macOS ARM64 archives to their published SHA-256 identities. `launcher/scripts/fetch-node-runtime.mjs` downloads a pinned archive, checks the digest, waits for extraction streams to finish, and atomically publishes the runtime. The checked-in launcher still uses the source-checkout Node executable; a full application archive, bundled-runtime command wrapper, and per-user installer are not implemented. WSL2 uses the Linux Node payload. The macOS worker, MLX Whisper, and managed macOS FFmpeg recipes remain unavailable pending trusted dependency recipes and Apple Silicon execution validation.
+The staged frontend can also be tested independently with `node launcher/scripts/standalone-smoke.mjs --frontend /absolute/stage/frontend --node /absolute/runtime/node`. After building an archive, run the actual installed application test with `node launcher/scripts/installed-linux-smoke.mjs --archive /absolute/archive.tar.gz --installer /absolute/install-linux.py`. It installs twice in a fresh temporary home, removes global Node from the service PATH, exercises HTTP setup/session/CSRF/SSE/origin behavior, checks `/proc` executable identities, and validates normal and crashed-frontend shutdown. It uses simulated setup mechanics and is not real model acquisition or inference evidence.
+
+The installed command runs the Node binary inside the versioned application directory; it does not use global Node. Fresh model installation gets the packaged wheel path and SHA-256 from the application release manifest. Ordinary launches do not reinstall the manager or download models. Real model acquisition and inference remain available through the existing setup controller, subject to model access, hardware and release policy.
+
+## Current validation and blockers
+
+Strict frontend typecheck and production build passed in the Linux package build. The installed package smoke test passed in a path containing spaces and from `/tmp`, with a PATH containing no global Node. It verified the default first-run `/setup` route, loopback listeners, session bridge, CSRF-protected setup action, SSE, rejected untrusted Origin, and identity-verified shutdown including a dead frontend. A normal runtime-mode first launch also served `/setup` and reported the four model roles pending. No multi-gigabyte model download or real inference was run. CozyTent access and an authorized Hugging Face account were not available in this environment. Public FFmpeg redistribution clearance and TitaNet provenance remain unresolved. Native macOS and WSL2 are not included in this Linux acceptance.
