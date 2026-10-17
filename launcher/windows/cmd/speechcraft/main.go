@@ -53,15 +53,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		fmt.Fprintf(stderr, "speechcraft: %s\n", err)
 		return diag.ExitIntegration
 	}
-	code, err := launch.Run(ctx, plan, launch.Deps{
-		Start: func(argv []string) (launch.Process, error) {
-			return launch.StartWSL(wsl, argv)
-		},
-		Probe: launch.ProbeFrontend,
-		Open:  launch.OpenDefaultBrowser,
-		Out:   stdout,
-		Err:   stderr,
-	})
+	code, err := launch.Run(ctx, plan, launch.ProductionDeps(wsl, plan, stdout, stderr))
 	if err != nil {
 		fmt.Fprintf(stderr, "speechcraft: %s\n", err)
 	}

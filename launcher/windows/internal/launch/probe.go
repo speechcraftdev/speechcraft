@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func ProbeFrontend(rawURL string) error {
@@ -44,4 +45,11 @@ func AuthenticateFrontend(rawURL, challenge, expectedProof string, do func(*http
 		return errors.New("frontend identity did not match the proof from the trusted WSL command")
 	}
 	return nil
+}
+
+func defaultRoundTrip(request *http.Request) (*http.Response, error) {
+	client := &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	return client.Do(request)
 }
