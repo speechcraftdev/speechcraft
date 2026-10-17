@@ -37,7 +37,7 @@ Persistent state, controller credentials, managed runtimes, models, caches, proj
 
 The packaged release includes the verified Node.js 24.22.0 Linux x86-64 executable, Next.js standalone server and traced runtime dependencies, setup controller, backend and dataset-worker resources (including the production `scripts/preflight.py` and `runtime_probe.py` entrypoints), probe fixtures, runtime manifests, and the model-manager wheel with its exact digest. The builder validates these required resources against the runtime manifest and fails before publication if one is missing. It does not include model weights, credentials, virtual environments, or caches. FFmpeg redistribution and the experimental TitaNet model remain public-release blockers; no real gated Community-1 account or model inference is implied by package smoke tests.
 
-The package is Linux x86-64 only. macOS Apple Silicon runtime validation and Windows WSL2 installation remain separate acceptance work.
+The package is Linux x86-64. Windows can launch that same package inside Ubuntu WSL2 through the separate Windows integration archive. Native Windows acceptance, real WSL localhost networking, and CUDA-on-WSL remain untested until `launcher/windows/accept-windows.ps1` is run on a supported PC. macOS Apple Silicon runtime validation remains separate.
 
 ## Source-checkout development
 
