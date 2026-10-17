@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { inspectHost, validateManagedStorage } from './platform.js';
-import { PRODUCTION_STAGES, assertTrustedBackendRecipe, hashMatches, initialComponents, runtimeRoots, runtimeManifest, selectRuntimeProfile } from './runtime-plan.js';
+import { PRODUCTION_STAGES, assertTrustedBackendRecipe, expectedWorkerMachines, hashMatches, initialComponents, runtimeRoots, runtimeManifest, selectRuntimeProfile } from './runtime-plan.js';
 
 const manifest = JSON.parse(fs.readFileSync(fileURLToPath(new URL('../resources/bootstrap-manifest.json', import.meta.url)), 'utf8'));
 
@@ -1307,7 +1307,8 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     const selection = selectRuntimeProfile(this.environment);
     const recipe = this.runtimeRecipe.worker?.profiles?.[selection.workerProfile];
     await this.installManagedFfmpeg(context);
-    if (!recipe?.available || recipe.validated !== true) {
+    const recipeInstallable = recipe?.available === true && (recipe.validated === true || recipe.lock_verified === true);
+    if (!recipeInstallable) {
       const reason = recipe?.reason || `No trusted, validated worker recipe is available for ${selection.workerProfile}.`;
       this.setComponent(context, 'worker_environment', { state: 'blocked', failure_code: 'runtime_profile_unavailable', message: reason });
       this.emit(context, safeProgress('blocked', reason));
@@ -1341,7 +1342,8 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     }
     const target = this.workerEnvironmentPath(recipe);
     const python = path.join(target, 'bin', 'python');
-    const probe = `import importlib.util,json,os,platform,sys\nassert sys.version.split()[0]==${JSON.stringify(recipe.python_version)},sys.version\nassert os.path.realpath(sys.prefix)==os.path.realpath(${JSON.stringify(target)})\nbase=os.path.realpath(sys.base_prefix); runtime=os.path.realpath(${JSON.stringify(this.paths.pythonRoot)})\nassert base==runtime or base.startswith(runtime+os.sep),base\nassert platform.machine().lower() in ('x86_64','amd64','arm64','aarch64')\nmodules=${JSON.stringify(recipe.validation_modules)}\nmissing=[name for name in modules if importlib.util.find_spec(name) is None]\nassert not missing,missing\nprint(json.dumps({'kind':'SPEECHCRAFT_WORKER_ENV_PROBE','profile':${JSON.stringify(selection.workerProfile)},'version':sys.version.split()[0],'missing':missing,'python':sys.executable}))`;
+    const machines = expectedWorkerMachines(selection.workerProfile);
+    const probe = `import importlib.util,json,os,platform,sys\nassert sys.version.split()[0]==${JSON.stringify(recipe.python_version)},sys.version\nassert os.path.realpath(sys.prefix)==os.path.realpath(${JSON.stringify(target)})\nbase=os.path.realpath(sys.base_prefix); runtime=os.path.realpath(${JSON.stringify(this.paths.pythonRoot)})\nassert base==runtime or base.startswith(runtime+os.sep),base\nassert platform.machine().lower() in ${JSON.stringify(machines)},platform.machine()\nmodules=${JSON.stringify(recipe.validation_modules)}\nmissing=[name for name in modules if importlib.util.find_spec(name) is None]\nassert not missing,missing\nprint(json.dumps({'kind':'SPEECHCRAFT_WORKER_ENV_PROBE','profile':${JSON.stringify(selection.workerProfile)},'version':sys.version.split()[0],'missing':missing,'python':sys.executable}))`;
     if (inspectDirectoryOrMissing(target)) {
       try {
         const result = await this.runProcess(python, ['-I', '-c', probe], context, { cwd: project });

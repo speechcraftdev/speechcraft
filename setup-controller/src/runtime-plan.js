@@ -25,6 +25,12 @@ export function cudaProfileReady(recipe, gpuDetected, cudaProbe) {
     && cudaProbe?.measurements?.whisper_segments > 0;
 }
 
+export function expectedWorkerMachines(workerProfile) {
+  if (workerProfile === 'macos-arm64') return Object.freeze(['aarch64', 'arm64']);
+  if (String(workerProfile).startsWith('linux-x86_64')) return Object.freeze(['amd64', 'x86_64']);
+  return Object.freeze([]);
+}
+
 export function selectRuntimeProfile(host = hostEnvironment(), capabilities = {}) {
   if (host.profile === 'macos-arm64') return { host, profile: 'macos-arm64', modelPlatform: 'macos-arm64', workerProfile: 'macos-arm64' };
   if (host.profile === 'linux-x86_64') {

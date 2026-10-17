@@ -113,6 +113,7 @@ test('WSL environment sanitizing drops Windows-backed cache overrides and keeps 
   assert.equal(sanitized.SPEECHCRAFT_SETUP_DATA_DIR, root);
   assert.equal(sanitized.LANG, 'C.UTF-8');
   assert.equal(stripWindowsPathEntries('C:\\Windows\\System32:/usr/bin'), '/usr/bin');
+  assert.equal(stripWindowsPathEntries('/usr/bin:/home/ada/bin'), '/usr/bin:/home/ada/bin');
   assert.throws(() => sanitizeWslProcessEnvironment({ SPEECHCRAFT_SETUP_DATA_DIR: '/mnt/c/SpeechCraft' }, { mountInfoText: mounts }),
     (error) => error.code === 'WSL_WINDOWS_MOUNT');
   const home = path.join(root, 'home');

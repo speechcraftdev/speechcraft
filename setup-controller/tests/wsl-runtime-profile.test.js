@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cudaProfileReady, runtimeManifest, selectRuntimeProfile } from '../src/runtime-plan.js';
+import { cudaProfileReady, expectedWorkerMachines, runtimeManifest, selectRuntimeProfile } from '../src/runtime-plan.js';
 
 // These cases simulate hardware and probe reports. They are not GPU acceptance.
 const wslHost = { os: 'linux', architecture: 'x86_64', profile: 'linux-x86_64', wsl: true };
@@ -51,6 +51,13 @@ test('a simulated compatible WSL CUDA probe can select the existing Linux CUDA p
   assert.equal(selected.cuda_validated, true);
   assert.equal(selected.modelPlatform, 'windows-wsl2');
   assert.deepEqual(selectRuntimeProfile(wslHost, { gpuDetected: true, cudaValidated: true, cudaProbe: passingCuda }), selected);
+});
+
+test('WSL and Linux worker profiles reject an ARM64 interpreter', () => {
+  assert.deepEqual(expectedWorkerMachines('linux-x86_64-cpu'), ['amd64', 'x86_64']);
+  assert.deepEqual(expectedWorkerMachines('linux-x86_64-cuda'), ['amd64', 'x86_64']);
+  assert.deepEqual(expectedWorkerMachines('macos-arm64'), ['aarch64', 'arm64']);
+  assert.equal(expectedWorkerMachines('linux-x86_64-cpu').includes('arm64'), false);
 });
 
 test('missing CUDA libraries in a simulated probe do not count as a compatible profile', () => {

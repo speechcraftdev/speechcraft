@@ -131,7 +131,11 @@ func Install(host Host, opts Options) (*config.Installation, error) {
 	if err != nil {
 		return nil, err
 	}
-	required := requiredFreeBytes(fileSize(host, opts.Archive))
+	size, err := fileSize(host, opts.Archive)
+	if err != nil {
+		return nil, diag.New("ARCHIVE_MISSING", err.Error(), diag.ExitIntegration)
+	}
+	required := requiredFreeBytes(size)
 	if selected.FreeBytes < required {
 		return nil, diag.New("STORAGE_CAPACITY_INSUFFICIENT", fmt.Sprintf("Ubuntu %s has %d bytes free; installing this archive needs about %d bytes on the Linux filesystem.", selected.Name, selected.FreeBytes, required), diag.ExitIntegration)
 	}
@@ -366,18 +370,18 @@ func verifyWindowsArchive(host Host, opts Options) (ReleaseFile, string, error) 
 	if opts.ExpectedSourceRevision != "" && release.SourceRevision != opts.ExpectedSourceRevision {
 		return ReleaseFile{}, "", diag.New("RELEASE_IDENTITY_MISMATCH", "The Linux archive was built from a different source revision than this Windows installer.", diag.ExitIntegration)
 	}
-	if release.ArchiveSizeBytes != 0 && release.ArchiveSizeBytes != fileSize(host, opts.Archive) {
+	size, err := fileSize(host, opts.Archive)
+	if err != nil {
+		return ReleaseFile{}, "", diag.New("ARCHIVE_MISSING", err.Error(), diag.ExitIntegration)
+	}
+	if release.ArchiveSizeBytes != 0 && release.ArchiveSizeBytes != size {
 		return ReleaseFile{}, "", diag.New("ARCHIVE_MANIFEST_INVALID", "The Linux archive size does not match its release manifest.", diag.ExitIntegration)
 	}
 	return release, strings.ToLower(actual), nil
 }
 
-func fileSize(host Host, filename string) int64 {
-	size, err := host.Size(filename)
-	if err != nil {
-		return 0
-	}
-	return size
+func fileSize(host Host, filename string) (int64, error) {
+	return host.Size(filename)
 }
 
 func requiredFreeBytes(size int64) int64 {
@@ -501,6 +505,13 @@ func stagingOwnedBy(home string, staging Staging) bool {
 	}
 	prefix := strings.TrimRight(home, "/") + stagingMark
 	return strings.HasPrefix(staging.LinuxDir, prefix) && staging.LinuxDir != prefix && strings.HasPrefix(staging.Archive, staging.LinuxDir+"/")
+}
+
+func PathRegistryType(existing uint32) uint32 {
+	if existing == 1 || existing == 2 {
+		return existing
+	}
+	return 2
 }
 
 func HashBytes(body []byte) string {

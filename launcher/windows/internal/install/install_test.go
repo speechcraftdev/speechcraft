@@ -364,6 +364,12 @@ func TestUpgradeKeepsTheSelectedDistribution(t *testing.T) {
 	}
 }
 
+func TestPathRegistryTypePreservesTheExistingKind(t *testing.T) {
+	if PathRegistryType(1) != 1 || PathRegistryType(2) != 2 || PathRegistryType(0) != 2 {
+		t.Fatal(PathRegistryType(1), PathRegistryType(0))
+	}
+}
+
 func containsCall(calls []string, prefix string) bool {
 	for _, call := range calls {
 		if strings.Contains(call, prefix) {

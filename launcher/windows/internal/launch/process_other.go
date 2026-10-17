@@ -25,9 +25,14 @@ func (unavailableProcess) Wait() int         { return diag.ExitIntegration }
 func (unavailableProcess) Cancel()           {}
 
 func OpenDefaultBrowser(rawURL string) error {
-	route := "/setup"
-	if len(rawURL) >= len("/login") && rawURL[len(rawURL)-len("/login"):] == "/login" {
+	var route string
+	switch rawURL {
+	case "http://127.0.0.1:3002/setup":
+		route = "/setup"
+	case "http://127.0.0.1:3002/login":
 		route = "/login"
+	default:
+		return diag.New("URL_REJECTED", "refusing to open a non-SpeechCraft loopback URL", diag.ExitArgument)
 	}
 	if err := ValidateFrontendURL(rawURL, route); err != nil {
 		return err

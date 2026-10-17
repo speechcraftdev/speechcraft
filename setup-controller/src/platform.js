@@ -279,7 +279,7 @@ export function stripWindowsPathEntries(pathValue) {
     const next = parts[index + 1];
     // A Windows drive path splits on the drive-letter colon, so "C:\Tools"
     // arrives as "C" plus "\Tools". Drop both pieces.
-    if (/^[A-Za-z]$/.test(entry) && next !== undefined && (next.includes('\\') || next.startsWith('\\') || next.startsWith('/'))) {
+    if (/^[A-Za-z]$/.test(entry) && next !== undefined && (next.includes('\\') || next.startsWith('\\'))) {
       index += 1;
       continue;
     }

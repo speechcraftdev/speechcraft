@@ -259,7 +259,10 @@ func (h *windowsHost) RemoveLauncher() error {
 	return err
 }
 
-func (h *windowsHost) ReadPath() (string, error) { return readUserPath() }
+func (h *windowsHost) ReadPath() (string, error) {
+	value, _, err := readUserPath()
+	return value, err
+}
 func (h *windowsHost) WritePath(value string) error {
 	if err := writeUserPath(value); err != nil {
 		return err
@@ -356,27 +359,27 @@ func openEnvKey(access uint32) (syscall.Handle, error) {
 	return key, nil
 }
 
-func readUserPath() (string, error) {
+func readUserPath() (string, uint32, error) {
 	key, err := openEnvKey(keyQueryValue)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	defer procRegCloseKey.Call(uintptr(key))
 	name, err := syscall.UTF16PtrFromString("Path")
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	var kind, size uint32
 	r, _, _ := procRegQueryValue.Call(uintptr(key), uintptr(unsafe.Pointer(name)), 0, uintptr(unsafe.Pointer(&kind)), 0, uintptr(unsafe.Pointer(&size)))
 	if r != 0 || size == 0 {
-		return "", nil
+		return "", 0, nil
 	}
 	buffer := make([]uint16, size/2+1)
 	r, _, callErr := procRegQueryValue.Call(uintptr(key), uintptr(unsafe.Pointer(name)), 0, uintptr(unsafe.Pointer(&kind)), uintptr(unsafe.Pointer(&buffer[0])), uintptr(unsafe.Pointer(&size)))
 	if r != 0 {
-		return "", callErr
+		return "", 0, callErr
 	}
-	return syscall.UTF16ToString(buffer), nil
+	return syscall.UTF16ToString(buffer), kind, nil
 }
 
 func writeUserPath(value string) error {
@@ -393,7 +396,8 @@ func writeUserPath(value string) error {
 	if err != nil {
 		return err
 	}
-	r, _, callErr := procRegSetValue.Call(uintptr(key), uintptr(unsafe.Pointer(name)), 0, regExpandSZ, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)*2))
+	_, existingType, _ := readUserPath()
+	r, _, callErr := procRegSetValue.Call(uintptr(key), uintptr(unsafe.Pointer(name)), 0, uintptr(PathRegistryType(existingType)), uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)*2))
 	if r != 0 {
 		return callErr
 	}
