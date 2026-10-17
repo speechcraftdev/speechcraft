@@ -25,6 +25,11 @@ export function cudaProfileReady(recipe, gpuDetected, cudaProbe) {
     && cudaProbe?.measurements?.whisper_segments > 0;
 }
 
+export function selectManagedFfmpeg(recipe, environment) {
+  if (environment?.profile === 'macos-arm64') return recipe?.ffmpeg_profiles?.['macos-arm64'] || null;
+  return recipe?.ffmpeg || null;
+}
+
 export function expectedWorkerMachines(workerProfile) {
   if (workerProfile === 'macos-arm64') return Object.freeze(['aarch64', 'arm64']);
   if (String(workerProfile).startsWith('linux-x86_64')) return Object.freeze(['amd64', 'x86_64']);

@@ -69,3 +69,47 @@ test('managed FFmpeg installation verifies both pinned executables, reuses them,
   assert.equal(await tasks.verifyFfmpegDirectory(installed, repair), true);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('macOS selects the pinned source-build FFmpeg recipe and rejects a GPL configuration', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-ffmpeg-mac-'));
+  const archiveBytes = Buffer.from('source archive');
+  const artifact = {
+    available: true, acquisition: 'pinned_source_build', platform: 'macos-arm64',
+    version: 'n8.1.3-18-g46d899d7a0', version_identity: 'n8.1.3-18-g46d899d7a0',
+    source_revision: '46d899d7a02bc63237472cc4897258d5ddf274ac',
+    url: 'https://github.com/FFmpeg/FFmpeg/archive/46d899d7a02bc63237472cc4897258d5ddf274ac.tar.gz',
+    file: 'source.tar.gz', size_bytes: archiveBytes.length, sha256: sha(archiveBytes),
+    tar_root: 'FFmpeg-source', license: 'LGPL-2.1-or-later',
+    configure: ['--disable-gpl', '--disable-nonfree'],
+  };
+  let prefix;
+  const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, environment: { profile: 'macos-arm64' },
+    runtimeRecipe: { ffmpeg_profiles: { 'macos-arm64': artifact }, disk_space: { safety_margin_bytes: 0 } },
+    fetchImpl: async () => new Response(archiveBytes, { status: 200, headers: { 'content-length': String(archiveBytes.length) } }),
+    processRunner: async (executable, args) => {
+      if (String(executable).endsWith('configure')) {
+        prefix = args.find((item) => item.startsWith('--prefix=')).slice('--prefix='.length);
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (executable === 'make' && args.at(-1) === 'install') {
+        fs.mkdirSync(path.join(prefix, 'bin'), { recursive: true });
+        for (const name of ['ffmpeg', 'ffprobe']) fs.writeFileSync(path.join(prefix, 'bin', name), `#!/bin/sh\nprintf '%s\\n' '${name} version n8.1.3-18-g46d899d7a0' 'configuration: --disable-gpl --disable-nonfree'\n`, { mode: 0o755 });
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (executable === 'make' || (args[0] === '-I' && args[1] === '-c')) return { code: 0, stdout: '', stderr: '' };
+      const name = path.basename(executable);
+      return { code: 0, stdout: fs.readFileSync(executable, 'utf8').includes('printf') ? `${name} version n8.1.3-18-g46d899d7a0\nconfiguration: --disable-gpl --disable-nonfree\n` : '', stderr: '' };
+    } });
+  tasks.paths = Object.fromEntries(['home', 'temporary', 'uvCache', 'pythonRoot', 'hfHome', 'hfHub', 'hfXet', 'stagingRoot', 'quarantineRoot']
+    .map((key) => [key, path.join(root, key)]));
+  for (const value of Object.values(tasks.paths)) fs.mkdirSync(value, { recursive: true });
+  const first = context(tasks);
+  first.managedPython = '/managed/cpython';
+  await tasks.installSourceFfmpeg(first, artifact);
+  assert.equal(first.componentStatus.components.ffmpeg.state, 'files_verified');
+  assert.equal(first.componentStatus.components.ffmpeg.runtime_ready, false);
+  const installed = first.componentStatus.components.ffmpeg.path;
+  fs.writeFileSync(path.join(installed, 'ffmpeg'), Buffer.from('#!/bin/sh\nprintf "%s\\n" "ffmpeg version other"\n'));
+  assert.equal(await tasks.verifyFfmpegDirectory(installed, first, artifact), false);
+  fs.rmSync(root, { recursive: true, force: true });
+});

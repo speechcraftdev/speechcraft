@@ -1,17 +1,21 @@
+import os
 import unittest
+from unittest import mock
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 from speechcraft_dataset.asr import (
     AsrError,
     UnsupportedAsrOption,
+    expected_backend_for_platform,
     mlx_transcribe_options,
     normalize_faster_whisper_result,
     normalize_mlx_payload,
+    resolve_managed_backend,
     select_asr_backend,
 )
 from speechcraft_dataset.analyze_whisper_b1_transcript_qc import serialize_segments
-from pathlib import Path
-from tempfile import TemporaryDirectory
 
 
 class NormalizeTests(unittest.TestCase):
@@ -76,19 +80,22 @@ class NormalizeTests(unittest.TestCase):
                 "segments": [{"start": 2, "end": 1, "text": " backwards", "no_speech_prob": 0.1, "words": []}],
             }, model_identity="mlx")
 
-    def test_mlx_options_do_not_forward_beam_size_or_enable_vad(self):
+    def test_mlx_options_forward_beam_size_and_reject_vad(self):
         translated = mlx_transcribe_options({
             "task": "transcribe", "vad_filter": False, "word_timestamps": True,
             "condition_on_previous_text": False, "beam_size": 5, "language": "en",
         })
-        self.assertNotIn("beam_size", translated)
+        self.assertEqual(translated["beam_size"], 5)
         self.assertNotIn("vad_filter", translated)
         self.assertEqual(translated["word_timestamps"], True)
         self.assertEqual(translated["language"], "en")
         with self.assertRaises(UnsupportedAsrOption):
-            mlx_transcribe_options({"vad_filter": True})
+            mlx_transcribe_options({"vad_filter": True, "beam_size": 5})
         with self.assertRaises(UnsupportedAsrOption):
-            mlx_transcribe_options({"initial_prompt": "secret"})
+            mlx_transcribe_options({"beam_size": 5, "initial_prompt": "secret"})
+        with self.assertRaises(UnsupportedAsrOption):
+            mlx_transcribe_options({"task": "transcribe", "vad_filter": False, "word_timestamps": True,
+                                    "condition_on_previous_text": False})
 
     def test_backend_selection_stays_offline_and_refuses_the_wrong_snapshot(self):
         with TemporaryDirectory() as temp:
@@ -104,6 +111,37 @@ class NormalizeTests(unittest.TestCase):
             self.assertEqual(select_asr_backend(ct2), "ctranslate2")
             with self.assertRaises(AsrError):
                 select_asr_backend(root)
+
+    def test_managed_backend_follows_the_platform_not_incidental_files(self):
+        self.assertEqual(expected_backend_for_platform("macos-arm64"), "mlx")
+        self.assertEqual(expected_backend_for_platform("windows-wsl2"), "ctranslate2")
+        self.assertEqual(expected_backend_for_platform("linux-x86_64"), "ctranslate2")
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            mlx = root / "mlx"
+            mlx.mkdir()
+            (mlx / "weights.npz").write_bytes(b"w")
+            (mlx / "config.json").write_bytes(b"{}")
+            ct2 = root / "ct2"
+            ct2.mkdir()
+            (ct2 / "model.bin").write_bytes(b"b")
+            both = root / "both"
+            both.mkdir()
+            (both / "weights.npz").write_bytes(b"w")
+            (both / "config.json").write_bytes(b"{}")
+            (both / "model.bin").write_bytes(b"b")
+            with mock.patch.dict(os.environ, {"SPEECHCRAFT_MANAGED_RUNTIME": "1", "SPEECHCRAFT_MODEL_PLATFORM": "macos-arm64", "SPEECHCRAFT_ASR_BACKEND": "mlx"}):
+                self.assertEqual(select_asr_backend(mlx), "mlx")
+                with self.assertRaises(AsrError):
+                    select_asr_backend(both)
+            with mock.patch.dict(os.environ, {"SPEECHCRAFT_MANAGED_RUNTIME": "1", "SPEECHCRAFT_MODEL_PLATFORM": "windows-wsl2", "SPEECHCRAFT_ASR_BACKEND": "ctranslate2"}):
+                self.assertEqual(resolve_managed_backend(ct2), "ctranslate2")
+            with mock.patch.dict(os.environ, {"SPEECHCRAFT_MANAGED_RUNTIME": "1", "SPEECHCRAFT_MODEL_PLATFORM": "linux-x86_64", "SPEECHCRAFT_ASR_BACKEND": "mlx"}):
+                with self.assertRaises(AsrError):
+                    resolve_managed_backend(ct2)
+            with mock.patch.dict(os.environ, {"SPEECHCRAFT_MANAGED_RUNTIME": "1", "SPEECHCRAFT_MODEL_PLATFORM": "haiku"}):
+                with self.assertRaises(AsrError):
+                    resolve_managed_backend(ct2)
 
 
 if __name__ == "__main__":

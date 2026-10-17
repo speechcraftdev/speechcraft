@@ -1,5 +1,5 @@
 import { BootstrapError, BootstrapTasks, ensureManagedDirectory, fetchArtifact } from './bootstrap.js';
-import { PRODUCTION_STAGES, evaluateRuntimeReadiness, hashMatches, runtimeRoots, selectRuntimeProfile } from './runtime-plan.js';
+import { PRODUCTION_STAGES, evaluateRuntimeReadiness, hashMatches, runtimeRoots, selectManagedFfmpeg, selectRuntimeProfile } from './runtime-plan.js';
 import { BackendService, reconcileOwnedService } from './backend-service.js';
 import { inspectHost } from './platform.js';
 import fs from 'node:fs';
@@ -54,6 +54,7 @@ export class RuntimeTasks extends BootstrapTasks {
     this.restoreResult = null;
     this.restoreAbortController = null;
     this.stopping = false;
+    if (options.environment) this.environment = options.environment;
   }
 
   status(context, patch) {
@@ -198,8 +199,8 @@ export class RuntimeTasks extends BootstrapTasks {
     }, 'backend_service_status');
   }
 
-  async verifyFfmpegDirectory(directory, context) {
-    const artifact = this.runtimeRecipe.ffmpeg;
+  async verifyFfmpegDirectory(directory, context, artifact = this.runtimeRecipe.ffmpeg) {
+    if (artifact?.acquisition === 'pinned_source_build') return this.verifyBuiltFfmpeg(directory, context, artifact);
     try {
       const identities = [];
       for (const key of ['ffmpeg', 'ffprobe']) {
@@ -223,8 +224,93 @@ export class RuntimeTasks extends BootstrapTasks {
     }
   }
 
+  async verifyBuiltFfmpeg(directory, context, artifact) {
+    try {
+      for (const key of ['ffmpeg', 'ffprobe']) {
+        const file = path.join(directory, key);
+        const info = fs.lstatSync(file);
+        if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o111) === 0) return false;
+        const result = await this.runProcess(file, ['-version'], context, { cwd: directory });
+        const lines = result.stdout.split(/\r?\n/);
+        const version = lines[0]?.match(/^ff(?:mpeg|probe) version ([^\s]+)/)?.[1];
+        if (!version || version !== artifact.version_identity) return false;
+        const config = lines.find((line) => line.startsWith('configuration:')) || '';
+        if (/--enable-(gpl|nonfree)(?:\s|$)/.test(config)) return false;
+      }
+      const recordPath = path.join(directory, 'speechcraft-artifact.json');
+      if (fs.existsSync(recordPath)) {
+        const record = JSON.parse(fs.readFileSync(recordPath, 'utf8'));
+        for (const key of ['ffmpeg', 'ffprobe']) {
+          const identity = await trustedFileHash(path.join(directory, key));
+          if (identity.sha256 !== record.executables?.[key]?.sha256 || identity.size !== record.executables?.[key]?.size_bytes) return false;
+        }
+      }
+      return true;
+    } catch (error) {
+      if (['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN'].includes(error.code)) throw error;
+      return false;
+    }
+  }
+
+  async installSourceFfmpeg(context, artifact) {
+    if (this.environment?.profile !== 'macos-arm64' || artifact.platform !== 'macos-arm64' || artifact.available !== true
+        || !/^[a-f0-9]{64}$/.test(artifact.sha256 || '') || !Number.isSafeInteger(artifact.size_bytes)) {
+      this.setComponent(context, 'ffmpeg', { state: 'blocked', failure_code: 'runtime_tool_unavailable',
+        message: artifact?.reason || 'No pinned Apple Silicon FFmpeg source build is configured.' });
+      return false;
+    }
+    const target = path.join(this.dataDirectory, 'tools', 'ffmpeg', `${artifact.version}-${artifact.sha256.slice(0, 16)}`);
+    if (fs.existsSync(target) && await this.verifyFfmpegDirectory(target, context, artifact)) {
+      this.setComponent(context, 'ffmpeg', { state: 'files_verified', identity: `ffmpeg-source:${artifact.version}:${artifact.sha256}`,
+        verification: 'source_archive_sha256_and_local_build', last_verified_at: new Date().toISOString(), path: target,
+        runtime_ready: false, failure_code: null, message: 'The local FFmpeg build matches the pinned source. Decode readiness still requires the runtime probe. This binary is not a redistributed Mac build.' });
+      return true;
+    }
+    if (fs.existsSync(target)) await this.quarantine(target, 'invalid-ffmpeg');
+    this.requireSpace(artifact.size_bytes * 8 + (this.runtimeRecipe.disk_space?.safety_margin_bytes || 0));
+    const attempt = this.attemptDirectory(context);
+    const archive = path.join(attempt, artifact.file);
+    const source = path.join(attempt, 'src');
+    const prefix = path.join(attempt, 'prefix');
+    ensureManagedDirectory(this.dataDirectory, source);
+    ensureManagedDirectory(this.dataDirectory, prefix);
+    await fetchArtifact(artifact.url, archive, artifact, { signal: context.signal, fetchImpl: this.fetchImpl,
+      maxBytes: artifact.size_bytes, onProgress: (progress) => this.emit(context, { ...progress, component: 'ffmpeg', message: 'Downloading the pinned FFmpeg source archive.' }) });
+    const python = context.managedPython || await this.findPython(context);
+    const extractor = `import pathlib,sys,tarfile\na=pathlib.Path(sys.argv[1]); d=pathlib.Path(sys.argv[2]); root=${JSON.stringify(artifact.tar_root)}\nwith tarfile.open(a,'r:gz') as t:\n for m in t:\n  p=pathlib.PurePosixPath(m.name)\n  if p.is_absolute() or '..' in p.parts or not (m.name==root or m.name.startswith(root+'/')) or not (m.isdir() or m.isfile()): raise SystemExit('unsafe archive member')\n t.extractall(d, filter='data')\n`;
+    await this.runProcess(python, ['-I', '-c', extractor, archive, source], context, { cwd: attempt });
+    const buildRoot = path.join(source, artifact.tar_root);
+    const flags = Array.isArray(artifact.configure) ? artifact.configure : ['--disable-gpl', '--disable-nonfree'];
+    await this.runProcess(path.join(buildRoot, 'configure'), [...flags, `--prefix=${prefix}`], context, { cwd: buildRoot });
+    await this.runProcess('make', ['-C', buildRoot, '-j2'], context, { cwd: buildRoot });
+    await this.runProcess('make', ['-C', buildRoot, 'install'], context, { cwd: buildRoot });
+    const stage = path.join(attempt, 'bin');
+    ensureManagedDirectory(this.dataDirectory, stage);
+    for (const key of ['ffmpeg', 'ffprobe']) {
+      fs.copyFileSync(path.join(prefix, 'bin', key), path.join(stage, key));
+      fs.chmodSync(path.join(stage, key), 0o755);
+    }
+    if (!await this.verifyBuiltFfmpeg(stage, context, artifact)) throw new BootstrapError('FFMPEG_EXECUTABLE_INVALID', 'The local FFmpeg build did not match the pinned version or LGPL configuration.');
+    const executables = {};
+    for (const key of ['ffmpeg', 'ffprobe']) {
+      const identity = await trustedFileHash(path.join(stage, key));
+      executables[key] = { size_bytes: identity.size, sha256: identity.sha256 };
+    }
+    fs.writeFileSync(path.join(stage, 'speechcraft-artifact.json'), JSON.stringify({ schema_version: 1, acquisition: 'pinned_source_build',
+      version: artifact.version, source_revision: artifact.source_revision, archive_sha256: artifact.sha256, license: artifact.license,
+      redistribution_status: artifact.redistribution_status, executables }, null, 2), { mode: 0o600, flag: 'wx' });
+    if (!await this.verifyBuiltFfmpeg(stage, context, artifact)) throw new BootstrapError('FFMPEG_EXECUTABLE_INVALID', 'The recorded local FFmpeg build identity did not verify.');
+    ensureManagedDirectory(this.dataDirectory, path.dirname(target));
+    fs.renameSync(stage, target);
+    this.setComponent(context, 'ffmpeg', { state: 'files_verified', identity: `ffmpeg-source:${artifact.version}:${artifact.sha256}`,
+      verification: 'source_archive_sha256_and_local_build', last_verified_at: new Date().toISOString(), path: target,
+      runtime_ready: false, failure_code: null, message: 'FFmpeg was built from the pinned source on this Mac. Decode probe and redistribution review are still required.' });
+    return true;
+  }
+
   async installManagedFfmpeg(context) {
-    const artifact = this.runtimeRecipe.ffmpeg;
+    const artifact = selectManagedFfmpeg(this.runtimeRecipe, this.environment) || this.runtimeRecipe.ffmpeg;
+    if (artifact?.acquisition === 'pinned_source_build') return this.installSourceFfmpeg(context, artifact);
     if (artifact?.available !== true || artifact.platform !== this.environment?.profile || !artifact.url || !/^[a-f0-9]{64}$/.test(artifact.sha256 || '')
         || !Number.isSafeInteger(artifact.size_bytes) || artifact.size_bytes < 1
         || !artifact.executables?.ffmpeg || !artifact.executables?.ffprobe) {
@@ -442,7 +528,7 @@ export class RuntimeTasks extends BootstrapTasks {
         else this.setComponent(context, 'worker_cuda_candidate', { state: 'blocked', path: null,
           failure_code: 'CUDA_PROFILE_INVALID', message: 'The previously selected CUDA environment is missing or no longer matches its trusted recipe; CPU fallback will be used if valid.' });
       }
-      const ffmpegRecipe = this.runtimeRecipe.ffmpeg;
+      const ffmpegRecipe = selectManagedFfmpeg(this.runtimeRecipe, this.environment) || this.runtimeRecipe.ffmpeg;
       if (ffmpegRecipe?.available === true) {
         const ffmpegPath = path.join(this.dataDirectory, 'tools', 'ffmpeg', `${ffmpegRecipe.version}-${ffmpegRecipe.sha256.slice(0, 16)}`);
         const valid = await this.verifyFfmpegDirectory(ffmpegPath, context);

@@ -178,8 +178,8 @@ _MLX_SUPPORTED = {
 def mlx_transcribe_options(options: dict[str, Any]) -> dict[str, Any]:
     """Translate the worker's faster-whisper options into mlx-whisper arguments.
 
-    ``beam_size`` is accepted and recorded as unsupported by MLX. It is not
-    forwarded. ``vad_filter=True`` is rejected so this path cannot add a VAD.
+    ``beam_size`` is forwarded to mlx-whisper 0.4.3 as a DecodingOptions
+    beam search width. It is not dropped. ``vad_filter=True`` is rejected.
     """
     unknown = sorted(set(options) - _MLX_SUPPORTED)
     if unknown:
@@ -194,7 +194,13 @@ def mlx_transcribe_options(options: dict[str, Any]) -> dict[str, Any]:
         "word_timestamps": bool(options.get("word_timestamps", False)),
         "condition_on_previous_text": bool(options.get("condition_on_previous_text", False)),
         "verbose": False,
+        "fp16": True,
     }
+    beam_size = options.get("beam_size")
+    if beam_size is None or isinstance(beam_size, bool) or int(beam_size) < 1:
+        raise UnsupportedAsrOption("MLX Whisper requires an explicit positive beam_size; SpeechCraft does not silently switch to greedy decoding.")
+    # mlx-whisper 0.4.3 forwards unknown keywords to DecodingOptions, which accepts beam_size.
+    translated["beam_size"] = int(beam_size)
     if options.get("language"):
         translated["language"] = options["language"]
     return translated
@@ -244,15 +250,50 @@ class MlxEngine:
         return None
 
 
+def expected_backend_for_platform(platform_name: str) -> str:
+    mapping = {
+        "linux-x86_64": "ctranslate2",
+        "windows-wsl2": "ctranslate2",
+        "macos-arm64": "mlx",
+    }
+    if platform_name not in mapping:
+        raise AsrError(f"No SpeechCraft ASR backend is configured for platform {platform_name or 'unset'}.")
+    return mapping[platform_name]
+
+
+def resolve_managed_backend(model_dir: Path) -> str:
+    """Production selection comes from the runtime platform, not from whichever file is present."""
+    platform_name = os.environ.get("SPEECHCRAFT_MODEL_PLATFORM", "").strip()
+    expected = expected_backend_for_platform(platform_name)
+    requested = os.environ.get("SPEECHCRAFT_ASR_BACKEND", "").strip()
+    if requested and requested != expected:
+        raise AsrError(f"SPEECHCRAFT_ASR_BACKEND={requested} does not match the {platform_name} runtime, which requires {expected}.")
+    has_mlx = (model_dir / "weights.npz").is_file() and (model_dir / "config.json").is_file()
+    has_ct2 = (model_dir / "model.bin").is_file()
+    if expected == "mlx":
+        if has_ct2:
+            raise AsrError("Refusing to load CTranslate2 weights for the macOS MLX runtime.")
+        if not has_mlx:
+            raise AsrError("The macOS MLX snapshot is missing weights.npz or config.json.")
+        return "mlx"
+    if has_mlx and not has_ct2:
+        raise AsrError("Refusing to load MLX weights for the Linux CTranslate2 runtime.")
+    if not has_ct2:
+        raise AsrError("The CTranslate2 snapshot is missing model.bin.")
+    return "ctranslate2"
+
+
 def select_asr_backend(model_dir: Path) -> str:
+    if os.environ.get("SPEECHCRAFT_MANAGED_RUNTIME") == "1":
+        return resolve_managed_backend(model_dir)
     requested = os.environ.get("SPEECHCRAFT_ASR_BACKEND", "").strip()
     if requested and requested not in {"mlx", "ctranslate2"}:
         raise AsrError(f"Unsupported SPEECHCRAFT_ASR_BACKEND: {requested}")
     has_mlx = (model_dir / "weights.npz").is_file()
     has_ct2 = (model_dir / "model.bin").is_file()
     if requested == "mlx":
-        if not has_mlx:
-            raise AsrError("MLX Whisper was requested, but weights.npz is not in the local snapshot.")
+        if not has_mlx or has_ct2:
+            raise AsrError("MLX Whisper was requested, but the snapshot is not an MLX-only weights.npz directory.")
         return "mlx"
     if requested == "ctranslate2":
         if not has_ct2:
@@ -260,8 +301,10 @@ def select_asr_backend(model_dir: Path) -> str:
         return "ctranslate2"
     if has_mlx and not has_ct2:
         return "mlx"
-    if has_ct2:
+    if has_ct2 and not has_mlx:
         return "ctranslate2"
+    if has_mlx and has_ct2:
+        raise AsrError("The model directory contains both MLX and CTranslate2 weights. Set SPEECHCRAFT_ASR_BACKEND explicitly.")
     raise AsrError("The local Whisper snapshot has neither MLX weights.npz nor CTranslate2 model.bin.")
 
 
