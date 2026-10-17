@@ -9,6 +9,7 @@ import (
 
 	"speechcraft/windows/internal/config"
 	"speechcraft/windows/internal/diag"
+	"speechcraft/windows/internal/install"
 	"speechcraft/windows/internal/launch"
 )
 
@@ -20,6 +21,9 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	if len(args) > 0 && (args[0] == "--windows-install" || args[0] == "--windows-uninstall") {
+		return install.Run(args, stdout, stderr, getenv)
+	}
 	local := getenv("LOCALAPPDATA")
 	filename, err := config.Path(local)
 	if err != nil {

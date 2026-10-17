@@ -17,17 +17,17 @@ var (
 )
 
 type Installation struct {
-	SchemaVersion int    `json:"schema_version"`
+	SchemaVersion      int    `json:"schema_version"`
 	Distribution       string `json:"distribution"`
-	GuestID           string `json:"guest_id"`
-	WSLVersion        int    `json:"wsl_version"`
-	LinuxUser         string `json:"linux_user"`
-	LinuxHome     string `json:"linux_home"`
-	LinuxCommand  string `json:"linux_command"`
+	GuestID            string `json:"guest_id"`
+	WSLVersion         int    `json:"wsl_version"`
+	LinuxUser          string `json:"linux_user"`
+	LinuxHome          string `json:"linux_home"`
+	LinuxCommand       string `json:"linux_command"`
 	ApplicationVersion string `json:"application_version,omitempty"`
-	ArchiveSHA256 string `json:"archive_sha256,omitempty"`
-	SourceRevision string `json:"source_revision,omitempty"`
-	LauncherInstalled bool `json:"launcher_installed"`
+	ArchiveSHA256      string `json:"archive_sha256,omitempty"`
+	SourceRevision     string `json:"source_revision,omitempty"`
+	LauncherInstalled  bool   `json:"launcher_installed"`
 }
 
 func Path(localAppData string) (string, error) {

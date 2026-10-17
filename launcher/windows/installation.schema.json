@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://speechcraft.local/schemas/windows-installation.json",
+  "title": "SpeechCraft Windows installation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "distribution", "guest_id", "wsl_version", "linux_user", "linux_home", "linux_command", "launcher_installed"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "distribution": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+    "guest_id": { "const": "ubuntu" },
+    "wsl_version": { "const": 2 },
+    "linux_user": { "type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$" },
+    "linux_home": { "type": "string", "pattern": "^/home/[a-z_][a-z0-9_-]{0,31}$" },
+    "linux_command": { "type": "string", "pattern": "^/home/[a-z_][a-z0-9_-]{0,31}/\\.local/bin/speechcraft$" },
+    "application_version": { "type": "string" },
+    "archive_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "source_revision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "launcher_installed": { "type": "boolean" }
+  }
+}
