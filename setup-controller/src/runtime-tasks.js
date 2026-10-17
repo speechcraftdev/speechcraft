@@ -55,6 +55,7 @@ export class RuntimeTasks extends BootstrapTasks {
     this.restoreAbortController = null;
     this.stopping = false;
     if (options.environment) this.environment = options.environment;
+    if (options.hostInspector) this.hostInspector = options.hostInspector;
   }
 
   status(context, patch) {
@@ -149,7 +150,7 @@ export class RuntimeTasks extends BootstrapTasks {
 
   async verifyExistingWorkerProfile(profile, context) {
     const recipe = this.runtimeRecipe.worker?.profiles?.[profile];
-    if (recipe?.available !== true || recipe.validated !== true) return null;
+    if (recipe?.available !== true || !(recipe.validated === true || recipe.lock_verified === true)) return null;
     const project = path.resolve(this.applicationRoot, recipe.project || this.runtimeRecipe.worker.project);
     const lock = path.resolve(project, recipe.lockfile || this.runtimeRecipe.worker.lockfile.split('/').at(-1));
     if (!hashMatches(lock, recipe.lock_sha256) || !hashMatches(path.join(project, 'pyproject.toml'), recipe.project_manifest_sha256)) return null;
@@ -224,7 +225,7 @@ export class RuntimeTasks extends BootstrapTasks {
     }
   }
 
-  async verifyBuiltFfmpeg(directory, context, artifact) {
+  async verifyBuiltFfmpeg(directory, context, artifact, { requireRecord = true } = {}) {
     try {
       for (const key of ['ffmpeg', 'ffprobe']) {
         const file = path.join(directory, key);
@@ -238,12 +239,12 @@ export class RuntimeTasks extends BootstrapTasks {
         if (/--enable-(gpl|nonfree)(?:\s|$)/.test(config)) return false;
       }
       const recordPath = path.join(directory, 'speechcraft-artifact.json');
-      if (fs.existsSync(recordPath)) {
-        const record = JSON.parse(fs.readFileSync(recordPath, 'utf8'));
-        for (const key of ['ffmpeg', 'ffprobe']) {
-          const identity = await trustedFileHash(path.join(directory, key));
-          if (identity.sha256 !== record.executables?.[key]?.sha256 || identity.size !== record.executables?.[key]?.size_bytes) return false;
-        }
+      if (!fs.existsSync(recordPath)) return requireRecord ? false : true;
+      const record = JSON.parse(fs.readFileSync(recordPath, 'utf8'));
+      if (record.schema_version !== 1 || record.acquisition !== 'pinned_source_build' || record.archive_sha256 !== artifact.sha256 || record.source_revision !== artifact.source_revision) return false;
+      for (const key of ['ffmpeg', 'ffprobe']) {
+        const identity = await trustedFileHash(path.join(directory, key));
+        if (identity.sha256 !== record.executables?.[key]?.sha256 || identity.size !== record.executables?.[key]?.size_bytes) return false;
       }
       return true;
     } catch (error) {
@@ -290,7 +291,7 @@ export class RuntimeTasks extends BootstrapTasks {
       fs.copyFileSync(path.join(prefix, 'bin', key), path.join(stage, key));
       fs.chmodSync(path.join(stage, key), 0o755);
     }
-    if (!await this.verifyBuiltFfmpeg(stage, context, artifact)) throw new BootstrapError('FFMPEG_EXECUTABLE_INVALID', 'The local FFmpeg build did not match the pinned version or LGPL configuration.');
+    if (!await this.verifyBuiltFfmpeg(stage, context, artifact, { requireRecord: false })) throw new BootstrapError('FFMPEG_EXECUTABLE_INVALID', 'The local FFmpeg build did not match the pinned version or LGPL configuration.');
     const executables = {};
     for (const key of ['ffmpeg', 'ffprobe']) {
       const identity = await trustedFileHash(path.join(stage, key));
@@ -493,7 +494,7 @@ export class RuntimeTasks extends BootstrapTasks {
       onProgress: () => {} };
     context.bootstrapStatus = context.componentStatus;
     try {
-      this.environment = inspectHost();
+      this.environment = this.hostInspector ? this.hostInspector() : inspectHost();
       this.paths = this.getPaths(this.environment.profile, { allowMissingManager: true });
       const managerPath = context.componentStatus.components?.model_manager?.path;
       const managedRoot = path.resolve(this.dataDirectory, 'environments');
@@ -504,21 +505,24 @@ export class RuntimeTasks extends BootstrapTasks {
       this.paths.environmentRoot = managerPath;
       const selectedBeforeRestart = job.bootstrap_status.runtime_profile?.workerProfile;
       const baseSelection = selectRuntimeProfile(this.environment);
-      this.status(context, { runtime_profile: baseSelection, accelerator: 'cpu',
+      this.status(context, { runtime_profile: baseSelection, accelerator: baseSelection.accelerator || 'cpu',
         pyannote_cuda_validated: false, cuda_fallback_reason: selectedBeforeRestart === 'linux-x86_64-cuda'
           ? 'Revalidating the previously selected CUDA profile before backend restoration.' : null });
-      const cpu = await this.verifyExistingWorkerProfile('linux-x86_64-cpu', context);
-      if (cpu) {
-        this.setComponent(context, 'worker_cpu_fallback', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${cpu.recipe.environment_version}/linux-x86_64-cpu`,
-          verification: 'trusted_lock_and_startup_probe', path: cpu.target, last_verified_at: new Date().toISOString(), failure_code: null, message: null });
-        this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${cpu.recipe.environment_version}/linux-x86_64-cpu`,
-          verification: 'trusted_lock_and_startup_probe', path: cpu.target, effective_profile: 'linux-x86_64-cpu',
+      const workerProfile = baseSelection.profile === 'macos-arm64' ? 'macos-arm64' : 'linux-x86_64-cpu';
+      const restoredWorker = await this.verifyExistingWorkerProfile(workerProfile, context);
+      if (restoredWorker) {
+        this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${restoredWorker.recipe.environment_version}/${workerProfile}`,
+          verification: 'trusted_lock_and_startup_probe', path: restoredWorker.target, effective_profile: workerProfile,
           last_verified_at: new Date().toISOString(), failure_code: null, message: null });
+        if (workerProfile === 'linux-x86_64-cpu') {
+          this.setComponent(context, 'worker_cpu_fallback', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${restoredWorker.recipe.environment_version}/linux-x86_64-cpu`,
+            verification: 'trusted_lock_and_startup_probe', path: restoredWorker.target, last_verified_at: new Date().toISOString(), failure_code: null, message: null });
+        }
       } else {
         this.setComponent(context, 'worker_environment', { state: 'blocked', path: null, runtime_ready: false,
-          failure_code: 'WORKER_ENVIRONMENT_INVALID', message: 'The previously verified CPU fallback environment is missing or invalid.' });
+          failure_code: 'WORKER_ENVIRONMENT_INVALID', message: `The previously verified ${workerProfile} environment is missing or invalid.` });
       }
-      if (selectedBeforeRestart === 'linux-x86_64-cuda') {
+      if (baseSelection.profile === 'linux-x86_64' && selectedBeforeRestart === 'linux-x86_64-cuda') {
         const cuda = await this.verifyExistingWorkerProfile('linux-x86_64-cuda', context);
         if (cuda) this.setComponent(context, 'worker_cuda_candidate', { state: 'verified',
           identity: `${this.runtimeRecipe.worker.distribution}/v${cuda.recipe.environment_version}/linux-x86_64-cuda`,
@@ -531,7 +535,7 @@ export class RuntimeTasks extends BootstrapTasks {
       const ffmpegRecipe = selectManagedFfmpeg(this.runtimeRecipe, this.environment) || this.runtimeRecipe.ffmpeg;
       if (ffmpegRecipe?.available === true) {
         const ffmpegPath = path.join(this.dataDirectory, 'tools', 'ffmpeg', `${ffmpegRecipe.version}-${ffmpegRecipe.sha256.slice(0, 16)}`);
-        const valid = await this.verifyFfmpegDirectory(ffmpegPath, context);
+        const valid = await this.verifyFfmpegDirectory(ffmpegPath, context, ffmpegRecipe);
         this.setComponent(context, 'ffmpeg', valid
           ? { state: 'files_verified', path: ffmpegPath, runtime_ready: false, verification: 'archive_and_executable_sha256', failure_code: null, message: 'Managed FFmpeg files were reverified; audio probe is pending.' }
           : { state: 'blocked', path: null, runtime_ready: false, failure_code: 'FFMPEG_ARTIFACT_INVALID', message: 'The managed FFmpeg installation is missing or corrupt; use setup repair.' });
