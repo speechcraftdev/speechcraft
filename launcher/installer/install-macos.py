@@ -81,15 +81,28 @@ def install_archive(archive_arg, home):
         if published.exists():
             fail(f"release already exists: {published}")
         os.replace(children[0], published)
+        command = bin_dir / "speechcraft"
+        staged_command = bin_dir / ".speechcraft-next"
+        if staged_command.exists() or staged_command.is_symlink():
+            staged_command.unlink()
+        staged_command.write_text(f'#!/bin/sh\nexec "{published}/bin/speechcraft" "$@"\n', encoding="utf8")
+        os.chmod(staged_command, 0o755)
         current = app_base / "current"
+        previous = os.readlink(current) if current.is_symlink() else None
         temporary = app_base / ".current-next"
         if temporary.is_symlink() or temporary.exists():
             temporary.unlink()
         temporary.symlink_to(published)
         os.replace(temporary, current)
-        command = bin_dir / "speechcraft"
-        command.write_text(f'#!/bin/sh\nexec "{current}/bin/speechcraft" "$@"\n', encoding="utf8")
-        os.chmod(command, 0o755)
+        try:
+            os.replace(staged_command, command)
+        except Exception:
+            if previous:
+                current.unlink()
+                current.symlink_to(previous)
+            elif current.is_symlink() or current.exists():
+                current.unlink()
+            raise
     except Exception:
         if stage.exists():
             for child in stage.iterdir():
