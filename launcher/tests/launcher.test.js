@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertLoopbackAddress, chooseDestination, openDefaultBrowser, parseArgs, readOrCreateFrontendIdentity, resolveLaunchContext, stopOwned, stopOwnedRecord, verifyFrontendOwnership } from '../src/launcher.js';
+import { assertLoopbackAddress, chooseDestination, formatFrontendReadyEvent, openDefaultBrowser, parseArgs, parseFrontendReadyEvent, readOrCreateFrontendIdentity, resolveLaunchContext, stopOwned, stopOwnedRecord, verifyFrontendOwnership } from '../src/launcher.js';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { ownedProcessIdentity } from '../../setup-controller/src/bootstrap.js';
@@ -14,6 +14,19 @@ test('fresh and interrupted setup routes to setup; completed onboarding routes t
   assert.equal(chooseDestination(null), '/setup');
   assert.equal(chooseDestination({ completed: false }), '/setup');
   assert.equal(chooseDestination({ completed: true }), '/login');
+});
+
+test('frontend readiness is a versioned loopback event and never carries secrets', () => {
+  const line = formatFrontendReadyEvent({ url: 'http://127.0.0.1:3002/setup', route: '/setup', ready: true });
+  assert.equal(parseFrontendReadyEvent(line).route, '/setup');
+  assert.equal(parseFrontendReadyEvent(formatFrontendReadyEvent({ url: 'http://127.0.0.1:3002/login', route: '/login', ready: true })).url,
+    'http://127.0.0.1:3002/login');
+  assert.equal(parseFrontendReadyEvent('SpeechCraft is available at http://127.0.0.1:3002/setup'), null);
+  assert.equal(parseFrontendReadyEvent('SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/setup","route":"/setup","ready":false}'), null);
+  assert.equal(parseFrontendReadyEvent('SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://example.com/setup","route":"/setup","ready":true}'), null);
+  assert.equal(parseFrontendReadyEvent('SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/setup","route":"/setup","ready":true,"token":"secret"}'), null);
+  assert.throws(() => formatFrontendReadyEvent({ url: 'http://127.0.0.1:4317/setup-api', route: '/setup', ready: true }), /untrusted frontend URL/);
+  assert.doesNotMatch(line, /token|cookie|csrf|bootstrap/i);
 });
 
 test('launcher arguments are explicit and reject unknown options', () => {

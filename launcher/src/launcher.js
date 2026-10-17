@@ -45,8 +45,29 @@ export function parseArgs(args) {
   return result;
 }
 
+export const FRONTEND_READY_PROTOCOL = 1;
+
 export function chooseDestination(onboarding) {
   return onboarding?.completed === true ? '/login' : '/setup';
+}
+
+export function formatFrontendReadyEvent({ url, route, ready }) {
+  if (route !== '/setup' && route !== '/login') throw new Error('Refusing to publish an untrusted frontend route.');
+  if (url !== `http://127.0.0.1:3002${route}`) throw new Error('Refusing to publish an untrusted frontend URL.');
+  return `SPEECHCRAFT_READY ${JSON.stringify({
+    event: 'frontend_ready', protocol: FRONTEND_READY_PROTOCOL, url, route, ready: ready === true,
+  })}`;
+}
+
+export function parseFrontendReadyEvent(line) {
+  if (typeof line !== 'string' || !line.startsWith('SPEECHCRAFT_READY ')) return null;
+  let payload;
+  try { payload = JSON.parse(line.slice('SPEECHCRAFT_READY '.length)); } catch { return null; }
+  if (!payload || payload.event !== 'frontend_ready' || payload.protocol !== FRONTEND_READY_PROTOCOL || payload.ready !== true) return null;
+  if ((payload.route !== '/setup' && payload.route !== '/login') || payload.url !== `http://127.0.0.1:3002${payload.route}`) return null;
+  const allowed = new Set(['event', 'protocol', 'url', 'route', 'ready']);
+  if (Object.keys(payload).some((key) => !allowed.has(key))) return null;
+  return { event: payload.event, protocol: payload.protocol, url: payload.url, route: payload.route, ready: true };
 }
 
 export function resolveLaunchContext({ dataDirectory = null, env = {}, host, home, mountInfoText } = {}) {
@@ -794,6 +815,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     if (!restoration.ready) console.error(`SpeechCraft repair required: ${restoration.warning}`);
   }
   const url = `${appOrigin}${route}`;
+  console.log(formatFrontendReadyEvent({ url, route, ready: true }));
   onUrl(url);
   if (options.openBrowser) {
     try { if (!await open(url, { wsl: host.wsl, platform: process.platform, env })) console.log(`No local browser was opened. Open ${url} locally or through an SSH tunnel, for example: ssh -N -L 3002:127.0.0.1:3002 user@cozytent-host`); }
