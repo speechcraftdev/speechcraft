@@ -92,12 +92,26 @@ if (!isMain) {
   if (fetched.status !== 0) throw new Error('Could not fetch the pinned Darwin ARM64 Node runtime.');
   fs.cpSync(nodeOut, path.join(appRoot, 'runtime'), { recursive: true });
   fs.cpSync(path.join(frontendStage, 'frontend'), path.join(appRoot, 'frontend'), { recursive: true });
-  for (const relative of ['bin/speechcraft', 'launcher/src', 'setup-controller/src', 'setup-controller/resources', 'backend/app', 'workers/dataset/speechcraft_dataset', 'workers/dataset/scripts/preflight.py', 'workers/dataset/scripts/runtime_probe.py', 'workers/dataset/runtime-profiles/macos-arm64', 'workers/dataset/runtime-fixtures']) {
+  for (const relative of [
+    'bin/speechcraft', 'launcher/src', 'setup-controller/src', 'setup-controller/resources',
+    'backend/app', 'backend/pyproject.toml', 'backend/uv.lock',
+    'workers/dataset/speechcraft_dataset', 'workers/dataset/scripts/preflight.py', 'workers/dataset/scripts/runtime_probe.py',
+    'workers/dataset/pyproject.toml', 'workers/dataset/uv.lock', 'workers/dataset/model-catalog.json', 'workers/dataset/model-manifest.schema.json',
+    'workers/dataset/runtime-profiles/macos-arm64', 'workers/dataset/runtime-profiles/linux-cpu', 'workers/dataset/runtime-fixtures',
+  ]) {
     const from = path.join(source, relative);
     const to = path.join(appRoot, relative);
     fs.mkdirSync(path.dirname(to), { recursive: true });
     fs.cpSync(from, to, { recursive: true });
   }
+  const wheelOut = path.join(work, 'wheel');
+  fs.mkdirSync(wheelOut);
+  const wheel = spawnSync('uv', ['build', '--project', path.join(source, 'packages/model_manager'), '--wheel', '--out-dir', wheelOut], { shell: false, stdio: 'inherit' });
+  if (wheel.status !== 0) throw new Error('The trusted model-manager wheel was not produced. Install the pinned uv tool and retry.');
+  const wheelName = fs.readdirSync(wheelOut).find((name) => name.endsWith('.whl'));
+  if (!wheelName) throw new Error('The trusted model-manager wheel was not produced.');
+  fs.mkdirSync(path.join(appRoot, 'resources/wheels'), { recursive: true });
+  fs.copyFileSync(path.join(wheelOut, wheelName), path.join(appRoot, 'resources/wheels', wheelName));
   const inventory = validateRuntimeInventory(appRoot);
   if (!inventory.ok) throw new Error(`Mac runtime inventory is incomplete: ${inventory.missing.join(', ')}`);
   const release = { schema_version: 1, application: 'SpeechCraft', version, platform: 'macos-arm64', source_revision: sourceRevisionArg,
