@@ -194,7 +194,7 @@ def _reject_wsl_windows_mount(root: Path, platform: str | None = None) -> None:
     if best is None:
         raise InstallError('cannot confirm WSL model/cache filesystem; choose a path under the WSL Linux filesystem')
     fstype, source = best[1], best[2]
-    if fstype in {'9p', 'drvfs'} or 'drvfs' in fstype or source == 'drvfs':
+    if fstype in {'9p', 'drvfs', 'ntfs', 'ntfs3', 'fuseblk', 'cifs', 'smbfs'} or 'drvfs' in fstype or source == 'drvfs':
         raise InstallError('WSL model and Hugging Face storage must use the WSL Linux filesystem, not a Windows-mounted filesystem')
 
 

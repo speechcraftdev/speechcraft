@@ -8,7 +8,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { defaultDataDirectory } from '../../setup-controller/src/paths.js';
 import { ownedProcessIdentity, terminateRecoveredProcess } from '../../setup-controller/src/bootstrap.js';
-import { hostEnvironment, validateManagedStorageTargets } from '../../setup-controller/src/platform.js';
+import { assertCurrentWslGuest, assertExistingManagedFiles, freeBytes, hostEnvironment, managedStorageLocations, probeLoopback, probeProcessGroup, sanitizeWslProcessEnvironment, validateManagedStorage, validateManagedStorageTargets, WSL_LAUNCH_FREE_BYTES } from '../../setup-controller/src/platform.js';
+import { selectRuntimeProfile } from '../../setup-controller/src/runtime-plan.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const FRONTEND_PORT = 3002;
@@ -46,6 +47,14 @@ export function parseArgs(args) {
 
 export function chooseDestination(onboarding) {
   return onboarding?.completed === true ? '/login' : '/setup';
+}
+
+export function resolveLaunchContext({ dataDirectory = null, env = {}, host, home, mountInfoText } = {}) {
+  const launchEnv = host?.wsl ? sanitizeWslProcessEnvironment(env, { mountInfoText }) : { ...env };
+  const platform = host?.os === 'macos' ? 'darwin' : 'linux';
+  const selected = dataDirectory || launchEnv.SPEECHCRAFT_SETUP_DATA_DIR
+    || defaultDataDirectory(launchEnv, platform, home, { wsl: Boolean(host?.wsl) });
+  return { dataDirectory: path.resolve(selected), env: launchEnv };
 }
 
 export function assertLoopbackAddress(address) {
@@ -622,7 +631,22 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   const host = hostEnvironment();
   if (!((host.os === 'linux' && host.architecture === 'x86_64') || (host.os === 'macos' && host.architecture === 'arm64')))
     throw new Error('SpeechCraft supports Linux x86-64, Apple Silicon macOS, and Windows through Ubuntu WSL2.');
-  let dataDirectory = path.resolve(options.dataDirectory || env.SPEECHCRAFT_SETUP_DATA_DIR || defaultDataDirectory());
+  if (host.wsl) {
+    assertCurrentWslGuest(host, {
+      freeBytes: freeBytes(os.homedir()),
+      requiredBytes: WSL_LAUNCH_FREE_BYTES,
+      loopbackAvailable: await probeLoopback(),
+      processGroupAvailable: await probeProcessGroup(),
+    });
+    const runtime = selectRuntimeProfile(host);
+    if (runtime.profile !== 'linux-x86_64' || runtime.modelPlatform !== 'windows-wsl2') {
+      throw new Error('WSL2 did not select the trusted Linux x86-64 runtime and windows-wsl2 model profile.');
+    }
+    validateManagedStorageTargets(host, [ROOT]);
+  }
+  const launchContext = resolveLaunchContext({ dataDirectory: options.dataDirectory, env, host, home: os.homedir() });
+  let dataDirectory = launchContext.dataDirectory;
+  const launchEnv = launchContext.env;
   if (options.command === 'status' || options.command === 'stop') {
     if (!fs.existsSync(dataDirectory)) {
       const missing = { running: false, controller: 'unavailable', frontend: 'unavailable', url: `http://${LOOPBACK}:${FRONTEND_PORT}` };
@@ -650,17 +674,36 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   }
   fs.chmodSync(dataDirectory, 0o700);
   dataDirectory = fs.realpathSync(dataDirectory);
-  validateManagedStorageTargets(hostEnvironment(), [dataDirectory]);
+  validateManagedStorage(host, managedStorageLocations(dataDirectory));
+  assertExistingManagedFiles(host, [
+    path.join(dataDirectory, 'bootstrap.token'),
+    path.join(dataDirectory, 'launcher.processes.json'),
+  ]);
   const installId = crypto.createHash('sha256').update(`${dataDirectory}\0${host.os}\0${host.architecture}`).digest('hex');
   const frontendIdentity = readOrCreateFrontendIdentity(dataDirectory);
   const appOrigin = `http://${LOOPBACK}:${FRONTEND_PORT}`;
   const controllerOrigin = `http://${LOOPBACK}:${CONTROLLER_PORT}`;
-  const common = { ...env, SPEECHCRAFT_SETUP_DATA_DIR: dataDirectory,
+  const common = { ...launchEnv, SPEECHCRAFT_SETUP_DATA_DIR: dataDirectory,
     SPEECHCRAFT_SETUP_PORT: String(CONTROLLER_PORT), SPEECHCRAFT_SETUP_MODE: options.simulated ? 'simulated' : 'runtime',
     SPEECHCRAFT_SETUP_ALLOWED_HOSTS: `${LOOPBACK}:${CONTROLLER_PORT},localhost:${CONTROLLER_PORT},${LOOPBACK}:${FRONTEND_PORT},localhost:${FRONTEND_PORT}`,
     SPEECHCRAFT_SETUP_ALLOWED_ORIGINS: `${controllerOrigin},http://localhost:${CONTROLLER_PORT},${appOrigin},http://localhost:${FRONTEND_PORT}`,
     SPEECHCRAFT_APPLICATION_ROOT: ROOT, SPEECHCRAFT_BACKEND_PORT: String(BACKEND_PORT),
     SPEECHCRAFT_BACKEND_URL: `http://${LOOPBACK}:${BACKEND_PORT}` };
+  if (host.wsl) {
+    const managedTmp = path.join(dataDirectory, 'cache', 'bootstrap', 'tmp');
+    const huggingFace = path.join(dataDirectory, 'cache', 'bootstrap', 'huggingface');
+    Object.assign(common, {
+      HF_HOME: huggingFace,
+      HUGGINGFACE_HUB_CACHE: path.join(huggingFace, 'hub'),
+      HF_XET_CACHE: path.join(huggingFace, 'xet'),
+      TMPDIR: managedTmp,
+      TEMP: managedTmp,
+      TMP: managedTmp,
+      UV_CACHE_DIR: path.join(dataDirectory, 'cache', 'bootstrap', 'uv'),
+      XDG_CACHE_HOME: path.join(dataDirectory, 'cache', 'bootstrap', 'home', '.cache'),
+      XDG_DATA_HOME: path.join(os.homedir(), '.local', 'share'),
+    });
+  }
   const releaseManifestPath = path.join(ROOT, 'application-release-manifest.json');
   if (fs.existsSync(releaseManifestPath)) {
     const release = JSON.parse(fs.readFileSync(releaseManifestPath, 'utf8'));

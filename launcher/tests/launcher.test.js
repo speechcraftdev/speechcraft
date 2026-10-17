@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertLoopbackAddress, chooseDestination, openDefaultBrowser, parseArgs, readOrCreateFrontendIdentity, stopOwned, stopOwnedRecord, verifyFrontendOwnership } from '../src/launcher.js';
+import { assertLoopbackAddress, chooseDestination, openDefaultBrowser, parseArgs, readOrCreateFrontendIdentity, resolveLaunchContext, stopOwned, stopOwnedRecord, verifyFrontendOwnership } from '../src/launcher.js';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { ownedProcessIdentity } from '../../setup-controller/src/bootstrap.js';
@@ -44,6 +44,34 @@ test('browser opener selects safe platform-native commands and avoids headless a
   assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/setup', { platform: 'linux', wsl: true, env: {}, spawnImpl }), true);
   assert.equal(calls[1].command, 'wslview');
   await assert.rejects(openDefaultBrowser('http://example.com', { platform: 'darwin', env: {}, spawnImpl }), /non-SpeechCraft local URL/);
+});
+
+test('WSL launch context ignores Windows cache overrides and keeps a native data directory', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-launch-context-'));
+  const mounts = `1 1 0:1 / ${root.replaceAll(' ', '\\040')} rw - ext4 /dev/sda rw\n2 1 0:2 / /mnt/c rw - 9p drvfs rw`;
+  const host = { os: 'linux', architecture: 'x86_64', profile: 'linux-x86_64', wsl: true };
+  const resolved = resolveLaunchContext({
+    env: {
+      HF_HOME: '/mnt/c/Users/test/.cache/huggingface',
+      TMPDIR: '/mnt/c/Temp',
+      UV_CACHE_DIR: '/mnt/c/uv',
+      PATH: '/usr/bin:/mnt/c/Windows/System32',
+      XDG_DATA_HOME: '/mnt/c/Users/test/share',
+    },
+    host, home: root, mountInfoText: mounts,
+  });
+  assert.equal(resolved.env.HF_HOME, undefined);
+  assert.equal(resolved.env.TMPDIR, undefined);
+  assert.equal(resolved.env.PATH, '/usr/bin');
+  assert.equal(resolved.dataDirectory, path.join(root, '.local', 'share', 'speechcraft', 'setup-controller'));
+  assert.throws(() => resolveLaunchContext({
+    env: { SPEECHCRAFT_SETUP_DATA_DIR: '/mnt/c/SpeechCraft' }, host, home: root, mountInfoText: mounts,
+  }), (error) => error.code === 'WSL_WINDOWS_MOUNT');
+  const native = resolveLaunchContext({
+    dataDirectory: root, env: { HF_HOME: '/mnt/c/hidden' }, host: { ...host, wsl: false }, home: root,
+  });
+  assert.equal(native.dataDirectory, root);
+  assert.equal(native.env.HF_HOME, '/mnt/c/hidden');
 });
 
 test('privileged local launch requires an explicit loopback bind', () => {

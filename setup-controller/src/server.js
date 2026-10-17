@@ -9,7 +9,7 @@ import { SimulatedTasks } from './simulated-tasks.js';
 import { BootstrapTasks, reconcileOwnedProcess } from './bootstrap.js';
 import { RuntimeTasks } from './runtime-tasks.js';
 import { reconcileOwnedService } from './backend-service.js';
-import { hostEnvironment, validateManagedStorageTargets } from './platform.js';
+import { assertCurrentWslGuest, assertExistingManagedFiles, hostEnvironment, managedStorageLocations, validateManagedStorage } from './platform.js';
 
 const BODY_LIMIT = 16 * 1024;
 const HEARTBEAT_MS = 15_000;
@@ -176,7 +176,12 @@ export async function createSetupController({
   if (!['simulated', 'bootstrap', 'runtime'].includes(mode)) throw new Error('setup mode must be simulated, bootstrap, or runtime');
   if (mode !== 'simulated') {
     const environment = hostEnvironment();
-    validateManagedStorageTargets(environment, [dataDirectory]);
+    if (environment.wsl) assertCurrentWslGuest(environment);
+    validateManagedStorage(environment, managedStorageLocations(dataDirectory));
+    assertExistingManagedFiles(environment, [
+      path.join(dataDirectory, 'bootstrap.token'),
+      path.join(dataDirectory, 'launcher.processes.json'),
+    ]);
   }
   const store = StateStore.open(dataDirectory);
   let auth;

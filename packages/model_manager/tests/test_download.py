@@ -839,6 +839,17 @@ class DownloadTests(unittest.TestCase):
         self.assertTrue(any(e['event'] == 'publishing' for e in events))
         self.assertFalse(any(e['event'] == 'failed' for e in events))
 
+    def test_wsl_model_store_rejects_ntfs_and_network_filesystems(self):
+        for filesystem in ('ntfs', 'ntfs3', 'fuseblk', 'cifs', 'smbfs'):
+            mountinfo = ('36 25 0:34 / / rw,relatime - ext4 /dev/sda rw\n'
+                         f'37 36 0:35 / /srv/windows rw,relatime - {filesystem} disk rw\n')
+            with self.subTest(filesystem=filesystem):
+                with patch('speechcraft_models.download.os.uname',
+                           return_value=SimpleNamespace(release='6.6.1-microsoft-standard-WSL2')):
+                    with patch('builtins.open', mock_open(read_data=mountinfo)):
+                        with self.assertRaisesRegex(InstallError, 'Windows-mounted'):
+                            _reject_wsl_windows_mount(Path('/srv/windows/models'), 'windows-wsl2')
+
     def test_wsl_model_store_rejects_windows_drive_mount(self):
         mountinfo = ('36 25 0:34 / / rw,relatime - ext4 /dev/sda rw\n'
                      '37 36 0:35 / /mnt/c rw,relatime - 9p drvfs rw\n')

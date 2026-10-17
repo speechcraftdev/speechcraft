@@ -3687,7 +3687,11 @@ class SQLiteRepository:
 
     def _managed_media_path(self, category: str, identifier: str) -> Path:
         safe_identifier = self._validate_managed_media_id(identifier)
-        return (self.media_root / category / f"{safe_identifier}.wav").resolve()
+        root = self.media_root.resolve()
+        resolved = (root / category / f"{safe_identifier}.wav").resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError("Managed media path escaped SpeechCraft storage")
+        return resolved
 
     def _reference_variant_storage_key(self, variant_id: str) -> str:
         safe_identifier = self._validate_managed_media_id(variant_id)
