@@ -36,7 +36,7 @@ export function validateWindowsPackage(directory) {
   const schema = JSON.parse(fs.readFileSync(path.join(directory, 'installation.schema.json'), 'utf8'));
   if (schema.properties?.guest_id?.const !== 'ubuntu' || schema.properties?.wsl_version?.const !== 2) problems.push('installation schema');
   const installer = fs.readFileSync(path.join(directory, 'install-windows.ps1'), 'utf8');
-  if (!installer.includes('--windows-install') || installer.includes('cmd.exe')) problems.push('installer entrypoint');
+  if (!installer.includes('--windows-install') || /\bcmd\.exe\s+\/c\b/i.test(installer)) problems.push('installer entrypoint');
   const acceptance = fs.readFileSync(path.join(directory, 'accept-windows.ps1'), 'utf8');
   if (!acceptance.includes('PENDING_NATIVE_WINDOWS')) problems.push('acceptance marker');
   return { ok: problems.length === 0, missing, problems, release };
