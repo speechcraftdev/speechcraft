@@ -39,6 +39,9 @@ export function parseArgs(args) {
     else if (arg === '--simulated') result.simulated = true;
     else if (arg === '--no-browser') result.openBrowser = false;
     else if (arg === '--json' && result.command === 'status') result.json = true;
+    else if (arg === '--prove-frontend' && args[index + 1] && /^[A-Za-z0-9_-]{16,128}$/.test(args[index + 1])) {
+      result.proveFrontend = args[++index];
+    }
     else if (arg === '--help' || arg === '-h') result.help = true;
     else throw new Error(`Unknown launcher option: ${arg}`);
   }
@@ -51,11 +54,11 @@ export function chooseDestination(onboarding) {
   return onboarding?.completed === true ? '/login' : '/setup';
 }
 
-export function formatFrontendReadyEvent({ url, route, ready }) {
+export function formatFrontendReadyEvent({ url, route, ready, owned = false }) {
   if (route !== '/setup' && route !== '/login') throw new Error('Refusing to publish an untrusted frontend route.');
   if (url !== `http://127.0.0.1:3002${route}`) throw new Error('Refusing to publish an untrusted frontend URL.');
   return `SPEECHCRAFT_READY ${JSON.stringify({
-    event: 'frontend_ready', protocol: FRONTEND_READY_PROTOCOL, url, route, ready: ready === true,
+    event: 'frontend_ready', protocol: FRONTEND_READY_PROTOCOL, url, route, ready: ready === true, owned: owned === true,
   })}`;
 }
 
@@ -65,7 +68,7 @@ export function parseFrontendReadyEvent(line) {
   try { payload = JSON.parse(line.slice('SPEECHCRAFT_READY '.length)); } catch { return null; }
   if (!payload || payload.event !== 'frontend_ready' || payload.protocol !== FRONTEND_READY_PROTOCOL || payload.ready !== true) return null;
   if ((payload.route !== '/setup' && payload.route !== '/login') || payload.url !== `http://127.0.0.1:3002${payload.route}`) return null;
-  const allowed = new Set(['event', 'protocol', 'url', 'route', 'ready']);
+  const allowed = new Set(['event', 'protocol', 'url', 'route', 'ready', 'owned']);
   if (Object.keys(payload).some((key) => !allowed.has(key))) return null;
   return { event: payload.event, protocol: payload.protocol, url: payload.url, route: payload.route, ready: true };
 }
@@ -649,6 +652,14 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     console.log('Usage: speechcraft [--data-dir PATH] [--development] [--simulated] [--no-browser]\n       speechcraft status [--json] [--data-dir PATH]\n       speechcraft stop [--data-dir PATH]');
     return { help: true };
   }
+  if (options.proveFrontend) {
+    const host = hostEnvironment();
+    const launchContext = resolveLaunchContext({ dataDirectory: options.dataDirectory, env, host, home: os.homedir() });
+    const identity = readOrCreateFrontendIdentity(launchContext.dataDirectory);
+    const proof = crypto.createHmac('sha256', Buffer.from(identity, 'base64url')).update(options.proveFrontend).digest('base64url');
+    process.stdout.write(`${proof}\n`);
+    return { command: 'prove-frontend' };
+  }
   const host = hostEnvironment();
   if (!((host.os === 'linux' && host.architecture === 'x86_64') || (host.os === 'macos' && host.architecture === 'arm64')))
     throw new Error('SpeechCraft supports Linux x86-64, Apple Silicon macOS, and Windows through Ubuntu WSL2.');
@@ -815,7 +826,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     if (!restoration.ready) console.error(`SpeechCraft repair required: ${restoration.warning}`);
   }
   const url = `${appOrigin}${route}`;
-  console.log(formatFrontendReadyEvent({ url, route, ready: true }));
+  console.log(formatFrontendReadyEvent({ url, route, ready: true, owned: children.length > 0 }));
   onUrl(url);
   if (options.openBrowser) {
     try { if (!await open(url, { wsl: host.wsl, platform: process.platform, env })) console.log(`No local browser was opened. Open ${url} locally or through an SSH tunnel, for example: ssh -N -L 3002:127.0.0.1:3002 user@cozytent-host`); }

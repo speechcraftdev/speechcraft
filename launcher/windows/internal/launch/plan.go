@@ -17,6 +17,7 @@ type ReadyEvent struct {
 	URL      string `json:"url"`
 	Route    string `json:"route"`
 	Ready    bool   `json:"ready"`
+	Owned    bool   `json:"owned"`
 }
 
 func ParseReady(line string) (ReadyEvent, bool) {

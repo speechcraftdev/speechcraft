@@ -259,6 +259,46 @@ func (h *windowsHost) RemoveLauncher() error {
 	return err
 }
 
+func (h *windowsHost) BackupLauncher() ([]byte, bool, error) {
+	dir, err := h.LauncherDirectory()
+	if err != nil {
+		return nil, false, err
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "speechcraft.exe"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	return data, err == nil, err
+}
+
+func (h *windowsHost) RestoreLauncher(data []byte, existed bool) error {
+	dir, err := h.LauncherDirectory()
+	if err != nil {
+		return err
+	}
+	target := filepath.Join(dir, "speechcraft.exe")
+	if !existed {
+		err := os.Remove(target)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return os.WriteFile(target, data, 0o700)
+}
+
+func (h *windowsHost) RemoveConfig() error {
+	filename, err := h.configPath()
+	if err != nil {
+		return err
+	}
+	err = os.Remove(filename)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 func (h *windowsHost) ReadPath() (string, error) {
 	value, _, err := readUserPath()
 	return value, err

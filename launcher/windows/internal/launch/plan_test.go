@@ -117,6 +117,7 @@ type fakeProc struct {
 	code       int
 	delay      time.Duration
 	cancelled  bool
+	stopped    bool
 	mu         sync.Mutex
 	waitOnce   sync.Once
 	waitResult int
@@ -135,6 +136,12 @@ func (p *fakeProc) Wait() int {
 		p.mu.Unlock()
 	})
 	return p.waitResult
+}
+func (p *fakeProc) RequestStop() {
+	p.mu.Lock()
+	p.stopped = true
+	p.code = 130
+	p.mu.Unlock()
 }
 func (p *fakeProc) Cancel() {
 	p.mu.Lock()
@@ -281,10 +288,11 @@ func TestCancelForwardsToTheGuestProcess(t *testing.T) {
 		t.Fatal("cancel did not unblock")
 	}
 	proc.mu.Lock()
+	stopped := proc.stopped
 	cancelled := proc.cancelled
 	proc.mu.Unlock()
-	if !cancelled {
-		t.Fatal("process was not cancelled")
+	if !stopped || cancelled {
+		t.Fatal("ctrl+c killed the transport instead of requesting a stop")
 	}
 }
 

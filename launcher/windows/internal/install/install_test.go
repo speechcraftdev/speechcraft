@@ -28,6 +28,8 @@ type fakeHost struct {
 	helpOut   string
 	deleted   []string
 	linuxData bool
+	exeBackup []byte
+	hadExe    bool
 }
 
 func (h *fakeHost) note(call string) { h.calls = append(h.calls, call) }
@@ -109,7 +111,24 @@ func (h *fakeHost) LauncherDirectory() (string, error) {
 }
 func (h *fakeHost) InstallExecutable(source, directory string) (string, error) {
 	h.note("install-exe")
+	h.hadExe = true
 	return directory + `\speechcraft.exe`, nil
+}
+func (h *fakeHost) BackupLauncher() ([]byte, bool, error) {
+	h.note("backup-launcher")
+	return h.exeBackup, h.hadExe, nil
+}
+func (h *fakeHost) RestoreLauncher(data []byte, existed bool) error {
+	h.note("restore-launcher")
+	h.exeBackup = data
+	h.hadExe = existed
+	return nil
+}
+func (h *fakeHost) RemoveConfig() error {
+	h.note("remove-config")
+	h.hasConfig = false
+	h.config = config.Installation{}
+	return nil
 }
 func (h *fakeHost) RemoveLauncher() error     { h.note("remove-launcher"); return nil }
 func (h *fakeHost) ReadPath() (string, error) { return h.path, nil }
@@ -326,8 +345,11 @@ func TestCommandConflictAndPathRollback(t *testing.T) {
 	if codeOf(t, second(Install(rollback, opts()))) != "PATH_VERIFY_FAILED" {
 		t.Fatal()
 	}
-	if rollback.path != `C:\Windows` {
-		t.Fatalf("path was not restored: %s", rollback.path)
+	if rollback.path != `C:\Windows` || rollback.hasConfig {
+		t.Fatalf("windows launcher state was not restored: path %s config %v", rollback.path, rollback.hasConfig)
+	}
+	if !containsCall(rollback.calls, "restore-launcher") || containsCall(rollback.calls, "delete-data") {
+		t.Fatal(rollback.calls)
 	}
 }
 

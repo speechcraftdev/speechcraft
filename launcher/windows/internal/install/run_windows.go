@@ -40,11 +40,25 @@ func Run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		fmt.Fprintln(stdout, "Removed the SpeechCraft Windows command. Ubuntu, models, projects, and application data were left in place. Open a new terminal so PATH changes are visible.")
 		return 0
 	}
+	releasePath := filepath.Join(filepath.Dir(executable), "windows-release.json")
+	releaseBody, err := os.ReadFile(releasePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "speechcraft: windows-release.json is required and was not found next to the launcher.\n")
+		return diag.ExitIntegration
+	}
+	exeHash, err := fileSHA256(executable)
+	if err != nil {
+		fmt.Fprintf(stderr, "speechcraft: %s\n", err)
+		return diag.ExitIntegration
+	}
+	binding, err := RequireWindowsRelease(releaseBody, exeHash)
+	if err != nil {
+		fmt.Fprintf(stderr, "speechcraft: %s\n", err)
+		return diag.ExitIntegration
+	}
+	opts.ExpectedSourceRevision = binding.SourceRevision
 	opts.InstallerScript = filepath.Join(filepath.Dir(executable), "install-linux.py")
 	opts.LauncherExecutable = executable
-	if revision, readErr := os.ReadFile(filepath.Join(filepath.Dir(executable), "windows-release.json")); readErr == nil {
-		opts.ExpectedSourceRevision = sourceRevision(revision)
-	}
 	cfg, err := Install(host, opts)
 	if err != nil {
 		fmt.Fprintf(stderr, "speechcraft: %s\n", err)

@@ -37,7 +37,9 @@ if (revision.status !== 0 || revision.stdout.trim() !== sourceRevisionArg) throw
 const dirty = spawnSync('git', ['status', '--porcelain', '--', 'launcher/windows', 'launcher/installer/install-windows.ps1', 'launcher/installer/install-linux.py', 'launcher/WINDOWS.md', 'launcher/windows/accept-windows.ps1'], { cwd: repositoryRoot, encoding: 'utf8' });
 if (dirty.stdout.trim()) throw new Error('Windows packaging inputs are modified. Commit them before building.');
 
-const version = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'frontend/package.json'), 'utf8')).version;
+const versionText = spawnSync('git', ['show', `${sourceRevisionArg}:frontend/package.json`], { cwd: repositoryRoot, encoding: 'utf8', shell: false });
+if (versionText.status !== 0) throw new Error('Could not read frontend/package.json from the pinned source revision.');
+const version = JSON.parse(versionText.stdout).version;
 const appName = `speechcraft-${version}-windows-x64`;
 fs.mkdirSync(path.dirname(outputRoot), { recursive: true, mode: 0o700 });
 const work = fs.mkdtempSync(path.join(path.dirname(outputRoot), '.speechcraft-windows-'));

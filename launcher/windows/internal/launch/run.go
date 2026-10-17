@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"speechcraft/windows/internal/diag"
 )
@@ -14,15 +15,17 @@ type Process interface {
 	Stdout() io.Reader
 	Stderr() io.Reader
 	Wait() int
+	RequestStop()
 	Cancel()
 }
 
 type Deps struct {
-	Start func(argv []string) (Process, error)
-	Probe func(url string) error
-	Open  func(url string) error
-	Out   io.Writer
-	Err   io.Writer
+	Start     func(argv []string) (Process, error)
+	Probe     func(url string) error
+	Open      func(url string) error
+	StopGuest func() error
+	Out       io.Writer
+	Err       io.Writer
 }
 
 func Run(ctx context.Context, plan PlanResult, deps Deps) (int, error) {
@@ -32,9 +35,20 @@ func Run(ctx context.Context, plan PlanResult, deps Deps) (int, error) {
 	}
 	done := make(chan struct{})
 	defer close(done)
+	var owned atomic.Bool
 	go func() {
 		select {
 		case <-ctx.Done():
+			if owned.Load() && deps.StopGuest != nil {
+				if err := deps.StopGuest(); err == nil {
+					proc.RequestStop()
+					return
+				}
+			}
+			if !owned.Load() {
+				proc.RequestStop()
+				return
+			}
 			proc.Cancel()
 		case <-done:
 		}
@@ -43,6 +57,9 @@ func Run(ctx context.Context, plan PlanResult, deps Deps) (int, error) {
 	var mu sync.Mutex
 	guest := false
 	mark := func(line string) {
+		if event, ok := ParseReady(line); ok && event.Owned {
+			owned.Store(true)
+		}
 		if !SawGuest(line) {
 			return
 		}

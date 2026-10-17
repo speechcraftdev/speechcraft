@@ -22,6 +22,7 @@ func StartWSL(string, []string) (Process, error) {
 func (unavailableProcess) Stdout() io.Reader { return nil }
 func (unavailableProcess) Stderr() io.Reader { return nil }
 func (unavailableProcess) Wait() int         { return diag.ExitIntegration }
+func (unavailableProcess) RequestStop()      {}
 func (unavailableProcess) Cancel()           {}
 
 func OpenDefaultBrowser(rawURL string) error {

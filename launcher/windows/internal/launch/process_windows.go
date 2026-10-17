@@ -62,6 +62,11 @@ func (p *commandProcess) Wait() int {
 	}
 	return diag.ExitWSLStart
 }
+func (p *commandProcess) RequestStop() {
+	if p.cmd.Process != nil {
+		_ = p.cmd.Process.Signal(os.Interrupt)
+	}
+}
 func (p *commandProcess) Cancel() {
 	if p.cmd.Process != nil {
 		_ = p.cmd.Process.Kill()

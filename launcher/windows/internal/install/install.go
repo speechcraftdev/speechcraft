@@ -198,8 +198,30 @@ func Install(host Host, opts Options) (*config.Installation, error) {
 		_ = host.RemoveStaging(selected.Name, staging)
 		return nil, diag.New("LINUX_COMMAND_MISSING", "The Linux speechcraft command was not available after installation.", diag.ExitIntegration)
 	}
+	priorConfig, hadConfig, _ := host.LoadConfig()
+	var priorExe []byte
+	var hadExe bool
+	if rollback, ok := host.(launcherRollback); ok {
+		priorExe, hadExe, err = rollback.BackupLauncher()
+		if err != nil {
+			_ = host.RemoveStaging(selected.Name, staging)
+			return nil, err
+		}
+	}
+	restoreWindows := func() {
+		if rollback, ok := host.(launcherRollback); ok {
+			_ = rollback.RestoreLauncher(priorExe, hadExe)
+			if hadConfig {
+				_ = host.SaveConfig(priorConfig)
+			} else {
+				_ = rollback.RemoveConfig()
+			}
+		}
+		_ = host.WritePath(currentPath)
+	}
 	installedExe, err := host.InstallExecutable(opts.LauncherExecutable, launcherDir)
 	if err != nil {
+		restoreWindows()
 		_ = host.RemoveStaging(selected.Name, staging)
 		return nil, diag.New("LAUNCHER_INSTALL_FAILED", err.Error(), diag.ExitIntegration)
 	}
@@ -210,22 +232,30 @@ func Install(host Host, opts Options) (*config.Installation, error) {
 		SourceRevision: release.SourceRevision, LauncherInstalled: true,
 	}
 	if err := host.SaveConfig(cfg); err != nil {
+		restoreWindows()
 		_ = host.RemoveStaging(selected.Name, staging)
 		return nil, err
 	}
 	updated := addPathEntry(currentPath, launcherDir)
 	if err := host.WritePath(updated); err != nil {
+		restoreWindows()
 		_ = host.RemoveStaging(selected.Name, staging)
 		return nil, diag.New("PATH_UPDATE_FAILED", err.Error(), diag.ExitIntegration)
 	}
 	resolved, err := host.Resolve(updated, "speechcraft.exe")
 	if err != nil || !sameDir(dirOf(resolved), launcherDir) || !strings.EqualFold(resolved, installedExe) {
-		_ = host.WritePath(currentPath)
+		restoreWindows()
 		_ = host.RemoveStaging(selected.Name, staging)
-		return nil, diag.New("PATH_VERIFY_FAILED", "The user PATH did not resolve to the installed SpeechCraft launcher. The previous PATH was restored. Already-open terminals still need to be restarted after a later successful install.", diag.ExitIntegration)
+		return nil, diag.New("PATH_VERIFY_FAILED", "The user PATH did not resolve to the installed SpeechCraft launcher. The previous Windows launcher, configuration, and PATH were restored. The Ubuntu installation was left in place.", diag.ExitIntegration)
 	}
 	_ = host.RemoveStaging(selected.Name, staging)
 	return &cfg, nil
+}
+
+type launcherRollback interface {
+	BackupLauncher() ([]byte, bool, error)
+	RestoreLauncher(data []byte, existed bool) error
+	RemoveConfig() error
 }
 
 func Uninstall(host Host) error {

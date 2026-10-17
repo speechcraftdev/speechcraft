@@ -69,4 +69,5 @@ if ($IncludeCuda) {
     Write-Host 'CUDA is optional and remains pending until the WSL CUDA probes pass on this machine.'
 }
 
+Write-Host 'Also confirm the five hardening fixes: failed PATH registration restores the previous launcher and configuration; Ctrl+C requests Linux shutdown only when this launch owns the services; an unrelated localhost server is not opened; the package version comes from the pinned Git revision; a package without windows-release.json is refused.'
 exit 2
