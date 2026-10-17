@@ -109,7 +109,7 @@ def validate_asr_model_snapshot(
         }
 
     config_path = path / "config.json"
-    weight_candidates = ("model.bin", "pytorch_model.bin", "model.safetensors")
+    weight_candidates = ("model.bin", "weights.npz", "pytorch_model.bin", "model.safetensors")
     weight_path = next((path / name for name in weight_candidates if (path / name).exists()), None)
     missing: list[str] = []
     if not config_path.exists():

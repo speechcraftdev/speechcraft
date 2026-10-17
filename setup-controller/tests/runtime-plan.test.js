@@ -96,7 +96,10 @@ test('checked-in backend recipe identity is verified and unsupported components 
   assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cpu'].available, true);
   assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cpu'].validated, true);
   assert.equal(runtimeManifest.worker.profiles['linux-x86_64-cuda'].validated, true);
-  assert.equal(runtimeManifest.worker.profiles['macos-arm64'].available, false);
+  assert.equal(runtimeManifest.worker.profiles['macos-arm64'].available, true);
+  assert.equal(runtimeManifest.worker.profiles['macos-arm64'].validated, false);
+  assert.equal(runtimeManifest.worker.profiles['macos-arm64'].lock_verified, true);
+  assert.equal(runtimeManifest.worker.profiles['macos-arm64'].inference_validated, false);
   assert.equal(initialComponents().pyannote.state, 'waiting_for_token');
   assert.equal(initialComponents().titanet.state, 'blocked');
   assert.equal(initialComponents().runtime_probes.state, 'pending');

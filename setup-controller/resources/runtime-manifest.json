@@ -80,8 +80,36 @@
         ]
       },
       "macos-arm64": {
-        "available": false,
-        "reason": "No validated Apple Silicon worker dependency lock is checked in."
+        "available": true,
+        "validated": false,
+        "lock_verified": true,
+        "inference_validated": false,
+        "reason": "Apple Silicon worker lock is checked in for MLX Whisper Large-v3. Import installation can proceed. Real MLX inference and native Mac acceptance have not been run.",
+        "project": "workers/dataset/runtime-profiles/macos-arm64",
+        "lockfile": "uv.lock",
+        "lock_sha256": "5fc5bbf9e0685b6086f64ff97183062fc360b4b206b957c5e8e3eef76dc5cec4",
+        "project_manifest_sha256": "d9c6e632d136b977594815b807b2cf0acf94e5689c03b033bdf991c59f8559a7",
+        "environment_version": 1,
+        "python_version": "3.12.15",
+        "installation": "uv-sync-locked",
+        "expected_interpreter": "bin/python",
+        "estimated_bytes": 12884901888,
+        "validation_modules": [
+          "speechcraft_dataset",
+          "speechcraft_models",
+          "torch",
+          "torchaudio",
+          "pyannote.audio",
+          "mlx",
+          "mlx_whisper",
+          "onnxruntime",
+          "silero_vad",
+          "sherpa_onnx",
+          "soundfile",
+          "av",
+          "numpy",
+          "scipy"
+        ]
       }
     },
     "required_tool": "ffmpeg",
@@ -106,7 +134,7 @@
       {
         "component": "ffmpeg",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
+        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
         "environment_role": "worker",
         "arguments": [
           "ffmpeg"
@@ -117,7 +145,7 @@
       {
         "component": "silero",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
+        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
         "environment_role": "worker",
         "arguments": [
           "silero"
@@ -128,7 +156,7 @@
       {
         "component": "whisper",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
+        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
         "environment_role": "worker",
         "arguments": [
           "whisper"
@@ -139,7 +167,7 @@
       {
         "component": "titanet",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
+        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
         "environment_role": "worker",
         "arguments": [
           "titanet"
@@ -150,7 +178,7 @@
       {
         "component": "pyannote",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
+        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
         "environment_role": "worker",
         "arguments": [
           "pyannote"
@@ -161,7 +189,7 @@
       {
         "component": "cuda",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "0734ab7ada10b21c75a66d58a6d8aaf5e29344270d370687486d199977a69019",
+        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
         "environment_role": "worker_cuda_candidate",
         "fixture": "speech",
         "arguments": [

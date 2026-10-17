@@ -190,8 +190,11 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         module_check("torchaudio"),
         module_check("sherpa-onnx", "sherpa_onnx"),
         module_check("pyannote.audio", "pyannote.audio"),
-        module_check("faster_whisper"),
-        module_check("ctranslate2"),
+        *(
+            [module_check("mlx"), module_check("mlx-whisper", "mlx_whisper")]
+            if platform.machine().lower() in {"arm64", "aarch64"} and sys.platform == "darwin"
+            else [module_check("faster_whisper"), module_check("ctranslate2")]
+        ),
         module_check("silero_vad"),
         module_check("soundfile"),
         module_check("numpy"),

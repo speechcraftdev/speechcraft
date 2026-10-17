@@ -148,9 +148,9 @@ def resolve_transcript_qc_model_reference(config: dict[str, Any]) -> tuple[str, 
 
 
 def create_whisper_model(model_reference: str, device: str, compute_type: str) -> Any:
-    from faster_whisper import WhisperModel
+    from .asr import load_asr_engine
 
-    return WhisperModel(model_reference, device=device, compute_type=compute_type)
+    return load_asr_engine(model_reference, device=device, compute_type=compute_type)
 
 
 def detect_number_symbol_hazards(*texts: str) -> list[str]:
@@ -379,7 +379,7 @@ def score_candidate_clip(
         return row
 
     try:
-        segments, _info = transcribe_clip(
+        segments, info = transcribe_clip(
             model,
             audio_path,
             language=language,
@@ -430,6 +430,10 @@ def score_candidate_clip(
             high_no_speech_segments=high_no_speech,
             hazard_flags=hazard_flags,
         )
+        gaps = list(getattr(info, "metadata_gaps", None) or [])
+        if gaps:
+            review_required = True
+            reasons = sorted(set([*reasons, *(f"asr_metadata_unavailable:{gap}" for gap in gaps)]))
         row["review_required"] = review_required
         row["review_reasons"] = reasons
         row["reason_codes"] = list(reasons)

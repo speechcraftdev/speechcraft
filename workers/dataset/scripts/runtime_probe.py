@@ -119,29 +119,56 @@ def run(component: str) -> dict:
                                     "probability_max": float(values.max()), "silence_probability_max": silence_max,
                                     "fixture_sha256": digest(recording), "sample_rate": int(rate)})
     elif component == "whisper":
-        from faster_whisper import WhisperModel
         from speechcraft_dataset.runtime_tools import verify_managed_model
         import soundfile as sf
 
         model = Path(os.environ.get("SPEECHCRAFT_ASR_MODEL_PATH", ""))
         recording = audio_file("whisper")
         recording_duration = float(sf.info(str(recording)).duration)
-        if not model.is_dir() or model.is_symlink() or not (model / "model.bin").is_file():
+        if not model.is_dir() or model.is_symlink():
             raise RuntimeError("Verified local Whisper Large-v3 model directory is unavailable.")
         verify_managed_model("asr", model, os.environ.get("SPEECHCRAFT_MODEL_PLATFORM", "linux-x86_64"))
-        device = os.environ.get("SPEECHCRAFT_PROBE_DEVICE", "cpu")
-        compute = "float16" if device == "cuda" else "int8"
-        engine = WhisperModel(str(model), device=device, compute_type=compute, local_files_only=True)
-        segments, info = engine.transcribe(str(recording), beam_size=1)
-        rows = list(segments)
-        text_length = sum(len(row.text.strip()) for row in rows)
-        if not rows or text_length == 0:
-            raise RuntimeError("Whisper inference completed without a nonempty transcript.")
-        result.update(identity=f"whisper-large-v3-ct2:{digest(model / 'model.bin')}",
-                      backend=f"faster-whisper/ctranslate2:{compute}", device=device,
-                      inference_completed=True, measurements={"segments": len(rows), "transcript_characters": text_length,
-                                                              "language": info.language,
-                                                              "recording_duration_seconds": recording_duration})
+        platform_name = os.environ.get("SPEECHCRAFT_MODEL_PLATFORM", "linux-x86_64")
+        if platform_name == "macos-arm64":
+            from speechcraft_dataset.asr import MlxEngine
+            if not (model / "weights.npz").is_file() or not (model / "config.json").is_file() or (model / "model.bin").is_file():
+                raise RuntimeError("The macOS Whisper snapshot must be the pinned non-quantized MLX weights.npz directory, not a CTranslate2 model.bin.")
+            engine = MlxEngine(model)
+            segments, info = engine.transcribe(str(recording), beam_size=1, word_timestamps=True, vad_filter=False, task="transcribe")
+            rows = list(segments)
+            if info.backend != "mlx-whisper":
+                raise RuntimeError("macOS Whisper probe did not report the MLX backend.")
+            if not rows or not any(row.words for row in rows):
+                raise RuntimeError("MLX Whisper inference did not return timed words.")
+            if any(row.end is not None and row.start is not None and row.end < row.start for row in rows):
+                raise RuntimeError("MLX Whisper returned an inverted segment timestamp.")
+            text_length = sum(len(row.text.strip()) for row in rows)
+            if text_length == 0:
+                raise RuntimeError("MLX Whisper inference completed without a nonempty transcript.")
+            result.update(identity=f"whisper-large-v3-mlx:{digest(model / 'weights.npz')}",
+                          backend="mlx-whisper", device="apple-silicon",
+                          inference_completed=True, measurements={"segments": len(rows), "transcript_characters": text_length,
+                                                                  "language": info.language,
+                                                                  "word_segments": sum(len(row.words) for row in rows),
+                                                                  "recording_duration_seconds": recording_duration,
+                                                                  "hardware_acceptance": "not_claimed_by_this_process"})
+        else:
+            from faster_whisper import WhisperModel
+            if not (model / "model.bin").is_file():
+                raise RuntimeError("Verified local Whisper Large-v3 model directory is unavailable.")
+            device = os.environ.get("SPEECHCRAFT_PROBE_DEVICE", "cpu")
+            compute = "float16" if device == "cuda" else "int8"
+            engine = WhisperModel(str(model), device=device, compute_type=compute, local_files_only=True)
+            segments, info = engine.transcribe(str(recording), beam_size=1)
+            rows = list(segments)
+            text_length = sum(len(row.text.strip()) for row in rows)
+            if not rows or text_length == 0:
+                raise RuntimeError("Whisper inference completed without a nonempty transcript.")
+            result.update(identity=f"whisper-large-v3-ct2:{digest(model / 'model.bin')}",
+                          backend=f"faster-whisper/ctranslate2:{compute}", device=device,
+                          inference_completed=True, measurements={"segments": len(rows), "transcript_characters": text_length,
+                                                                  "language": info.language,
+                                                                  "recording_duration_seconds": recording_duration})
     elif component == "titanet":
         import numpy as np
         import soundfile as sf
