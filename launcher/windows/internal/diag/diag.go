@@ -35,5 +35,5 @@ func Wrap(code string, exit int, err error) *Error {
 }
 
 func Networking(url string) string {
-	return fmt.Sprintf("SpeechCraft is running, but Windows could not reach %s. Check that WSL2 localhost forwarding is enabled for NAT mode, or that mirrored networking is in use. The application was left running. SpeechCraft will not change Windows firewall rules, create a netsh portproxy listener, or bind its services to a public address.", url)
+	return fmt.Sprintf("SpeechCraft is running, but Windows could not reach %s. Check that WSL2 localhost forwarding is enabled for NAT mode, or that mirrored networking is in use. The application was left running. SpeechCraft will not change Windows firewall rules, publish a Windows port forward, or bind its services to a public address.", url)
 }
