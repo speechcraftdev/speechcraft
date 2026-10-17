@@ -87,6 +87,14 @@ def install_archive(archive_arg, home):
             staged_command.unlink()
         staged_command.write_text(f'#!/bin/sh\nexec "{published}/bin/speechcraft" "$@"\n', encoding="utf8")
         os.chmod(staged_command, 0o755)
+        zshrc = root / ".zshrc"
+        marker = "# SpeechCraft user command"
+        path_line = f'export PATH="$HOME/Library/Application Support/SpeechCraft/bin:$PATH"'
+        existing = zshrc.read_text("utf8") if zshrc.is_file() and not zshrc.is_symlink() else ""
+        if marker not in existing:
+            addition = f"\n{marker}\n{path_line}\n"
+            with open(zshrc, "a", encoding="utf8") as shell_config:
+                shell_config.write(addition)
         current = app_base / "current"
         previous = os.readlink(current) if current.is_symlink() else None
         temporary = app_base / ".current-next"

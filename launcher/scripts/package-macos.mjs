@@ -102,7 +102,7 @@ if (!isMain) {
     const from = path.join(source, relative);
     const to = path.join(appRoot, relative);
     fs.mkdirSync(path.dirname(to), { recursive: true });
-    fs.cpSync(from, to, { recursive: true });
+    fs.cpSync(from, to, { recursive: true, dereference: true });
   }
   const wheelOut = path.join(work, 'wheel');
   fs.mkdirSync(wheelOut);
