@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import test from 'node:test';
-import { BootstrapError, BootstrapTasks, extractUvArchive, reconcileOwnedProcess, runOwnedProcess } from '../src/bootstrap.js';
+import { BootstrapError, BootstrapTasks, extractUvArchive, reconcileOwnedProcess, runOwnedProcess, stageWorkerBuildSources } from '../src/bootstrap.js';
 import { SetupController } from '../src/controller.js';
 import { StateStore } from '../src/state-store.js';
 
@@ -35,6 +35,45 @@ function archiveFor(files) {
     tarEntry(`fixture-uv/${name}`, Buffer.from(value), '0')), Buffer.alloc(1024)];
   return gzipSync(Buffer.concat(entries));
 }
+
+function setTreeMode(directory, mode) {
+  const info = fs.lstatSync(directory);
+  if (info.isDirectory() && !info.isSymbolicLink()) {
+    for (const name of fs.readdirSync(directory)) setTreeMode(path.join(directory, name), mode);
+  }
+  fs.chmodSync(directory, mode);
+}
+
+test('worker dependency builds use a writable managed copy of the verified read-only release sources', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-worker-source-staging-'));
+  const app = path.join(root, 'release'); const data = path.join(root, 'data');
+  const profile = path.join(app, 'workers/dataset/runtime-profiles/linux-x86_64-cpu');
+  const manager = path.join(app, 'packages/model_manager');
+  fs.mkdirSync(profile, { recursive: true }); fs.mkdirSync(manager, { recursive: true }); fs.mkdirSync(data);
+  fs.writeFileSync(path.join(profile, 'pyproject.toml'), '[project]\nname="cpu-profile"\n');
+  fs.writeFileSync(path.join(profile, 'uv.lock'), 'locked recipe\n');
+  fs.writeFileSync(path.join(manager, 'pyproject.toml'), '[project]\nname="speechcraft-model-manager"\n');
+  fs.writeFileSync(path.join(manager, 'README.md'), 'packaged local dependency\n');
+  fs.mkdirSync(path.join(manager, 'speechcraft_models'));
+  fs.writeFileSync(path.join(manager, 'speechcraft_models/cli.py'), 'value = 1\n');
+  setTreeMode(app, 0o555);
+  try {
+    const stagedProfile = stageWorkerBuildSources(app, data, path.join(data, 'staging/attempt-test'),
+      'workers/dataset/runtime-profiles/linux-x86_64-cpu');
+    const stagedManager = path.join(data, 'staging/attempt-test/worker-source/packages/model_manager');
+    const stagedWorker = path.join(data, 'staging/attempt-test/worker-source/workers/dataset');
+    assert.equal(path.join(stagedProfile, '../../../../packages/model_manager'), stagedManager);
+    assert.equal(path.join(stagedProfile, '../..'), stagedWorker);
+    assert.ok(fs.statSync(stagedManager).mode & 0o200, 'the local dependency directory must be writable by uv');
+    assert.ok(fs.statSync(path.join(stagedManager, 'pyproject.toml')).mode & 0o200, 'the build metadata must be writable');
+    assert.equal(fs.readFileSync(path.join(stagedManager, 'speechcraft_models/cli.py'), 'utf8'), 'value = 1\n');
+    assert.equal(fs.statSync(path.join(manager, 'pyproject.toml')).mode & 0o222, 0, 'the installed release must remain read-only');
+    assert.equal(fs.readFileSync(path.join(manager, 'pyproject.toml'), 'utf8'), '[project]\nname="speechcraft-model-manager"\n');
+  } finally {
+    setTreeMode(app, 0o700);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 const pythonProgram = String.raw`#!/usr/bin/env node
 const path = require('node:path');

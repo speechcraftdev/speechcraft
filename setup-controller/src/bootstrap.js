@@ -293,6 +293,46 @@ function validateNoSymlinks(directory) {
   }
 }
 
+function makeTreeWritable(directory) {
+  const info = fs.lstatSync(directory);
+  if (info.isSymbolicLink()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'A staged worker source contains a symbolic link.');
+  if (info.isDirectory()) {
+    fs.chmodSync(directory, 0o700);
+    for (const name of fs.readdirSync(directory)) makeTreeWritable(path.join(directory, name));
+    return;
+  }
+  if (!info.isFile()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'A staged worker source contains an unsupported filesystem object.');
+  fs.chmodSync(directory, (info.mode & 0o777) | 0o600);
+}
+
+export function stageWorkerBuildSources(applicationRoot, dataDirectory, stagingRoot, projectRelative) {
+  const sourceRoot = fs.realpathSync(applicationRoot);
+  const stage = ensureManagedDirectory(dataDirectory, stagingRoot);
+  const destination = path.join(stage, 'worker-source');
+  assertInside(fs.realpathSync(dataDirectory), destination);
+  if (fs.existsSync(destination)) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'The private worker source staging path already exists.');
+  const sources = [
+    ['workers/dataset', path.join(destination, 'workers/dataset')],
+    ['packages/model_manager', path.join(destination, 'packages/model_manager')],
+  ];
+  for (const [relative, target] of sources) {
+    const source = path.resolve(sourceRoot, relative);
+    assertInside(sourceRoot, source);
+    const info = fs.lstatSync(source);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'A packaged worker build source is not a regular directory.');
+    validateNoSymlinks(source);
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+    fs.cpSync(source, target, { recursive: true, errorOnExist: true });
+    makeTreeWritable(target);
+  }
+  const projectSource = path.resolve(sourceRoot, projectRelative);
+  assertInside(path.join(sourceRoot, 'workers/dataset'), projectSource);
+  const project = path.resolve(destination, projectRelative);
+  assertInside(path.join(destination, 'workers/dataset'), project);
+  if (!fs.statSync(project).isDirectory()) throw new BootstrapError('WORKER_SOURCE_STAGING_FAILED', 'The selected worker profile was not staged.');
+  return project;
+}
+
 function removeOwnedDirectory(root, target) {
   const absolute = path.resolve(target);
   assertInside(root, absolute);
@@ -1604,7 +1644,18 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     this.requireSpace((recipe.estimated_bytes || 0) + (this.runtimeRecipe.disk_space.safety_margin_bytes || 0));
     const env = { ...this.makeEnvironment(this.paths), UV_PROJECT_ENVIRONMENT: target };
     this.emit(context, safeProgress('installing', `Installing the trusted ${selection.workerProfile} worker environment.`));
-    await this.runProcess(this.paths.uvExecutable, ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', project], context, { cwd: project, env });
+    // Release files are deliberately read-only. uv's local path dependency
+    // builds (notably the model manager) create egg-info/build artifacts in
+    // their source directories, so stage the already-verified recipe and its
+    // local packages inside this managed attempt directory before syncing.
+    const stagedProject = stageWorkerBuildSources(this.applicationRoot, this.dataDirectory,
+      this.attemptDirectory(context), relativeProject);
+    const stagedLock = path.join(stagedProject, path.relative(project, lock));
+    if (!trustedFileMatches(stagedLock, recipe.lock_sha256)
+        || !trustedFileMatches(path.join(stagedProject, 'pyproject.toml'), recipe.project_manifest_sha256)) {
+      throw new BootstrapError('WORKER_SOURCE_STAGING_FAILED', 'The staged worker recipe does not match its trusted identities.');
+    }
+    await this.runProcess(this.paths.uvExecutable, ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', stagedProject], context, { cwd: stagedProject, env });
     const result = await this.runProcess(python, ['-I', '-c', probe], context, { cwd: project });
     parseProbe(result, 'SPEECHCRAFT_WORKER_ENV_PROBE', 'WORKER_ENVIRONMENT_INVALID');
     this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${recipe.environment_version}/${selection.workerProfile}`,
