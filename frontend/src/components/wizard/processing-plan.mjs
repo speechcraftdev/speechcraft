@@ -12,6 +12,12 @@ export const DATASET_RUN_API_STOP_AFTER = Object.freeze([
   "native_export",
 ]);
 
+// The backend persists this stage as `candidate_clips`; the setup wizard and
+// worker recipe call it `candidate_review_clips`.
+const BACKEND_STAGE_ALIASES = Object.freeze({
+  candidate_review_clips: "candidate_clips",
+});
+
 export function wizardRunOptions(stopAfter = WIZARD_INITIAL_STOP_AFTER) {
   if (!DATASET_RUN_API_STOP_AFTER.includes(stopAfter)) {
     throw new Error(`Unsupported dataset run stage: ${stopAfter}`);
@@ -27,5 +33,6 @@ export function wizardResumeOptions(stopAfter = WIZARD_SELECTED_SPEAKER_STOP_AFT
 }
 
 export function completedAtStage(run, stage) {
-  return run?.status === "completed" && run?.stage === stage;
+  return run?.status === "completed" &&
+    (run?.stage === stage || run?.stage === BACKEND_STAGE_ALIASES[stage]);
 }
