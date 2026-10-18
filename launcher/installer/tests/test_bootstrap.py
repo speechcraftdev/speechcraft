@@ -172,6 +172,22 @@ printf 'https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.0/%
         self.assertIn("system Python 3.9 or newer is required", result.stderr)
         self.assert_clean_tmp()
 
+    def test_missing_mktemp_is_explained_before_download(self):
+        limited_path = self.root / "limited-path"
+        limited_path.mkdir()
+        for name, target in (("python3", os.path.realpath(os.sys.executable)),
+                             ("curl", str(self.mockbin / "curl")),
+                             ("uname", str(self.mockbin / "uname"))):
+            (limited_path / name).symlink_to(target)
+        env = {**os.environ, "HOME": str(self.home), "TMPDIR": str(self.tmpdir),
+               "TEST_ASSET_DIR": str(self.assets), "INSTALL_MARKER": str(self.marker),
+               "PATH": str(limited_path)}
+        result = subprocess.run(["/bin/sh", str(self.script)], env=env, text=True,
+                                capture_output=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("mktemp is required", result.stderr)
+        self.assert_clean_tmp()
+
     def test_interrupted_download_fails_and_cleans_up(self):
         result = self.run_bootstrap(MOCK_CURL_FAIL="1")
         self.assertNotEqual(result.returncode, 0)

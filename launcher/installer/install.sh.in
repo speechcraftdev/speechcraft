@@ -27,6 +27,8 @@ command -v python3 >/dev/null 2>&1 || fail 'system Python 3.9 or newer is requir
 python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
   || fail 'system Python 3.9 or newer is required; install it using your OS package manager and retry.'
 command -v curl >/dev/null 2>&1 || fail 'curl is required to download the release.'
+command -v mktemp >/dev/null 2>&1 || fail 'mktemp is required to create a private download directory.'
+command -v rm >/dev/null 2>&1 || fail 'rm is required to clean up the private download directory.'
 
 tmp_root=${TMPDIR:-/tmp}
 tmp_dir=$(mktemp -d "$tmp_root/speechcraft-install.XXXXXXXX") || fail 'could not create a temporary download directory.'
