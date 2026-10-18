@@ -20,6 +20,15 @@ if gh release view "$tag" --repo speechcraftdev/speechcraft >/dev/null 2>&1; the
   printf 'Refusing to overwrite existing release %s.\n' "$tag" >&2
   exit 1
 fi
+tag_ref="refs/tags/$tag"
+tag_record=$(gh api "repos/speechcraftdev/speechcraft/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha' 2>/dev/null || true)
+if [ -n "$tag_record" ]; then
+  set -- $tag_record
+  if [ "$1" != commit ] || [ "$2" != "$revision" ]; then
+    printf 'Refusing to reuse or move existing tag %s.\n' "$tag" >&2
+    exit 1
+  fi
+fi
 
 release_work=$(mktemp -d "${TMPDIR:-/tmp}/speechcraft-release.XXXXXXXX")
 output="$release_work/assets"
@@ -65,15 +74,7 @@ for item in sorted(output.iterdir()):
 (output / 'VERIFICATION.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 PY
 printf 'SpeechCraft %s Linux x86-64 candidate release.\n\nSource commit: `%s`\n\nSee the uploaded `VERIFICATION.md` for archive SHA-256, model-manager wheel identity, asset hashes, and test status.\n\nSupport status: Linux x86-64 package only. macOS Apple Silicon and Windows WSL2 packages are development artifacts and are not production-supported.\n\nThis release is a draft for authenticated inspection. It is not publicly downloadable and does not yet have a bootstrap-verified independent publisher signature/attestation. FFmpeg redistribution review and TitaNet provenance approval remain unresolved; do not publish this release until those gates are documented as cleared. No model weights or developer credentials are included.\n' "$(node -p "require('./frontend/package.json').version")" "$revision" > "$notes"
-tag_ref="refs/tags/$tag"
-tag_record=$(gh api "repos/speechcraftdev/speechcraft/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha' 2>/dev/null || true)
-if [ -n "$tag_record" ]; then
-  set -- $tag_record
-  if [ "$1" != commit ] || [ "$2" != "$revision" ]; then
-    printf 'Refusing to reuse or move existing tag %s.\n' "$tag" >&2
-    exit 1
-  fi
-else
+if [ -z "$tag_record" ]; then
   gh api repos/speechcraftdev/speechcraft/git/refs --method POST -f ref="$tag_ref" -f sha="$revision" >/dev/null
 fi
 gh release create "$tag" "$output"/* --repo speechcraftdev/speechcraft --target "$revision" --draft \

@@ -49,6 +49,7 @@ class BootstrapTests(unittest.TestCase):
         (self.mockbin / "curl").write_text("""#!/bin/sh
 set -eu
 if [ "${MOCK_CURL_FAIL:-}" = 1 ]; then printf partial > "$out"; exit 28; fi
+if [ "${MOCK_CURL_HTTP_STATUS:-}" = 404 ]; then exit 22; fi
 out=
 url=
 while [ "$#" -gt 0 ]; do
@@ -160,6 +161,13 @@ printf 'https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.0/%
 
     def test_interrupted_download_fails_and_cleans_up(self):
         result = self.run_bootstrap(MOCK_CURL_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("download failed", result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assert_clean_tmp()
+
+    def test_unavailable_release_asset_404_fails_and_cleans_up(self):
+        result = self.run_bootstrap(MOCK_CURL_HTTP_STATUS="404")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("download failed", result.stderr)
         self.assertFalse(self.marker.exists())
