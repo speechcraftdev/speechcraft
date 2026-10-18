@@ -134,6 +134,8 @@ async function snapshotBuild() {
       'workers/dataset/speechcraft_dataset', 'workers/dataset/scripts/preflight.py', 'workers/dataset/scripts/runtime_probe.py',
       'workers/dataset/runtime-fixtures', 'workers/dataset/runtime-profiles', 'workers/dataset/pyproject.toml',
       'workers/dataset/uv.lock', 'workers/dataset/model-catalog.json', 'workers/dataset/model-manifest.schema.json',
+      'packages/model_manager/pyproject.toml', 'packages/model_manager/README.md',
+      'packages/model_manager/speechcraft_models',
       'LICENSE', 'launcher/README.md',
       'workers/dataset/TITANET-ONNX-PROVENANCE.md', 'workers/dataset/RUNTIME_PROFILES.md',
       'workers/dataset/MODEL_STORAGE.md', 'packages/model_manager/PROVENANCE.md',

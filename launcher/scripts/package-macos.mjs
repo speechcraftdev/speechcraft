@@ -98,6 +98,7 @@ if (!isMain) {
     'workers/dataset/speechcraft_dataset', 'workers/dataset/scripts/preflight.py', 'workers/dataset/scripts/runtime_probe.py',
     'workers/dataset/pyproject.toml', 'workers/dataset/uv.lock', 'workers/dataset/model-catalog.json', 'workers/dataset/model-manifest.schema.json',
     'workers/dataset/runtime-profiles/macos-arm64', 'workers/dataset/runtime-profiles/linux-cpu', 'workers/dataset/runtime-fixtures',
+    'packages/model_manager/pyproject.toml', 'packages/model_manager/README.md', 'packages/model_manager/speechcraft_models',
   ]) {
     const from = path.join(source, relative);
     const to = path.join(appRoot, relative);
