@@ -916,9 +916,12 @@ export class BootstrapTasks {
       if (uvVerified) {
         try {
           const python = await this.findPython(context);
-          await this.verifyPython(python, context);
+          const pythonInfo = await this.verifyPython(python, context);
           this.status(context, { python_verified: true, python_version: this.manifest.python.version,
             python_executable: python });
+          this.setComponent(context, 'managed_python', { state: 'verified', identity: `CPython ${pythonInfo.version}`,
+            verification: 'runtime_probe', last_verified_at: new Date().toISOString(), failure_code: null,
+            message: null, path: python });
           try {
             const manager = await this.findInstalledModelManager(context);
             this.paths.environmentRoot = manager.environmentRoot;
