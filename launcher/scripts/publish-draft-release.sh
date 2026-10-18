@@ -21,13 +21,14 @@ if gh release view "$tag" --repo speechcraftdev/speechcraft >/dev/null 2>&1; the
   exit 1
 fi
 tag_ref="refs/tags/$tag"
-tag_record=$(gh api "repos/speechcraftdev/speechcraft/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha' 2>/dev/null || true)
-if [ -n "$tag_record" ]; then
+if tag_record=$(gh api "repos/speechcraftdev/speechcraft/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha' 2>/dev/null); then
   set -- $tag_record
   if [ "$1" != commit ] || [ "$2" != "$revision" ]; then
     printf 'Refusing to reuse or move existing tag %s.\n' "$tag" >&2
     exit 1
   fi
+else
+  tag_record=
 fi
 
 release_work=$(mktemp -d "${TMPDIR:-/tmp}/speechcraft-release.XXXXXXXX")
