@@ -86,6 +86,19 @@ printf 'https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.0/%
         self.assertIn("SpeechCraft 0.1.0 is installed", result.stdout)
         self.assert_clean_tmp()
 
+    def test_numbered_internal_release_tag_is_bound_to_application_version(self):
+        output = self.root / "internal"
+        output.mkdir()
+        for item in self.assets.iterdir():
+            if item.name != "install.sh":
+                shutil.copyfile(item, output / item.name)
+        source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.0-internal.1",
+                        "--source-revision", source_revision, "--output", str(output)],
+                       cwd=ROOT, check=True, capture_output=True)
+        self.assertIn("RELEASE_TAG='v0.1.0-internal.1'", (output / "install.sh").read_text())
+        self.assertIn("APP_VERSION='0.1.0'", (output / "install.sh").read_text())
+
     def test_unexpected_arguments_are_rejected_before_download(self):
         env = {**os.environ, "HOME": str(self.home), "TMPDIR": str(self.tmpdir),
                "TEST_ASSET_DIR": str(self.assets), "INSTALL_MARKER": str(self.marker),

@@ -53,13 +53,13 @@ Do not substitute a moving `latest` URL or treat a checksum beside the archive a
 
 The builder pins every package input to the exact 40-character source commit. It exports source with `git archive`, records that revision in package metadata, and the bootstrap generator rejects mismatched source revision, version, platform, archive size, or digest. It does not build from uncommitted or untracked application source. This makes the build inputs and recipe repeatable; generated frontend and wheel output are not claimed to be byte-for-byte identical across rebuilds. The release records hashes for the actual uploaded files. Do not reuse a tag or replace an existing asset.
 
-From a clean checkout at the exact source commit, run:
+From a clean checkout at the exact source commit, run a new semantic-version tag for a release candidate, or a numbered internal tag for an authenticated draft build:
 
 ```sh
-launcher/scripts/publish-draft-release.sh v0.1.0 <40-character-source-commit>
+launcher/scripts/publish-draft-release.sh v0.1.0-internal.1 <40-character-source-commit>
 ```
 
-The command runs bootstrap and official-installer tests, builds the Linux package and release-specific `install.sh`, runs the installed-package smoke, writes a `VERIFICATION.md` report, creates the version tag on the exact source commit if it does not already exist, then calls `gh release create --draft`. It refuses an existing release or a tag that points elsewhere, and never force-moves a tag. The release includes the archive, checksum, release JSON manifest, `install.sh`, official `install-linux.py` and `install-linux.sh`, and the verification report. Its notes record the source commit, platform support status, and unresolved publication and trust gates. Inspect draft asset contents through authenticated `gh release download`; users cannot anonymously download draft assets.
+The command runs bootstrap and official-installer tests, builds the Linux package and release-specific `install.sh`, runs the installed-package smoke, writes a `VERIFICATION.md` report, creates the version tag on the exact source commit if it does not already exist, then calls `gh release create --draft`. It refuses an existing release or a tag that points elsewhere, and never force-moves a tag. A `vX.Y.Z-internal.N` tag retains application version `X.Y.Z` and is explicitly an authenticated, non-public candidate identity. The release includes the archive, checksum, release JSON manifest, `install.sh`, official `install-linux.py` and `install-linux.sh`, and the verification report. Its notes record the source commit, platform support status, and unresolved publication and trust gates. Inspect draft asset contents through authenticated `gh release download`; users cannot anonymously download draft assets.
 
 The manual GitHub Actions workflow in `.github/workflows/release-draft.yml` runs the same command with least-privilege `contents: write`. It takes an exact commit and a never-before-used semantic version tag. It creates draft assets only. The checked-out commit must already be reachable from `main`.
 

@@ -2,12 +2,12 @@
 set -eu
 
 if [ "$#" -ne 2 ]; then
-  printf 'Usage: %s vX.Y.Z 40-character-source-commit\n' "$0" >&2
+  printf 'Usage: %s vX.Y.Z[-internal.N] 40-character-source-commit\n' "$0" >&2
   exit 2
 fi
 tag=$1
 revision=$2
-case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) printf 'Release tag must be a new immutable vX.Y.Z tag.\n' >&2; exit 2 ;; esac
+case "$tag" in v[0-9]*.[0-9]*.[0-9]*|v[0-9]*.[0-9]*.[0-9]*-internal.[1-9]*) ;; *) printf 'Release tag must be a new immutable vX.Y.Z tag or numbered internal candidate.\n' >&2; exit 2 ;; esac
 case "$revision" in *[!0-9a-f]*|'') printf 'Source revision must be a lowercase 40-character Git commit.\n' >&2; exit 2 ;; esac
 [ "${#revision}" -eq 40 ] || { printf 'Source revision must be a lowercase 40-character Git commit.\n' >&2; exit 2; }
 

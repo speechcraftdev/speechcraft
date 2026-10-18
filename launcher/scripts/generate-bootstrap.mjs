@@ -11,8 +11,8 @@ const value = (flag) => { const index = args.indexOf(flag); return index < 0 ? n
 const output = value('--output');
 const tag = value('--tag');
 const revision = value('--source-revision');
-if (!output || !/^v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][a-zA-Z0-9.-]+)?$/.test(tag || '') || !/^[a-f0-9]{40}$/.test(revision || '')) {
-  throw new Error('Usage: node launcher/scripts/generate-bootstrap.mjs --tag vX.Y.Z --source-revision 40-character-commit --output DIRECTORY');
+if (!output || !/^v[0-9]+\.[0-9]+\.[0-9]+(?:-internal\.[1-9][0-9]*)?$/.test(tag || '') || !/^[a-f0-9]{40}$/.test(revision || '')) {
+  throw new Error('Usage: node launcher/scripts/generate-bootstrap.mjs --tag vX.Y.Z[-internal.N] --source-revision 40-character-commit --output DIRECTORY');
 }
 const destination = path.resolve(output);
 const run = spawnSync('git', ['rev-parse', `${revision}^{commit}`], { cwd: root, encoding: 'utf8', shell: false });
@@ -34,7 +34,7 @@ const versionResult = spawnSync('git', ['show', `${revision}:frontend/package.js
 if (versionResult.status !== 0) throw new Error('Could not read the application version from the pinned source commit.');
 const sourceVersion = JSON.parse(versionResult.stdout).version;
 if (!/^\d+\.\d+\.\d+$/.test(sourceVersion)) throw new Error('Pinned application version must be a plain numeric semantic version.');
-if (tag !== `v${sourceVersion}`) throw new Error(`Release tag must match the pinned application version v${sourceVersion}.`);
+if (tag !== `v${sourceVersion}` && !tag.startsWith(`v${sourceVersion}-internal.`)) throw new Error(`Release tag must match the pinned application version v${sourceVersion}, optionally with an internal candidate suffix.`);
 if (archive !== `speechcraft-${sourceVersion}-linux-x86_64.tar.gz`) throw new Error('Linux archive filename does not match the pinned application version and platform.');
 if (manifest.platform !== 'linux-x86_64' || manifest.source_revision !== revision || manifest.application_version !== sourceVersion
   || manifest.archive !== archive || manifest.archive_sha256 !== archiveSha || manifest.archive_size_bytes !== fs.statSync(archivePath).size) {
