@@ -1,5 +1,7 @@
 # Linux application package and launcher
 
+Public download flow, supported-platform status, release trust, draft creation, and the legal publication gate are documented in [DISTRIBUTION.md](DISTRIBUTION.md). The only production-targeted installer is currently Linux x86-64; a public bootstrap URL is intentionally not advertised while release redistribution review remains open.
+
 ## Install and launch
 
 Builds produce a versioned Linux x86-64 archive and a local per-user installer. The source checkout itself is not an installed application.
