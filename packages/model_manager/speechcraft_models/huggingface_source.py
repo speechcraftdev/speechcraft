@@ -5,13 +5,14 @@ import re
 import io
 import shutil
 import stat
+import traceback
 from pathlib import Path
 
 # This is an explicit filename allowlist in addition to the packaged catalog.
 # Extend only alongside reviewed catalog records.
 PUBLIC_REPOSITORIES = {
-    "csukuangfj/speaker-embedding-models": frozenset({
-        "nemo_en_titanet_large.onnx",
+    "Wespeaker/wespeaker-ecapa-tdnn512-LM": frozenset({
+        "voxceleb_ECAPA512_LM.onnx",
     }),
     "Systran/faster-whisper-large-v3": frozenset({
         "config.json", "model.bin", "preprocessor_config.json",
@@ -38,9 +39,46 @@ GATED_REPOSITORIES = {
 
 class HuggingFaceAcquisitionError(RuntimeError):
     """Safe diagnostic without signed URLs or request credentials."""
-    def __init__(self, message: str, *, transient: bool = False):
+    def __init__(self, message: str, *, transient: bool = False,
+                 diagnostic: dict[str, str | int] | None = None):
         super().__init__(message)
         self.transient = transient
+        self.diagnostic = diagnostic or {}
+
+
+def _safe_exception_diagnostic(exc: Exception) -> dict[str, object]:
+    """Return allowlisted structural details; never include upstream text or URLs."""
+    name = type(exc).__name__
+    diagnostic: dict[str, object] = {}
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,79}", name):
+        diagnostic["exception_type"] = name
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is None:
+        status = getattr(response, "status", None)
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        diagnostic["http_status"] = status
+    if isinstance(exc, AttributeError):
+        missing = getattr(exc, "name", None)
+        if isinstance(missing, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", missing):
+            diagnostic["attribute"] = missing
+        obj = getattr(exc, "obj", None)
+        object_type = type(obj).__name__ if obj is not None else None
+        if isinstance(object_type, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", object_type):
+            diagnostic["object_type"] = object_type
+    frames = []
+    tb = exc.__traceback__
+    while tb is not None:
+        frame = tb.tb_frame
+        module = frame.f_globals.get("__name__")
+        function = frame.f_code.co_name
+        if (isinstance(module, str) and re.fullmatch(r"[A-Za-z0-9_.]{1,160}", module)
+                and re.fullmatch(r"[A-Za-z0-9_]{1,100}", function)):
+            frames.append({"module": module, "function": function})
+        tb = tb.tb_next
+    if frames:
+        diagnostic["frames"] = frames[-4:]
+    return diagnostic
 
 
 def validate_request(repo_id: str, revision: str, filenames: list[str]) -> None:
@@ -109,7 +147,8 @@ def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], to
         raise
     except Exception as exc:
         code, message, transient = _safe_hf_code(exc)
-        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient) from None
+        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient,
+                                          diagnostic=_safe_exception_diagnostic(exc)) from None
 
     progress({"event": "authorization_status", "state": "checking_model_access", "source": "huggingface"})
     try:
@@ -128,28 +167,27 @@ def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], to
         raise
     except Exception as exc:
         code, message, transient = _safe_hf_code(exc)
-        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient) from None
+        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient,
+                                          diagnostic=_safe_exception_diagnostic(exc)) from None
 
-    class _FileProgress:
-        # snapshot_download's supported tqdm hook reports file completion. Byte
-        # values remain unknown rather than fabricating a percentage.
+    # snapshot_download's supported tqdm hook reports file completion. Byte
+    # values remain unknown rather than fabricating a percentage.
+    from tqdm.auto import tqdm
+    class _FileProgress(tqdm):
         def __init__(self, *args, **kwargs):
-            from tqdm.auto import tqdm
-            self._bar = tqdm(*args, **kwargs, disable=True)
+            kwargs["disable"] = True
+            super().__init__(*args, **kwargs)
 
         def update(self, n=1):
-            result = self._bar.update(n)
+            result = super().update(n)
             progress({"event": "source_progress", "source": "huggingface",
                       "state": "downloading", "current_file": None,
                       "downloaded_bytes": None, "transferred_bytes": None,
                       "total_bytes": total_bytes,
                       "transfer_indeterminate": True,
-                      "files_completed": int(self._bar.n),
-                      "files_total": int(self._bar.total) if self._bar.total is not None else None})
+                      "files_completed": int(self.n),
+                      "files_total": int(self.total) if self.total is not None else None})
             return result
-
-        def __getattr__(self, name):
-            return getattr(self._bar, name)
 
     try:
         progress({"event": "authorization_status", "state": "downloading", "source": "huggingface"})
@@ -175,7 +213,8 @@ def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], to
         raise
     except Exception as exc:
         code, message, transient = _safe_hf_code(exc)
-        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient) from None
+        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient,
+                                          diagnostic=_safe_exception_diagnostic(exc)) from None
 
 
 def acquire_public_snapshot(repo_id: str, revision: str, filenames: list[str],

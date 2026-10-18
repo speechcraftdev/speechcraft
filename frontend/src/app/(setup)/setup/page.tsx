@@ -8,7 +8,7 @@ import { ProgressDetails } from "@/lib/setup-progress-view";
 const modelTitles: Record<string, string> = {
   speech_detection: "Silero VAD",
   asr: "Whisper Large-v3",
-  speaker_purity: "TitaNet-Large",
+  speaker_purity: "WeSpeaker ECAPA-TDNN512-LM",
   diarization: "pyannote Community-1",
 };
 

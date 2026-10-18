@@ -20,7 +20,7 @@ from .eval_speaker_purity import (
     embedding_vector,
     iter_fixed_chunks,
     iter_sliding_windows,
-    load_titanet_model,
+    load_speaker_purity_model,
     prepare_window_samples,
     window_is_scorable,
 )
@@ -446,7 +446,7 @@ def evaluate_non_target_speakers(
     speaker_ids = unique_speaker_ids(context["speaker_regions"])
     rng = random.Random(config.seed)
 
-    model = load_titanet_model(model_name, device)
+    model = load_speaker_purity_model(model_name, device)
     centroids, voiceprints, enrollment_rows = enroll_speaker_centroids(
         model,
         speaker_regions=context["speaker_regions"],

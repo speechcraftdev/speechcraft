@@ -18,6 +18,9 @@ from speechcraft_dataset.eval_speaker_purity import (
     run_speaker_purity,
     window_is_scorable,
 )
+from speechcraft_dataset.wespeaker_ecapa_runtime import (
+    FRONTEND_ID, LICENSE, MODEL_ID, MODEL_REPO, MODEL_REVISION, MODEL_SHA256,
+)
 
 
 class EvalSpeakerPurityTests(unittest.TestCase):
@@ -123,8 +126,9 @@ class EvalSpeakerPurityTests(unittest.TestCase):
                                 "p10_window_similarity": 0.78,
                                 "scored_window_count": 8,
                                 "skipped_window_count": 0,
-                                "intruder_window_count": 1,
+                                "intruder_window_count": None,
                                 "worst_window_start_sec": 2.5,
+                                "bucket": "review_pending_calibration",
                                 "reason_codes": [],
                                 "windows": [
                                     {"start_sec": 2.5, "end_sec": 5.5, "similarity": 0.74},
@@ -140,7 +144,7 @@ class EvalSpeakerPurityTests(unittest.TestCase):
                     json.dumps({"speaker_id": "speaker_0", "embedding_dim": 3}),
                     encoding="utf-8",
                 )
-                return {"target_speaker_id": "speaker_0"}
+                return {"target_speaker_id": "speaker_0", "clip_count": 1, "scored_count": 1}
 
             with patch("speechcraft_dataset.eval_speaker_purity.evaluate_speaker_purity", side_effect=fake_evaluate):
                 summary = run_speaker_purity(run_root, {})
@@ -154,8 +158,18 @@ class EvalSpeakerPurityTests(unittest.TestCase):
             self.assertEqual(clip["speaker_score_method"], "min_valid_window_similarity")
             self.assertEqual(clip["bucket_hint"], "review")
             self.assertFalse(clip["speaker_score_calibrated"])
-            self.assertEqual(clip["suspicious_spans"][0]["similarity"], 0.74)
+            self.assertEqual(clip["suspicious_spans"], [])
+            self.assertEqual(clip["speaker_model_id"], MODEL_ID)
+            self.assertEqual(clip["speaker_model_repo"], MODEL_REPO)
+            self.assertEqual(clip["speaker_model_revision"], MODEL_REVISION)
+            self.assertEqual(clip["speaker_model_sha256"], MODEL_SHA256)
+            self.assertEqual(clip["speaker_model_license"], LICENSE)
+            self.assertEqual(clip["speaker_frontend"], FRONTEND_ID)
+            self.assertEqual(clip["speaker_score_calibration"], "uncalibrated_review_required")
+            self.assertEqual(artifact["embedding_backend"], "onnxruntime-cpu")
+            self.assertEqual(artifact["model"], MODEL_ID)
             summary_artifact = json.loads((artifacts / "speaker_purity_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary_artifact["bucket_hint_counts"]["review"], 1)
             self.assertTrue(0.0 <= summary_artifact["score_p10"] <= 100.0)
             self.assertTrue(0.0 <= summary_artifact["score_p50"] <= 100.0)
             self.assertTrue(0.0 <= summary_artifact["score_p90"] <= 100.0)
@@ -164,6 +178,25 @@ class EvalSpeakerPurityTests(unittest.TestCase):
             self.assertEqual(summary_artifact["score_p90"], 74.0)
             self.assertTrue((artifacts / "speaker_purity_summary.json").exists())
             self.assertTrue((artifacts / "target_voiceprint.json").exists())
+
+    def test_run_speaker_purity_rejects_nonempty_unscored_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_raw:
+            run_root = Path(temp_dir_raw)
+            with patch(
+                "speechcraft_dataset.eval_speaker_purity.evaluate_speaker_purity",
+                return_value={"clip_count": 2, "scored_count": 0},
+            ):
+                with self.assertRaisesRegex(RuntimeError, "no valid scored candidate clips"):
+                    run_speaker_purity(run_root, {})
+
+    def test_run_speaker_purity_rejects_empty_candidate_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_raw:
+            with patch(
+                "speechcraft_dataset.eval_speaker_purity.evaluate_speaker_purity",
+                return_value={"clip_count": 0, "scored_count": 0},
+            ):
+                with self.assertRaisesRegex(RuntimeError, "no valid scored candidate clips"):
+                    run_speaker_purity(Path(temp_dir_raw), {})
 
 
 if __name__ == "__main__":

@@ -191,8 +191,8 @@ try {
       value.profile = 'linux-x86_64'; value.runtime_profile = { profile: 'linux-x86_64', workerProfile: 'linux-x86_64-cpu', accelerator: 'cpu' };
       value.uv_verified = true; value.python_verified = true; value.model_manager_verified = true;
       for (const name of ['managed_python', 'backend_environment', 'worker_environment']) value.components[name] = { state: 'verified', verification: 'fixture', identity: `${name}:fixture` };
-      for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) value.components[name] = { state: 'runtime_ready', runtime_ready: true, verification: 'fixture', identity: `${name}:fixture` };
-      value.components.titanet.release_approved = false; value.components.ffmpeg.redistribution_approved = false;
+      for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa']) value.components[name] = { state: 'runtime_ready', runtime_ready: true, verification: 'fixture', identity: `${name}:fixture` };
+      value.components.ffmpeg.redistribution_approved = false;
       return value;
     }
   }

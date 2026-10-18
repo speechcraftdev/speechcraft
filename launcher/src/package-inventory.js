@@ -25,6 +25,20 @@ export const REQUIRED_RUNTIME_FILES = Object.freeze([
   'workers/dataset/runtime-fixtures/community1-two-voice.wav',
   'workers/dataset/runtime-profiles/linux-cpu/pyproject.toml',
   'workers/dataset/runtime-profiles/linux-cpu/uv.lock',
+  // Linux worker profiles resolve the model manager as a local path dependency
+  // while building the worker environment. The standalone model-manager wheel
+  // is also packaged for controller bootstrap, but does not replace this
+  // source project needed by uv when it synchronizes the worker lock.
+  'packages/model_manager/pyproject.toml',
+  'packages/model_manager/README.md',
+  'packages/model_manager/speechcraft_models/__init__.py',
+  'packages/model_manager/speechcraft_models/__main__.py',
+  'packages/model_manager/speechcraft_models/cli.py',
+  'packages/model_manager/speechcraft_models/download.py',
+  'packages/model_manager/speechcraft_models/huggingface_source.py',
+  'packages/model_manager/speechcraft_models/manifest.py',
+  'packages/model_manager/speechcraft_models/model-catalog.json',
+  'packages/model_manager/speechcraft_models/model-manifest.schema.json',
   'workers/dataset/model-catalog.json',
   'workers/dataset/model-manifest.schema.json',
 ]);

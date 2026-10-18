@@ -87,7 +87,7 @@ def load_config(config_path: Path | None, source_wavs: list[Path], *, single_spe
             ("silero_onnx_model_path", "SPEECHCRAFT_SILERO_ONNX_PATH"),
             ("silero_model_directory", "SPEECHCRAFT_SILERO_MODEL_DIR"),
             ("diarization_model_path", "SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH"),
-            ("speaker_purity_model_path", "SPEECHCRAFT_TITANET_ONNX_PATH"),
+            ("speaker_purity_model_path", "SPEECHCRAFT_ECAPA_ONNX_PATH"),
         ):
             value = os.environ.get(env_key, "").strip()
             if value:
@@ -115,6 +115,15 @@ def load_config(config_path: Path | None, source_wavs: list[Path], *, single_spe
             if not directory:
                 raise RuntimeError(f"Managed runtime is missing the verified {role} model directory.")
             verify_managed_model(role, directory, model_platform)
+        from .wespeaker_ecapa_runtime import MODEL_FILENAME
+
+        speaker_model_root = os.environ.get("SPEECHCRAFT_ECAPA_MODEL_PATH", "").strip()
+        speaker_model_path = config.get("speaker_purity_model_path")
+        expected_speaker_model_path = Path(speaker_model_root) / MODEL_FILENAME if speaker_model_root else None
+        if not speaker_model_path or expected_speaker_model_path is None \
+                or Path(speaker_model_path).expanduser() != expected_speaker_model_path:
+            raise RuntimeError("Managed runtime is missing the controller-verified WeSpeaker ECAPA model path.")
+        verify_managed_model("speaker_purity", speaker_model_root, model_platform)
     if not config.get("source_wavs"):
         raise ValueError("At least one source WAV is required")
     config["slicer"] = "VR"
