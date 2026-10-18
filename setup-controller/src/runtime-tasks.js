@@ -1,4 +1,4 @@
-import { BootstrapError, BootstrapTasks, ensureManagedDirectory, fetchArtifact } from './bootstrap.js';
+import { BootstrapError, BootstrapTasks, ensureManagedDirectory, fetchArtifact, stageWorkerBuildSources } from './bootstrap.js';
 import { PRODUCTION_STAGES, evaluateRuntimeReadiness, hashMatches, runtimeRoots, selectManagedFfmpeg, selectRuntimeProfile } from './runtime-plan.js';
 import { BackendService, reconcileOwnedService } from './backend-service.js';
 import { inspectHost } from './platform.js';
@@ -94,6 +94,11 @@ export class RuntimeTasks extends BootstrapTasks {
         message: 'The pinned CUDA worker lock or project manifest did not match the trusted runtime catalog.' });
       return;
     }
+    const workerSourceManifest = path.join(this.applicationRoot, this.runtimeRecipe.worker.project, 'pyproject.toml');
+    if (this.runtimeRecipe.worker.source_manifest_sha256
+        && !hashMatches(workerSourceManifest, this.runtimeRecipe.worker.source_manifest_sha256)) {
+      throw new BootstrapError('WORKER_SOURCE_INTEGRITY_FAILED', 'The worker source package manifest differs from its trusted runtime recipe.');
+    }
     const target = path.join(this.dataDirectory, 'environments', 'worker',
       `v${recipe.environment_version}-${recipe.lock_sha256.slice(0, 16)}-linux-x86_64-cuda`);
     const python = path.join(target, 'bin', 'python');
@@ -118,9 +123,19 @@ export class RuntimeTasks extends BootstrapTasks {
         const env = { ...this.makeEnvironment(this.paths), UV_PROJECT_ENVIRONMENT: target };
         this.emit(context, { phase: 'installing', current: null, total: null, percent: null,
           message: 'Installing the pinned CUDA worker candidate; CPU environment remains available.' });
+        // Local CUDA dependencies are built from the release worker sources.
+        // Keep uv/setuptools writes in managed staging because the installed
+        // release is immutable, just as for the ordinary CPU worker profile.
+        const stagedProject = stageWorkerBuildSources(this.applicationRoot, this.dataDirectory,
+          path.join(this.attemptDirectory(context), 'cuda-candidate'), recipe.project);
+        const stagedLock = path.join(stagedProject, path.relative(project, lock));
+        if (!hashMatches(stagedLock, recipe.lock_sha256)
+            || !hashMatches(path.join(stagedProject, 'pyproject.toml'), recipe.project_manifest_sha256)) {
+          throw new BootstrapError('WORKER_SOURCE_STAGING_FAILED', 'The staged CUDA worker recipe does not match its trusted identities.');
+        }
         await this.runProcess(this.paths.uvExecutable,
-          ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', project],
-          context, { cwd: project, env });
+          ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', stagedProject],
+          context, { cwd: stagedProject, env });
       }
       const libraryResult = await this.runProcess(python, ['-I', '-c', libraryQuery], context, { cwd: project });
       const libraryPaths = libraryResult.stdout.trim().split(':').filter((entry) => entry && path.resolve(entry).startsWith(`${path.resolve(target)}${path.sep}`));

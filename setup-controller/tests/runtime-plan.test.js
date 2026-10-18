@@ -128,10 +128,10 @@ test('runtime executor reports an explicitly unavailable worker recipe without p
 
 test('worker installer consumes only a complete trusted profile recipe and validates its isolated environment', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-worker-recipe-'));
-  const project = path.join(root, 'worker_fixture');
-  fs.mkdirSync(project);
   const sourceProject = path.join(root, 'workers', 'dataset');
-  fs.mkdirSync(sourceProject, { recursive: true });
+  const project = path.join(sourceProject, 'runtime-profiles', 'linux-cpu-test');
+  fs.mkdirSync(project, { recursive: true });
+  fs.mkdirSync(path.join(root, 'packages', 'model_manager'), { recursive: true });
   fs.writeFileSync(path.join(sourceProject, 'pyproject.toml'), '[project]\nname="source-fixture"\n');
   const lock = path.join(project, 'uv.lock'); const manifestFile = path.join(project, 'pyproject.toml');
   fs.writeFileSync(lock, 'fixture lock'); fs.writeFileSync(manifestFile, '[project]\nname="worker-fixture"\n');
@@ -140,7 +140,7 @@ test('worker installer consumes only a complete trusted profile recipe and valid
   runtimeRecipe.ffmpeg.available = false;
   runtimeRecipe.worker.source_manifest_sha256 = sha(path.join(sourceProject, 'pyproject.toml'));
   runtimeRecipe.worker.profiles['linux-x86_64-cpu'] = { available: true, validated: true,
-    project: 'worker_fixture', lockfile: 'uv.lock', lock_sha256: sha(lock), project_manifest_sha256: sha(manifestFile),
+    project: 'workers/dataset/runtime-profiles/linux-cpu-test', lockfile: 'uv.lock', lock_sha256: sha(lock), project_manifest_sha256: sha(manifestFile),
     environment_version: 1, python_version: '3.12.15', estimated_bytes: 1, validation_modules: ['json'] };
   runtimeRecipe.disk_space.safety_margin_bytes = 1;
   const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, runtimeRecipe,
@@ -154,7 +154,8 @@ test('worker installer consumes only a complete trusted profile recipe and valid
       return { code: 0, stdout: JSON.stringify({ kind: 'SPEECHCRAFT_WORKER_ENV_PROBE', profile: 'linux-x86_64-cpu', missing: [], python: args[0] }), stderr: '' };
     } });
   tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
-  tasks.paths = { uvExecutable: '/trusted/uv', pythonRoot: root, home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
+  tasks.paths = { uvExecutable: '/trusted/uv', pythonRoot: root, home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root,
+    stagingRoot: path.join(root, 'staging', 'bootstrap'), quarantineRoot: path.join(root, 'quarantine') };
   const context = { attemptId: '00000000-0000-4000-8000-000000000099', managedPython: '/managed/python',
     signal: new AbortController().signal, componentStatus: tasks.initialBootstrapStatus(),
     onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };
@@ -167,13 +168,26 @@ test('worker installer consumes only a complete trusted profile recipe and valid
 
 test('an interrupted CUDA candidate environment is quarantined and reinstalled from its pinned lock', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-cuda-candidate-repair-'));
-  const applicationRoot = path.resolve('..');
+  const applicationRoot = path.join(root, 'application');
+  fs.mkdirSync(path.join(applicationRoot, 'workers'), { recursive: true });
+  fs.cpSync(path.resolve('..', 'workers/dataset'), path.join(applicationRoot, 'workers/dataset'), { recursive: true, dereference: true });
+  fs.mkdirSync(path.join(applicationRoot, 'packages'), { recursive: true });
+  fs.cpSync(path.resolve('..', 'packages/model_manager'), path.join(applicationRoot, 'packages/model_manager'), { recursive: true, dereference: true });
+  for (const name of ['model-catalog.json', 'model-manifest.schema.json']) {
+    const target = path.join(applicationRoot, 'workers/dataset', name);
+    if (fs.lstatSync(target).isSymbolicLink()) {
+      const source = fs.realpathSync(target);
+      fs.unlinkSync(target);
+      fs.copyFileSync(source, target);
+    }
+  }
   const recipe = runtimeManifest.worker.profiles['linux-x86_64-cuda'];
   const target = path.join(root, 'environments', 'worker',
     `v${recipe.environment_version}-${recipe.lock_sha256.slice(0, 16)}-linux-x86_64-cuda`);
   fs.mkdirSync(target, { recursive: true }); // crash left a directory, but no usable interpreter
   const libraries = path.join(target, 'lib/python3.12/site-packages/nvidia');
   let installs = 0;
+  let processFailure = null;
   const calls = [];
   const report = { kind: 'SPEECHCRAFT_CUDA_ENV_PROBE', torch: '2.8.0', torchaudio: '2.8.0', cuda: '12.8',
     gpu: 'NVIDIA RTX fixture', ctranslate2: '4.7.2', ctranslate2_devices: 1,
@@ -181,10 +195,18 @@ test('an interrupted CUDA candidate environment is quarantined and reinstalled f
     torch_cuda_success: true };
   const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot, availableBytes: 32 * 1024 ** 3,
     processRunner: async (_executable, args, options) => {
+      try {
       calls.push(args[0]);
       const code = args[2] || '';
       if (args[0] === 'sync') {
         installs += 1;
+        const stagedProject = args[args.indexOf('--project') + 1];
+        assert.equal(options.cwd, stagedProject);
+        assert.notEqual(stagedProject, path.join(applicationRoot, recipe.project));
+        assert.match(stagedProject, /staging\/bootstrap\/attempt-[^/]+\/cuda-candidate\/worker-source\/workers\/dataset\/runtime-profiles\/linux-cuda$/);
+        assert.equal(fs.existsSync(path.join(stagedProject, 'pyproject.toml')), true);
+        assert.equal(createHash('sha256').update(fs.readFileSync(path.join(stagedProject, 'pyproject.toml'))).digest('hex'), recipe.project_manifest_sha256);
+        assert.equal(createHash('sha256').update(fs.readFileSync(path.join(stagedProject, recipe.lockfile))).digest('hex'), recipe.lock_sha256);
         fs.mkdirSync(path.join(target, 'bin'), { recursive: true });
         fs.writeFileSync(path.join(target, 'bin/python'), 'fixture python');
         for (const [pkg, filename] of [['cublas', 'libcublas.so.12'], ['cudnn', 'libcudnn.so.9'], ['cuda_runtime', 'libcudart.so.12']]) {
@@ -199,10 +221,12 @@ test('an interrupted CUDA candidate environment is quarantined and reinstalled f
         return { code: 0, stdout: JSON.stringify(report), stderr: '' };
       }
       throw new Error('unexpected CUDA candidate process');
+      } catch (error) { processFailure = error.message; throw error; }
     } });
   tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
   tasks.paths = { home: root, uvExecutable: '/trusted/uv', uvCache: root, pythonRoot: root,
     hfHome: root, hfHub: root, hfXet: root, temporary: root,
+    stagingRoot: path.join(root, 'staging', 'bootstrap'),
     quarantineRoot: path.join(root, 'quarantine') };
   fs.mkdirSync(tasks.paths.quarantineRoot, { recursive: true });
   const context = { attemptId: '00000000-0000-4000-8000-000000000142', managedPython: '/managed/python',
@@ -210,7 +234,8 @@ test('an interrupted CUDA candidate environment is quarantined and reinstalled f
   context.componentStatus.host_details = { cuda_candidate: true };
   await tasks.installCudaCandidate(context);
   assert.equal(installs, 1, JSON.stringify({ component: context.componentStatus.components.worker_cuda_candidate, calls }));
-  assert.equal(context.componentStatus.components.worker_cuda_candidate.state, 'verified');
+  assert.equal(context.componentStatus.components.worker_cuda_candidate.state, 'verified',
+    `${processFailure || 'no mocked process assertion failed'}: ${JSON.stringify(context.componentStatus.components.worker_cuda_candidate)}`);
   assert.equal(fs.existsSync(target), true);
   assert.equal(fs.readdirSync(path.join(root, 'quarantine')).some((name) => name.includes('invalid-cuda-env')), true);
   fs.rmSync(root, { recursive: true, force: true });
