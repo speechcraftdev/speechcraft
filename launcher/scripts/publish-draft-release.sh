@@ -64,7 +64,7 @@ lines = [
     f'- Model-manager wheel SHA-256: `{manifest["model_manager_wheel_sha256"]}`',
     '- Validation: bootstrap/installer unit tests and installed-package smoke passed before upload.',
     '- Trust status: internal candidate only. The bootstrap pins exact asset bytes, but this release has no independent publisher signature/attestation verified by the bootstrap.',
-    '- Public support: blocked pending FFmpeg redistribution compliance and TitaNet provenance review.',
+    '- Public support: blocked pending FFmpeg acquisition/redistribution review and confirmation of ECAPA CC BY 4.0 notice compliance.',
     '- Package contents: application/runtime files only; no model weights, credentials, local caches, or test datasets.',
     '', '## Uploaded asset SHA-256 values', ''
 ]
@@ -74,7 +74,7 @@ for item in sorted(output.iterdir()):
         lines.append(f'- `{item.name}` — `{digest}`')
 (output / 'VERIFICATION.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 PY
-printf 'SpeechCraft %s Linux x86-64 candidate release.\n\nSource commit: `%s`\n\nSee the uploaded `VERIFICATION.md` for archive SHA-256, model-manager wheel identity, asset hashes, and test status.\n\nSupport status: Linux x86-64 package only. macOS Apple Silicon and Windows WSL2 packages are development artifacts and are not production-supported.\n\nThis release is a draft for authenticated inspection. It is not publicly downloadable and does not yet have a bootstrap-verified independent publisher signature/attestation. FFmpeg redistribution review and TitaNet provenance approval remain unresolved; do not publish this release until those gates are documented as cleared. No model weights or developer credentials are included.\n' "$(node -p "require('./frontend/package.json').version")" "$revision" > "$notes"
+printf 'SpeechCraft %s Linux x86-64 candidate release.\n\nSource commit: `%s`\n\nSee the uploaded `VERIFICATION.md` for archive SHA-256, model-manager wheel identity, asset hashes, and test status.\n\nSupport status: Linux x86-64 package only. macOS Apple Silicon and Windows WSL2 packages are development artifacts and are not production-supported.\n\nThis release is a draft for authenticated inspection. It is not publicly downloadable and does not yet have a bootstrap-verified independent publisher signature/attestation. FFmpeg acquisition/redistribution review and ECAPA CC BY 4.0 notice compliance remain unresolved; do not publish this release until these gates are documented as cleared. No model weights or developer credentials are included.\n' "$(node -p "require('./frontend/package.json').version")" "$revision" > "$notes"
 if [ -z "$tag_record" ]; then
   gh api repos/speechcraftdev/speechcraft/git/refs --method POST -f ref="$tag_ref" -f sha="$revision" >/dev/null
 fi

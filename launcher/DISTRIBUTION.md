@@ -4,11 +4,11 @@
 
 | Platform | Package and installer | Validation | Distribution status |
 | --- | --- | --- | --- |
-| Linux x86-64 | Versioned application tarball; `install-linux.sh` calls the official per-user Python installer. Requires system Python 3.9+ and `curl`. | Existing installed-package smoke covers installation, repeat install, upgrade state preservation, local `/setup`, and operation without global Node/Bun. | Candidate only. Public release is blocked pending FFmpeg redistribution review and TitaNet provenance approval. |
+| Linux x86-64 | Versioned application tarball; `install-linux.sh` calls the official per-user Python installer. Requires system Python 3.9+ and `curl`. | Existing installed-package smoke covers installation, repeat install, upgrade state preservation, local `/setup`, and operation without global Node/Bun. | Candidate only. Public release is blocked pending FFmpeg acquisition/redistribution review and confirmation that ECAPA attribution and license notices satisfy distribution obligations. |
 | macOS Apple Silicon | ARM64 application archive and Python installer exist. | Archive cross-build and temporary-home registration were recorded; the Darwin Node binary and application were not run, and the package is unsigned and not notarized. | Development artifact; not production-ready. |
 | Windows x64 | Native PowerShell entry point for a Windows wrapper that dispatches into an existing Ubuntu WSL2 installation. It does not install WSL. | Native Windows and WSL2 acceptance has not been completed. | Development artifact; not production-ready. |
 
-The Linux bootstrap is the only production-targeted flow in this implementation. Model weights are not part of any package. Runtime and model preparation stays in the local `/setup` page. SpeechCraft binds its services to loopback.
+Linux x86-64 is the only target of the candidate bootstrap. Model weights are not part of any package. Runtime and model preparation stays in the local `/setup` page. SpeechCraft binds its services to loopback.
 
 ## Public installation status
 
@@ -69,9 +69,9 @@ The repository has an active `immutable version tags` ruleset for `refs/tags/v*`
 
 ## Licensing gate and publication
 
-Creating release infrastructure and uploading a draft are separate from publicly publishing an application. The source documentation marks FFmpeg redistribution and experimental TitaNet provenance as unresolved. The Linux application archive does not ship model weights or a prebuilt FFmpeg binary, but its runtime setup can acquire FFmpeg and contains the experimental TitaNet integration and provenance record. Those points remain blockers for publicly advertising or publishing SpeechCraft until the project documents clearance. A GitHub prerelease is public once published and does not satisfy this gate.
+Creating release infrastructure and uploading a draft are separate from publicly publishing an application. The current model catalog selects the WeSpeaker ECAPA-TDNN512-LM ONNX artifact at a pinned revision and records its publisher-declared CC BY 4.0 license, hash, provenance, and attribution in `packages/model_manager/PROVENANCE.md`. The superseded TitaNet candidate is historical and is not part of active setup or the current package. The Linux application archive contains neither model weights nor a prebuilt FFmpeg binary. Setup can acquire ECAPA weights and a pinned LGPL FFmpeg/FFprobe build at runtime. Public release still requires a documented review of the FFmpeg build's acquisition and redistribution implications and confirmation that the ECAPA license/attribution notices are correctly presented for the actual user download flow. Artifact hashes alone do not establish these permissions. A GitHub prerelease is public once published and does not satisfy this gate.
 
-Do not publish the draft until the project has documented applicable FFmpeg redistribution terms and resolved the TitaNet checkpoint/conversion rights. Keep the model manager's existing licensing and verification gates intact.
+Do not publish the draft until FFmpeg runtime acquisition and redistribution obligations have been reviewed and ECAPA's publisher-declared CC BY 4.0 terms and attribution have been checked against the in-product setup flow and included notices. The old TitaNet checkpoint/conversion blocker is superseded; its historical provenance record should remain for audit history. Keep the model manager's existing license and artifact-verification gates intact.
 
 ## Temporary host and later domain move
 
