@@ -41,7 +41,6 @@ const start = (dataDirectory, simulated = true) => spawn(path.join(home, '.local
   { cwd: base, env, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
 let app;
 let fakeBackend;
-let fakeBackendPort;
 let output = [];
 try {
   run('/usr/bin/python3', [installer, archive]);
@@ -66,8 +65,7 @@ try {
     }
     response.statusCode = 404; response.end();
   });
-  await new Promise((resolve, reject) => { fakeBackend.once('error', reject); fakeBackend.listen(0, '127.0.0.1', resolve); });
-  fakeBackendPort = fakeBackend.address().port;
+  await new Promise((resolve, reject) => { fakeBackend.once('error', reject); fakeBackend.listen(8010, '127.0.0.1', resolve); });
   const runtimeData = path.join(base, 'Runtime Mode Persistent Data');
   app = start(runtimeData, false);
   output = [];
@@ -187,7 +185,7 @@ try {
     import(pathToFileURL(path.join(releaseRoot, 'setup-controller/src/state-store.js'))),
   ]);
   class VerifiedRuntimeFixture extends RuntimeTasks {
-    constructor(options) { super(options); this.stages = ['verify_services']; this.service = { verify: async () => ({ port: fakeBackendPort }), stop: async () => {} }; }
+    constructor(options) { super(options); this.stages = ['verify_services']; this.service = { verify: async () => ({ port: 8010 }), stop: async () => {} }; }
     initialBootstrapStatus() {
       const value = super.initialBootstrapStatus();
       value.profile = 'linux-x86_64'; value.runtime_profile = { profile: 'linux-x86_64', workerProfile: 'linux-x86_64-cpu', accelerator: 'cpu' };
