@@ -640,9 +640,13 @@ class _Installer:
                     continue
                 report = verify_directory_fd(source_fd, artifact, str(source_path))
                 if report['integrity_verified']:
-                    for file in artifact['required_files']:
+                    for index, file in enumerate(artifact['required_files'], start=1):
                         self.emit('source_file_acquired', source='huggingface',
-                                  path=file['path'], size_bytes=file['size_bytes'])
+                                  path=file['path'], size_bytes=file['size_bytes'],
+                                  downloaded_bytes=None,
+                                  total_bytes=sum(item['size_bytes'] for item in artifact['required_files']),
+                                  transfer_indeterminate=True, files_completed=index,
+                                  files_total=len(artifact['required_files']))
                     return
                 if report['status'] in ('error', 'unsafe'):
                     raise InstallError('unsafe or unreadable Hugging Face download result')
@@ -674,6 +678,10 @@ class _Installer:
 
     def _install(self, role, platform, *, experimental=False):
         model_id, key, artifact = self.resolve(role, platform, experimental=experimental)
+        total_bytes = sum(item['size_bytes'] for item in artifact['required_files'])
+        previous_context = self._event_context.get()
+        self._event_context.set({**previous_context, 'model_total_bytes': total_bytes,
+                                 'files_total': len(artifact['required_files'])})
         _reject_wsl_windows_mount(self.root)
         if artifact.get('source', {}).get('type') == 'huggingface':
             _validate_huggingface_storage(self.root)
@@ -723,7 +731,6 @@ class _Installer:
                     return {**report, 'reused': True}
                 if report['status'] == 'error':
                     raise InstallError('existing installation has unsafe or unreadable files')
-            total_bytes = sum(f['size_bytes'] for f in artifact['required_files'])
             if artifact.get('source', {}).get('type') == 'huggingface':
                 stage_path = self.root / model_id / stage_name / '.hf-source'
                 self._check_huggingface_capacity(root, total_bytes, stage_path, artifact)
@@ -751,9 +758,13 @@ class _Installer:
                     payload_name = 'payload-' + uuid.uuid4().hex
                     os.mkdir(payload_name, mode=0o700, dir_fd=stage)
                     payload = _directory(stage, payload_name)
+                    completed_bytes = 0
                     for index, file in enumerate(artifact['required_files']):
-                        self.download_file(stage, index, file)
+                        self.download_file(stage, index, file, model_total_bytes=total_bytes,
+                                           completed_bytes=completed_bytes, files_completed=index,
+                                           files_total=len(artifact['required_files']))
                         self.materialize(stage, payload, index, file)
+                        completed_bytes += file['size_bytes']
                 self.emit('verifying')
                 report = verify_directory_fd(payload, artifact, str(path))
                 if (not report['integrity_verified']
@@ -817,7 +828,8 @@ class _Installer:
         finally:
             os.close(directory)
 
-    def download_file(self, stage, index, file):
+    def download_file(self, stage, index, file, *, model_total_bytes=None,
+                      completed_bytes=0, files_completed=0, files_total=None):
         fd = _file(stage, f'{index}.part', os.O_RDWR | os.O_CREAT)
         state_name = f'{index}.resume.json'
         try:
@@ -859,7 +871,10 @@ class _Installer:
                 elif size == file['size_bytes']:
                     if hasher.hexdigest() == file['sha256']:
                         os.fsync(fd)
-                        self.emit('file_verified', path=file['path'], reused=True)
+                        self.emit('file_verified', path=file['path'], reused=True,
+                                  downloaded_bytes=completed_bytes + size,
+                                  total_bytes=model_total_bytes or file['size_bytes'],
+                                  files_completed=files_completed + 1, files_total=files_total)
                         return
                     resumable = False
             if not resumable:
@@ -872,10 +887,16 @@ class _Installer:
             durable_hasher = hasher.copy()
             last_checkpoint = time.monotonic()
             for attempt in range(1, self.attempts + 1):
+                transfer_attempt_bytes = 0
                 headers = {'Accept-Encoding': 'identity', 'User-Agent': 'SpeechCraft-models/0.1'}
                 if size:
                     headers.update(Range=f'bytes={size}-', **{'If-Range': etag})
-                self.emit('downloading', path=file['path'], attempt=attempt, downloaded_bytes=size, total_bytes=file['size_bytes'])
+                self.emit('downloading', path=file['path'], attempt=attempt,
+                          downloaded_bytes=completed_bytes + size,
+                          total_bytes=model_total_bytes or file['size_bytes'],
+                          file_downloaded_bytes=size, file_total_bytes=file['size_bytes'],
+                          transfer_attempt_bytes=transfer_attempt_bytes,
+                          files_completed=files_completed, files_total=files_total)
                 try:
                     request = urllib.request.Request(file['url'], headers=headers)
                     with self.opener.open(request, timeout=self.timeout) as response:
@@ -918,6 +939,7 @@ class _Installer:
                             _write(fd, chunk)
                             hasher.update(chunk)
                             size += len(chunk)
+                            transfer_attempt_bytes += len(chunk)
                             checkpoint_due = (size - durable_size >= CHECKPOINT_BYTES
                                               or time.monotonic() - last_checkpoint >= CHECKPOINT_SECONDS)
                             if checkpoint_due and _strong_etag(etag):
@@ -928,7 +950,12 @@ class _Installer:
                                 durable_etag = etag
                                 durable_hasher = hasher.copy()
                                 last_checkpoint = time.monotonic()
-                            self.emit('progress', path=file['path'], downloaded_bytes=size, total_bytes=file['size_bytes'], attempt=attempt)
+                            self.emit('progress', path=file['path'], attempt=attempt,
+                                      downloaded_bytes=completed_bytes + size,
+                                      total_bytes=model_total_bytes or file['size_bytes'],
+                                      file_downloaded_bytes=size, file_total_bytes=file['size_bytes'],
+                                      transfer_attempt_bytes=transfer_attempt_bytes,
+                                      files_completed=files_completed, files_total=files_total)
                         if response.read(1):
                             os.ftruncate(fd, 0)
                             raise InstallError('transfer exceeds expected size')
@@ -941,7 +968,10 @@ class _Installer:
                         raise InstallError('download SHA-256 mismatch')
                     _checkpoint(stage, state_name, {'url': file['url'], 'etag': etag,
                                                     'size': size, 'sha256': hasher.hexdigest()})
-                    self.emit('file_verified', path=file['path'], reused=False)
+                    self.emit('file_verified', path=file['path'], reused=False,
+                              downloaded_bytes=completed_bytes + size,
+                              total_bytes=model_total_bytes or file['size_bytes'],
+                              files_completed=files_completed + 1, files_total=files_total)
                     return
                 except urllib.error.HTTPError as exc:
                     code, error = exc.code, str(exc)

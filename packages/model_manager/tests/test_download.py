@@ -276,6 +276,14 @@ class DownloadTests(unittest.TestCase):
         self.assertTrue(self.install()['reused'])
         self.assertEqual(len(self.server.requests), count)
         self.assertIn('progress', [e['event'] for e in self.events])
+        transfer = [event for event in self.events if event['event'] == 'progress']
+        expected_total = sum(item['size_bytes'] for item in self.artifact['required_files'])
+        self.assertTrue(transfer)
+        self.assertEqual(transfer[-1]['total_bytes'], expected_total)
+        self.assertEqual(transfer[-1]['downloaded_bytes'], expected_total)
+        self.assertEqual(transfer[-1]['files_total'], len(self.artifact['required_files']))
+        self.assertIn(transfer[-1]['path'], {item['path'] for item in self.artifact['required_files']})
+        self.assertGreater(transfer[-1]['transfer_attempt_bytes'], 0)
 
     def test_shared_community1_artifact_reuses_verified_linux_only_key(self):
         catalog = copy.deepcopy(load_catalog())
@@ -303,6 +311,10 @@ class DownloadTests(unittest.TestCase):
         with patch('speechcraft_models.download.CHECKPOINT_BYTES', 512):
             self.assertTrue(self.install()['install_ready'])
         self.assertEqual(self.server.requests[1][1:], ('bytes=1000-', '"fixture-v1"'))
+        resumed = [event for event in self.events if event.get('event') == 'downloading' and event.get('attempt') == 2]
+        self.assertTrue(resumed)
+        self.assertEqual(resumed[0]['downloaded_bytes'], 1000, 'the verified durable prefix remains visible')
+        self.assertEqual(resumed[0]['transfer_attempt_bytes'], 0, 'resumed cache bytes are excluded from new transfer speed')
 
     def test_server_ignoring_range_restarts(self):
         self.server.modes = ['drop', 'ignore_range']
@@ -815,6 +827,7 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual(event['platform'], 'windows-wsl2')
             self.assertEqual(event['state'], 'downloading')
             self.assertIsNone(event['transferred_bytes'])
+            self.assertIsNone(event['downloaded_bytes'])
             self.assertIsNone(event['current_file'])
             self.assertTrue(event['transfer_indeterminate'])
             self.assertEqual(event['total_bytes'], sum(map(len, files.values())))

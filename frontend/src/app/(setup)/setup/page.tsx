@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ensureSetupSession, ModelState, RuntimeComponent, SetupApiError, SetupStatus, setupApi, subscribeSetupEvents } from "@/lib/setup-api";
+import { ProgressDetails } from "@/lib/setup-progress-view";
 
 const modelTitles: Record<string, string> = {
   speech_detection: "Silero VAD",
@@ -66,12 +67,7 @@ function ModelRow({ model }: { model: ModelState }) {
       <span className="shrink-0 text-sm text-[#777]">{label}</span>
     </div>
     {message && <p className="mt-2 pl-[22px] text-sm text-[#777]">{message}{model.failure_code && <span className="ml-2 font-mono text-xs">{model.failure_code}</span>}</p>}
-    {model.progress?.message && <p className="mt-2 pl-[22px] text-sm text-[#777]">{model.progress.message}</p>}
-    {typeof model.progress?.percent === "number" && Number.isFinite(model.progress.percent) && <div className="ml-[22px] mt-2 flex items-center gap-2">
-      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10"><div className="h-full bg-[#555] dark:bg-[#ccc]" style={{ width: `${Math.max(0, Math.min(100, model.progress.percent))}%` }} /></div>
-      <span className="text-xs text-[#878787]">{Math.round(Math.max(0, Math.min(100, model.progress.percent)))}%</span>
-    </div>}
-    {model.progress && model.progress.percent == null && !model.progress.message && ["downloading", "verifying_files", "validating_inference"].includes(model.state) && <div className="ml-[22px] mt-2 flex items-center gap-2 text-xs text-[#777]"><span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-r-transparent" />Working; progress is indeterminate.</div>}
+    <div className="pl-[22px]"><ProgressDetails progress={model.progress} fallbackName={model.display_name || modelTitles[model.role] || model.role} /></div>
     {model.files_verified && !model.runtime_ready && <p className="mt-1 pl-[22px] text-xs text-[#878787]">Files are verified; runtime inference has not passed yet.</p>}
     {model.release_blockers?.map((blocker) => <p key={blocker} className="mt-1 pl-[22px] text-xs text-amber-700 dark:text-amber-400">Release review: {blocker}</p>)}
   </div>;
@@ -160,8 +156,6 @@ export default function SetupPage() {
     ["Backend service", "backend_service"], ["Dataset processing", "dataset_processing"],
   ];
   const actionRequired = pyannote?.action_required === true || pyannote?.state === "waiting_for_token";
-  const progressPercent = typeof progress?.percent === "number" && Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, progress.percent)) : null;
-
   async function submitToken(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!token || busy) return;
@@ -196,12 +190,9 @@ export default function SetupPage() {
         </div>
         {!connected && <span className="text-xs text-amber-700 dark:text-amber-400">Controller disconnected</span>}
       </div>
-      {state === "running" && <div className="mt-4">
-        {progressPercent === null ? <div className="flex items-center gap-2 text-sm text-[#777]"><span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-r-transparent" />Working; the controller has not reported a measurable percentage.</div> : <>
-          <div className="h-2 overflow-hidden rounded-full bg-black/10 dark:bg-white/10"><div className="h-full bg-[#444] transition-[width] dark:bg-[#ddd]" style={{ width: `${progressPercent}%` }} /></div>
-          <p className="mt-1 text-right text-xs text-[#878787]">{progressPercent}%</p>
-        </>}
-      </div>}
+      {state === "running" && (progress
+        ? <ProgressDetails progress={progress} fallbackName="SpeechCraft setup" />
+        : <div className="mt-4 flex items-center gap-2 text-sm text-[#777]"><span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-r-transparent" />Working; the controller has not reported progress yet.</div>)}
       {status?.mode && <p className="mt-3 text-xs text-[#878787]">Mode: {status.mode}{status.runtime_profile && ` · Profile: ${JSON.stringify(status.runtime_profile)}`}</p>}
       {status?.simulated && <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">Simulation only: this does not install models or validate inference.</p>}
       {status?.job.error && <p role="alert" className="mt-3 text-sm text-rose-700 dark:text-rose-300">{failureGuidance[status.job.error.code] || status.job.error.message} <span className="ml-1 font-mono text-xs">{status.job.error.code}</span></p>}

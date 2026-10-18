@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { SETUP_STAGES, SimulatedTasks } from './simulated-tasks.js';
 import { evaluateRuntimeReadiness } from './runtime-plan.js';
+import { sanitizeProgressTelemetry } from './download-progress.js';
 
 export const JOB_STATES = Object.freeze([
   'idle', 'running', 'waiting_for_user', 'failed', 'cancelled', 'interrupted', 'completed',
@@ -61,6 +62,7 @@ function publicComponentField(key, value) {
   }
   if (key === 'message') return typeof value === 'string' ? value.slice(0, 320) : null;
   if (key === 'failure_code') return typeof value === 'string' && /^[A-Z0-9_]{1,80}$/.test(value) ? value : null;
+  if (key === 'progress') return sanitizeProgressTelemetry(value);
   return structuredClone(value);
 }
 
@@ -79,8 +81,7 @@ export function serializePublicJob(job) {
     code: typeof job.error.code === 'string' && /^[A-Z0-9_]{1,80}$/.test(job.error.code) ? job.error.code : 'SETUP_TASK_FAILED',
     message: typeof job.error.message === 'string' ? job.error.message.slice(0, 320) : 'A setup operation failed.',
   };
-  if (job.progress) value.progress = Object.fromEntries(['phase', 'current', 'total', 'percent', 'message', 'speed_bytes_per_second', 'indeterminate']
-    .filter((key) => job.progress[key] !== undefined).map((key) => [key, structuredClone(job.progress[key])]));
+  if (job.progress) value.progress = sanitizeProgressTelemetry(job.progress);
   if (job.bootstrap_status) {
     value.bootstrap_status = {
       profile: job.bootstrap_status.profile || null,

@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { sanitizeProgressTelemetry } from './download-progress.js';
 
 export const STATE_VERSION = 2;
 export const EVENT_LIMIT = 256;
@@ -318,6 +319,8 @@ function componentDeltas(previous, next) {
       failure_code: item?.failure_code || null,
       message: typeof item?.message === 'string' ? item.message.slice(0, 320) : null,
       runtime_ready: item?.runtime_ready === true,
+      ...(Object.hasOwn(item || {}, 'progress') ? { progress: sanitizeProgressTelemetry(item.progress) } : {}),
+      ...(typeof item?.progress_indeterminate === 'boolean' ? { progress_indeterminate: item.progress_indeterminate } : {}),
       ...(Number.isSafeInteger(item?.port) ? { port: item.port } : {}),
     });
     const updated = compact(value);

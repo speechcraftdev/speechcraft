@@ -71,6 +71,44 @@ test('runtime plan exposes component readiness and repair only reruns the truste
   assert.equal(status.production_ready, false);
 });
 
+test('model telemetry is available from current status, model rows, and a fresh SSE snapshot without secrets', async () => {
+  let entered;
+  const atStage = new Promise((resolve) => { entered = resolve; });
+  let release;
+  const hold = new Promise((resolve) => { release = resolve; });
+  const f = await fixture({ simulated: { stepDelayMs: 0, stageGate: async () => { entered(); await hold; } } });
+  await f.request('/setup-api/start', { method: 'POST', body: {} });
+  await atStage;
+  f.app.store.commit((state) => {
+    state.job.bootstrap_status = { components: { whisper: { state: 'downloading', runtime_ready: false,
+      message: 'Downloading Whisper Large-v3.', progress: { phase: 'downloading', role: 'asr',
+        model_name: 'Whisper Large-v3', current_filename: '../../model.bin', downloaded_bytes: 1_500_000,
+        total_bytes: 3_000_000, bytes_per_second: 500_000, eta_seconds: 3, files_completed: 2,
+        files_total: 5, transfer_indeterminate: false, stalled: false, sampled_at: new Date().toISOString(),
+        signed_url: 'https://cdn.invalid/?token=secret', authorization: 'hf_do_not_publish' } } },
+      production_ready: false };
+  }, 'fixture_model_progress');
+  const status = await f.request('/setup-api/status').then((response) => response.json());
+  assert.equal(status.components.whisper.progress.downloaded_bytes, 1_500_000);
+  assert.equal(status.components.whisper.progress.current_filename, 'model.bin');
+  const models = await f.request('/setup-api/models').then((response) => response.json());
+  const whisper = models.models.find((item) => item.role === 'asr');
+  assert.equal(whisper.progress.files_completed, 2);
+  assert.equal(whisper.progress.total_bytes, 3_000_000);
+  assert.doesNotMatch(JSON.stringify({ status, models }), /cdn\.invalid|secret|hf_do_not_publish|authorization|signed_url/i);
+
+  const stream = await openEvents(f.base, f.cookie, { origin: f.origin });
+  const snapshot = await stream.nextEvent();
+  assert.equal(snapshot.event, 'snapshot');
+  const data = snapshot.data;
+  assert.equal(data.components.whisper.progress.bytes_per_second, 500_000);
+  assert.equal(data.components.whisper.progress.eta_seconds, 3);
+  assert.doesNotMatch(JSON.stringify(snapshot.data), /cdn\.invalid|secret|hf_do_not_publish|authorization|signed_url/i);
+  stream.close();
+  release();
+  await f.app.controller.waitForIdle();
+});
+
 test('two concurrent starts return the same active job and only start once', async () => {
   let entered;
   const atStage = new Promise((resolve) => { entered = resolve; });

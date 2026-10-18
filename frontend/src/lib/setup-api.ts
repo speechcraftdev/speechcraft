@@ -1,10 +1,30 @@
 export type SetupError = { code: string; message: string };
+export type ProgressTelemetry = {
+  phase?: string | null;
+  role?: string | null;
+  model_name?: string | null;
+  current_filename?: string | null;
+  downloaded_bytes?: number | null;
+  total_bytes?: number | null;
+  bytes_per_second?: number | null;
+  eta_seconds?: number | null;
+  files_completed?: number | null;
+  files_total?: number | null;
+  transfer_indeterminate?: boolean;
+  stalled?: boolean;
+  sampled_at?: string;
+  current?: number | null;
+  total?: number | null;
+  percent?: number | null;
+  message?: string | null;
+  indeterminate?: boolean;
+};
 export type SetupJob = {
   id: string | null;
   state: string;
   stage: string | null;
   task_id?: string | null;
-  progress?: { phase?: string; current?: number | null; total?: number | null; percent?: number | null; message?: string; indeterminate?: boolean } | null;
+  progress?: ProgressTelemetry | null;
   error?: SetupError | null;
   attempt_id?: string | null;
   attempt_count?: number;
@@ -17,7 +37,7 @@ export type RuntimeComponent = {
   failure_code?: string | null;
   message?: string | null;
   runtime_ready?: boolean;
-  progress?: { percent?: number | null; message?: string } | null;
+  progress?: ProgressTelemetry | null;
   progress_indeterminate?: boolean;
   device?: string | null;
   effective_profile?: string | null;
@@ -44,7 +64,7 @@ export type ModelState = {
   model_id: string;
   display_name: string;
   state: string;
-  progress: { percent?: number | null; message?: string } | null;
+  progress: ProgressTelemetry | null;
   files_verified: boolean;
   runtime_ready: boolean;
   action_required: boolean;

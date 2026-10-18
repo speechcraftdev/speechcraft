@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { inspectHost, validateManagedStorage } from './platform.js';
+import { DownloadProgressTracker } from './download-progress.js';
 import { PRODUCTION_STAGES, assertTrustedBackendRecipe, expectedWorkerMachines, hashMatches, initialComponents, runtimeRoots, runtimeManifest, selectRuntimeProfile } from './runtime-plan.js';
 
 const manifest = JSON.parse(fs.readFileSync(fileURLToPath(new URL('../resources/bootstrap-manifest.json', import.meta.url)), 'utf8'));
@@ -1373,9 +1374,32 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     validateManagedStorage(this.environment, [root, this.paths.hfHome, this.paths.hfHub, this.paths.hfXet, this.paths.temporary]);
     const python = this.getManagerPython();
     for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper']]) {
-      this.setComponent(context, component, { state: 'downloading', failure_code: null, message: null, identity: role === 'asr' ? `Whisper Large-v3/${profile.modelPlatform}` : 'manifest-pinned Silero ONNX' });
+      const modelName = role === 'asr' ? 'Whisper Large-v3' : 'Silero VAD';
+      const tracker = new DownloadProgressTracker();
+      this.setComponent(context, component, { state: 'downloading', failure_code: null, message: null,
+        progress: null, progress_indeterminate: true,
+        identity: role === 'asr' ? `Whisper Large-v3/${profile.modelPlatform}` : 'manifest-pinned Silero ONNX' });
       let result;
       let progressBuffer = '';
+      let stallTimer;
+      const publish = (telemetry, { force = false } = {}) => {
+        if (!telemetry || !tracker.shouldEmit(telemetry, { force })) return;
+        const sampled = { ...telemetry, sampled_at: new Date().toISOString() };
+        const phase = sampled.phase;
+        const componentState = phase === 'verifying' ? 'verifying_files'
+          : phase === 'installing' ? 'installing' : 'downloading';
+        const percent = phase === 'downloading' && Number.isSafeInteger(sampled.downloaded_bytes)
+          && Number.isSafeInteger(sampled.total_bytes) && sampled.total_bytes > 0
+          ? Math.max(0, Math.min(100, Math.floor(sampled.downloaded_bytes * 100 / sampled.total_bytes))) : null;
+        const message = sampled.stalled ? `${modelName} download stalled; waiting for network data.`
+          : phase === 'downloading' ? `Downloading ${modelName}.`
+            : phase === 'verifying' ? `Verifying ${modelName} files.` : `Installing ${modelName}.`;
+        this.setComponent(context, component, { state: componentState, failure_code: null, message,
+          progress: sampled, progress_indeterminate: sampled.transfer_indeterminate });
+        this.emit(context, { ...sampled, current: sampled.downloaded_bytes, total: sampled.total_bytes,
+          percent, indeterminate: sampled.transfer_indeterminate, message });
+      };
+      stallTimer = setInterval(() => publish(tracker.stalled(), { force: true }), 1_000);
       try {
         result = await this.runProcess(python, ['-I', '-m', 'speechcraft_models', 'install', role,
           '--platform', profile.modelPlatform, '--root', root], context, { cwd: this.dataDirectory,
@@ -1388,22 +1412,40 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
             for (const line of lines) {
               try {
                 const event = JSON.parse(line);
-                if (!['progress', 'downloading', 'source_progress', 'source_file_acquired'].includes(event.event)) continue;
-                const current = Number.isSafeInteger(event.downloaded_bytes) ? event.downloaded_bytes
-                  : Number.isSafeInteger(event.transferred_bytes) ? event.transferred_bytes : null;
-                const total = Number.isSafeInteger(event.total_bytes) ? event.total_bytes : null;
-                this.emit(context, safeProgress('downloading', `${role}: ${event.path || event.current_file || 'model artifact'} transfer`, current, total));
+                const telemetry = tracker.accept(event, role, modelName);
+                if (!telemetry) continue;
+                publish(telemetry, { force: ['downloading', 'source_acquiring', 'file_verified', 'source_file_acquired',
+                  'retrying', 'verifying', 'publishing', 'installed'].includes(event.event) });
               } catch {}
             }
           } });
       } catch (error) {
-        this.setComponent(context, component, { state: 'failed', failure_code: error.code || 'MODEL_INSTALL_FAILED', message: error.message.slice(0, 320), runtime_ready: false });
+        this.setComponent(context, component, { state: 'failed', failure_code: error.code || 'MODEL_INSTALL_FAILED',
+          message: error.message.slice(0, 320), runtime_ready: false,
+          progress: null, progress_indeterminate: false });
         throw error;
+      } finally {
+        clearInterval(stallTimer);
+        tracker.reset();
       }
       let report;
-      try { report = JSON.parse(result.stdout); } catch { throw new BootstrapError('MODEL_MANAGER_RESPONSE_INVALID', `The model manager returned an invalid verification report for ${role}.`); }
-      if (report.install_ready !== true || report.status !== 'verified') throw new BootstrapError('MODEL_FILES_NOT_VERIFIED', `Model files for ${role} did not pass the trusted manifest checks.`);
-      this.setComponent(context, component, { state: 'files_verified', verification: 'manifest_size_and_sha256', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Files are verified; runtime inference has not been tested.', runtime_ready: false, path: report.root, report });
+      const latestProgress = context.componentStatus.components?.[component]?.progress;
+      if (latestProgress) this.setComponent(context, component, { state: 'verifying_files', message: `Checking ${modelName} verification results.`,
+        progress: { ...latestProgress, phase: 'verifying', bytes_per_second: null, eta_seconds: null,
+          transfer_indeterminate: true, stalled: false, sampled_at: new Date().toISOString() }, progress_indeterminate: true });
+      try { report = JSON.parse(result.stdout); } catch {
+        this.setComponent(context, component, { state: 'failed', failure_code: 'MODEL_MANAGER_RESPONSE_INVALID',
+          message: `The model manager returned an invalid verification report for ${role}.`, runtime_ready: false,
+          progress: null, progress_indeterminate: false });
+        throw new BootstrapError('MODEL_MANAGER_RESPONSE_INVALID', `The model manager returned an invalid verification report for ${role}.`);
+      }
+      if (report.install_ready !== true || report.status !== 'verified') {
+        this.setComponent(context, component, { state: 'failed', failure_code: 'MODEL_FILES_NOT_VERIFIED',
+          message: `Model files for ${role} did not pass the trusted manifest checks.`, runtime_ready: false,
+          progress: null, progress_indeterminate: false });
+        throw new BootstrapError('MODEL_FILES_NOT_VERIFIED', `Model files for ${role} did not pass the trusted manifest checks.`);
+      }
+      this.setComponent(context, component, { state: 'files_verified', verification: 'manifest_size_and_sha256', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Files are verified; runtime inference has not been tested.', runtime_ready: false, progress: null, progress_indeterminate: false, path: report.root, report });
     }
 
     // Community-1 is the only credential-gated role. Check the local trusted
@@ -1441,6 +1483,22 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     this.setComponent(context, 'pyannote', { state: 'checking_token', identity: 'pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee',
       verification: 'pending', runtime_ready: false, failure_code: null, message: 'Checking token identity and Community-1 access.' });
     let progressBuffer = '';
+    const tracker = new DownloadProgressTracker();
+    const publishGated = (telemetry, force = false) => {
+      if (!telemetry || !tracker.shouldEmit(telemetry, { force })) return;
+      const sampled = { ...telemetry, sampled_at: new Date().toISOString() };
+      const phase = sampled.phase;
+      const percent = phase === 'downloading' && Number.isSafeInteger(sampled.downloaded_bytes)
+        && Number.isSafeInteger(sampled.total_bytes) && sampled.total_bytes > 0
+        ? Math.max(0, Math.min(100, Math.floor(sampled.downloaded_bytes * 100 / sampled.total_bytes))) : null;
+      const message = phase === 'downloading' ? 'Downloading the pinned Community-1 snapshot.'
+        : phase === 'verifying' ? 'Verifying Community-1 files.' : 'Installing Community-1.';
+      this.setComponent(context, 'pyannote', { state: phase === 'verifying' ? 'verifying_files'
+        : phase === 'installing' ? 'installing' : 'downloading', failure_code: null,
+      message, progress: sampled, progress_indeterminate: sampled.transfer_indeterminate });
+      this.emit(context, { ...sampled, current: sampled.downloaded_bytes, total: sampled.total_bytes,
+        percent, indeterminate: sampled.transfer_indeterminate, message });
+    };
     const credentialBytes = Buffer.isBuffer(context.authorizationToken)
       ? context.authorizationToken : Buffer.from(String(context.authorizationToken), 'utf8');
     const tokenInput = Buffer.concat([credentialBytes, Buffer.from('\n')]);
@@ -1461,21 +1519,39 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
               this.setComponent(context, 'pyannote', { state: event.state, failure_code: null,
                 message: event.state === 'checking_token' ? 'Checking Hugging Face token identity.'
                   : event.state === 'checking_model_access' ? 'Checking access to the pinned Community-1 repository.'
-                    : 'Downloading the pinned Community-1 snapshot.' });
+                    : 'Downloading the pinned Community-1 snapshot.',
+                progress: event.state === 'downloading' ? { phase: 'downloading', role: 'diarization',
+                  model_name: 'pyannote Community-1', current_filename: null, downloaded_bytes: null,
+                  total_bytes: null, bytes_per_second: null, eta_seconds: null,
+                  files_completed: null, files_total: null, transfer_indeterminate: true, stalled: false,
+                  sampled_at: new Date().toISOString() } : null, progress_indeterminate: event.state === 'downloading' });
               continue;
             }
-            if (!['progress', 'downloading', 'source_progress', 'source_file_acquired'].includes(event.event)) continue;
-            this.setComponent(context, 'pyannote', { state: event.state === 'source_progress' ? 'downloading' : 'downloading',
-              failure_code: null, message: 'Downloading the pinned Community-1 snapshot.', progress_indeterminate: event.transfer_indeterminate === true });
-            this.emit(context, { phase: 'downloading', current: null, total: null, percent: null,
-              message: `Community-1: ${event.current_file || 'snapshot transfer'}` });
+            const telemetry = tracker.accept(event, 'diarization', 'pyannote Community-1');
+            if (!telemetry) continue;
+            publishGated(telemetry, ['downloading', 'source_acquiring', 'source_file_acquired', 'retrying',
+              'verifying', 'publishing', 'installed'].includes(event.event));
           } catch {}
         }
       },
-    }); } finally { tokenInput.fill(0); if (credentialBytes !== context.authorizationToken) credentialBytes.fill(0); }
+    }); } finally {
+      tokenInput.fill(0);
+      if (credentialBytes !== context.authorizationToken) credentialBytes.fill(0);
+      tracker.reset();
+    }
     let gatedReport;
+    const gatedProgress = context.componentStatus.components?.pyannote?.progress;
+    if (gatedProgress) this.setComponent(context, 'pyannote', { state: 'verifying_files',
+      message: 'Checking Community-1 verification results.', progress: { ...gatedProgress, phase: 'verifying',
+        bytes_per_second: null, eta_seconds: null, transfer_indeterminate: true, stalled: false,
+        sampled_at: new Date().toISOString() }, progress_indeterminate: true });
     try { gatedReport = JSON.parse(acquired.stdout); }
-    catch { throw new BootstrapError('MODEL_MANAGER_RESPONSE_INVALID', 'The model manager returned an invalid Community-1 authorization result.'); }
+    catch {
+      this.setComponent(context, 'pyannote', { state: 'failed', failure_code: 'MODEL_MANAGER_RESPONSE_INVALID',
+        message: 'The model manager returned an invalid Community-1 authorization result.', runtime_ready: false,
+        progress: null, progress_indeterminate: false });
+      throw new BootstrapError('MODEL_MANAGER_RESPONSE_INVALID', 'The model manager returned an invalid Community-1 authorization result.');
+    }
     if (acquired.code !== 0 || gatedReport.status === 'error') {
       const allowedCodes = new Set(['HF_TOKEN_INVALID', 'HF_MODEL_ACCESS_REQUIRED', 'HF_TOKEN_PERMISSION_DENIED',
         'HF_APPROVAL_PENDING', 'HF_NETWORK_ERROR', 'HF_RATE_LIMITED', 'HF_SNAPSHOT_INCOMPLETE',
@@ -1495,19 +1571,21 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       };
       const waiting = ['HF_TOKEN_INVALID', 'HF_MODEL_ACCESS_REQUIRED', 'HF_TOKEN_PERMISSION_DENIED', 'HF_APPROVAL_PENDING'].includes(code);
       this.setComponent(context, 'pyannote', { state: waiting ? 'access_denied' : 'failed', failure_code: code,
-        message: safeMessages[code], runtime_ready: false });
+        message: safeMessages[code], runtime_ready: false, progress: null, progress_indeterminate: false });
       const error = new BootstrapError(code, safeMessages[code]);
       throw error;
     }
     if (gatedReport.install_ready !== true || gatedReport.integrity_verified !== true || gatedReport.inventory_exact !== true) {
       this.setComponent(context, 'pyannote', { state: 'failed', failure_code: 'HF_SNAPSHOT_INTEGRITY_FAILED',
-        message: 'The complete Community-1 snapshot did not pass its trusted exact-tree checks.', runtime_ready: false });
+        message: 'The complete Community-1 snapshot did not pass its trusted exact-tree checks.', runtime_ready: false,
+        progress: null, progress_indeterminate: false });
       throw new BootstrapError('HF_SNAPSHOT_INTEGRITY_FAILED', 'The complete Community-1 snapshot did not pass trusted exact-tree verification.');
     }
     this.setComponent(context, 'pyannote', { state: 'files_verified', identity: 'pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee',
       verification: 'complete_manifest_size_sha256_and_exact_tree', last_verified_at: new Date().toISOString(),
       path: gatedReport.root, report: gatedReport, runtime_ready: false, failure_code: null,
-      message: 'Community-1 files are verified; offline inference validation is pending.' });
+      message: 'Community-1 files are verified; offline inference validation is pending.', progress: null,
+      progress_indeterminate: false });
   }
 
   async validateRuntime(context) {
@@ -1585,7 +1663,14 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !trustedFileMatches(helper, probe.sha256)) {
         throw new BootstrapError('RUNTIME_PROBE_INTEGRITY_FAILED', 'A runtime-validation helper is outside the application or failed its trusted digest check.');
       }
-      this.setComponent(context, probe.component, { state: 'validating', failure_code: null, message: null });
+      const modelComponent = ['silero', 'whisper', 'pyannote', 'titanet'].includes(probe.component);
+      this.setComponent(context, probe.component, { state: modelComponent ? 'validating_inference' : 'validating',
+        failure_code: null, message: null,
+        ...(modelComponent ? { progress: { phase: 'running_inference', role: ({ silero: 'speech_detection', whisper: 'asr', pyannote: 'diarization', titanet: 'speaker_purity' })[probe.component],
+          model_name: ({ silero: 'Silero VAD', whisper: 'Whisper Large-v3', pyannote: 'pyannote Community-1', titanet: 'TitaNet-Large' })[probe.component],
+          current_filename: null, downloaded_bytes: null, total_bytes: null, bytes_per_second: null,
+          eta_seconds: null, files_completed: null, files_total: null, transfer_indeterminate: true, stalled: false,
+          sampled_at: new Date().toISOString() }, progress_indeterminate: true } : {}) });
       const role = probe.environment_role || 'model_manager';
       if (!['model_manager', 'backend', 'worker', 'worker_cuda_candidate'].includes(role)) throw new BootstrapError('RUNTIME_PROBE_RECIPE_INVALID', 'A runtime probe references an unapproved interpreter role.');
       const components = context.componentStatus.components || {};
@@ -1640,6 +1725,7 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         this.setComponent(context, probe.component, { state: 'blocked', runtime_ready: false,
           failure_code: code, message: typeof report.error === 'string' ? report.error.slice(0, 320)
             : `The ${probe.component} probe did not confirm successful inference.`,
+          progress: null, progress_indeterminate: false,
           ...(probe.component === 'cuda' ? { report: {
             schema_version: report.schema_version || null, gpu_detected: report.gpu_detected === true,
             driver_identification: typeof report.driver_identification === 'string' ? report.driver_identification.slice(0, 160) : null,
@@ -1679,7 +1765,8 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       }
       this.setComponent(context, probe.component, { state: 'runtime_ready', identity: report.identity,
         verification: 'trusted_inference_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null,
-        runtime_ready: true, device: typeof report.device === 'string' ? report.device : null });
+        runtime_ready: true, progress: null, progress_indeterminate: false,
+        device: typeof report.device === 'string' ? report.device : null });
       validated.push(probe.component);
     }
     if (!cudaSelected && this.environment?.profile === 'linux-x86_64') {

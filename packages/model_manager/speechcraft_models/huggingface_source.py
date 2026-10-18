@@ -141,7 +141,8 @@ def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], to
             result = self._bar.update(n)
             progress({"event": "source_progress", "source": "huggingface",
                       "state": "downloading", "current_file": None,
-                      "transferred_bytes": None, "total_bytes": total_bytes,
+                      "downloaded_bytes": None, "transferred_bytes": None,
+                      "total_bytes": total_bytes,
                       "transfer_indeterminate": True,
                       "files_completed": int(self._bar.n),
                       "files_total": int(self._bar.total) if self._bar.total is not None else None})
@@ -211,7 +212,8 @@ def acquire_public_snapshot(repo_id: str, revision: str, filenames: list[str],
             result = super().update(n)
             progress({"event": "source_progress", "source": "huggingface",
                       "state": "downloading", "current_file": None,
-                      "transferred_bytes": None, "total_bytes": total_bytes,
+                      "downloaded_bytes": None, "transferred_bytes": None,
+                      "total_bytes": total_bytes,
                       "transfer_indeterminate": True,
                       "files_completed": int(self.n),
                       "files_total": int(self.total) if self.total is not None else None})
