@@ -127,7 +127,7 @@ try {
     notices: [
       'This development build is not code-signed and has not established SmartScreen trust.',
       'Native Windows, WSL localhost networking, CUDA, model download, and dataset acceptance were not run by the package build.',
-      'Public FFmpeg redistribution and TitaNet provenance remain unresolved.',
+      'Public FFmpeg redistribution review remains unresolved.',
     ],
   };
   fs.writeFileSync(path.join(stage, 'windows-release.json'), `${JSON.stringify(release, null, 2)}\n`, { mode: 0o644 });

@@ -139,7 +139,7 @@ export async function fetchClipLabView(runId: string): Promise<ClipLabApiView> {
 
 export function qcSubsetLabel(subset: QcSubset | null): string {
   if (!subset) return "All clips";
-  return `Speaker Purity ≥ ${subset.speaker_check_min} · Transcript Match ≥ ${subset.transcript_match_min}`;
+  return `Speaker Purity review score ≥ ${subset.speaker_check_min} · Transcript Match ≥ ${subset.transcript_match_min}`;
 }
 
 // ── Dataset Health (QC) ─────────────────────────────────────────────────

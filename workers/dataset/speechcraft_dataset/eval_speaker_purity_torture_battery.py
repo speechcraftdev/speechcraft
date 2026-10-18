@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from .buffers import read_analysis_audio
-from .eval_speaker_purity import DEFAULT_MODEL, SpeakerPurityConfig, load_titanet_model, score_candidate_clip
+from .eval_speaker_purity import DEFAULT_MODEL, SpeakerPurityConfig, load_speaker_purity_model, score_candidate_clip
 from .eval_speaker_purity_cocktail_test import (
     CocktailConfig,
     DATASET_REGISTRY,
@@ -242,7 +242,7 @@ def run_battery(
     log(f"{dataset_name}: intruder {cocktail_config.intruder_speaker_id} region {intruder_region.get('id')}")
     log(f"{dataset_name}: {len(clean_clips)} clean clips x {len(battery_variants())} synthetic variants")
 
-    model = load_titanet_model(model_name, device)
+    model = load_speaker_purity_model(model_name, device)
     variants = battery_variants()
     trials: list[dict[str, Any]] = []
 
@@ -421,7 +421,7 @@ def run_battery_suite(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Multi-variant TitaNet speaker purity torture battery.")
+    parser = argparse.ArgumentParser(description="Multi-variant WeSpeaker ECAPA speaker-purity battery.")
     parser.add_argument("--out", required=True)
     parser.add_argument("--datasets", nargs="*", default=["mb", "mc"])
     parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto")

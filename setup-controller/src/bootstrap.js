@@ -944,41 +944,33 @@ export class BootstrapTasks {
           this.setComponent(context, 'backend_environment', { state: 'pending', verification: 'revalidation_failed', failure_code: error.code || 'BACKEND_ENVIRONMENT_INVALID', message: 'The managed backend environment must be repaired before use.' });
         }
         const runtime = selectRuntimeProfile(this.environment);
-        for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper'], ['speaker_purity', 'titanet'], ['diarization', 'pyannote']]) {
+        for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper'], ['speaker_purity', 'ecapa'], ['diarization', 'pyannote']]) {
           try {
             const managerPython = path.join(this.paths.environmentRoot, 'bin', 'python');
             const result = await this.runProcess(managerPython, ['-I', '-m', 'speechcraft_models', 'status', role,
               '--platform', runtime.modelPlatform, '--root', path.join(this.dataDirectory, 'models')], context, { allowFailure: true });
             const report = JSON.parse(result.stdout);
-            const installed = role === 'speaker_purity'
-              ? report.integrity_verified === true && report.complete === true
-              : report.install_ready === true && report.integrity_verified === true
-                && (role !== 'diarization' || report.inventory_exact === true);
+            const installed = report.install_ready === true && report.integrity_verified === true
+              && (role !== 'diarization' || report.inventory_exact === true);
             const modelIdentity = component === 'pyannote' ? 'pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee'
-              : component === 'titanet' ? 'titanet-large-onnx-fp32/experimental' : undefined;
+              : component === 'ecapa' ? 'Wespeaker/wespeaker-ecapa-tdnn512-LM@a2f3dcb1c8702caccc7a55ceb57f5e8d1842112b' : undefined;
             this.setComponent(context, component, installed
               ? { state: 'files_verified', identity: modelIdentity,
                 verification: role === 'diarization' ? 'complete_manifest_size_sha256_and_exact_tree'
-                  : role === 'speaker_purity' ? 'experimental_manifest_size_and_sha256' : 'manifest_size_and_sha256',
+                  : 'manifest_size_and_sha256',
                 last_verified_at: new Date().toISOString(), failure_code: null,
-                message: component === 'titanet' ? this.runtimeRecipe.models.blocked_roles.speaker_purity
-                  : role === 'diarization' ? 'Community-1 files are verified; offline inference must be revalidated.' : 'Files are verified; inference readiness is not established.',
-                runtime_ready: false, release_approved: role === 'speaker_purity' ? false : undefined,
-                release_blockers: role === 'speaker_purity' ? report.release_blockers : undefined,
+                message: role === 'diarization' ? 'Community-1 files are verified; offline inference must be revalidated.' : 'Files are verified; inference readiness is not established.',
+                runtime_ready: false,
                 path: report.root, report }
-              : { state: role === 'diarization' ? 'waiting_for_token' : role === 'speaker_purity' ? 'blocked'
+              : { state: role === 'diarization'
+                  ? 'waiting_for_token'
                   : ['missing', 'partial', 'corrupt', 'error', 'unverified'].includes(report.status) ? report.status : 'error',
-                verification: 'manifest_check', failure_code: role === 'speaker_purity' && report.status === 'corrupt' ? 'TITANET_ARTIFACT_CORRUPT'
-                  : role === 'diarization' && job.state !== 'waiting_for_user'
+                verification: 'manifest_check', failure_code: role === 'diarization' && job.state !== 'waiting_for_user'
                   ? 'AUTHORIZATION_REQUIRED_AFTER_RESTART' : role === 'diarization' ? null : 'MODEL_FILES_NOT_VERIFIED',
-                message: role === 'speaker_purity' && report.status === 'corrupt'
-                  ? 'The experimental TitaNet artifact failed its trusted hash check; repair is required. Provenance remains unresolved.'
-                  : role === 'speaker_purity' ? 'No complete, hash-verified TitaNet experimental artifact was found. Provenance and release approval remain unresolved.'
-                  : role === 'diarization' && job.state !== 'waiting_for_user'
+                message: role === 'diarization' && job.state !== 'waiting_for_user'
                   ? 'The controller restarted before gated acquisition completed. Its token was discarded; submit a read token to resume.'
                   : role === 'diarization' ? 'Community-1 is not completely verified. Submit a read token to acquire the pinned local snapshot.'
-                    : 'Model files need repair before use.', runtime_ready: false,
-                ...(role === 'speaker_purity' ? { release_approved: false } : {}), report });
+                    : 'Model files need repair before use.', runtime_ready: false, report });
           } catch {
             this.setComponent(context, component, { state: 'pending', verification: 'revalidation_failed', failure_code: 'MODEL_STATUS_UNAVAILABLE', message: 'Model files must be rechecked before use.', runtime_ready: false });
           }
@@ -1667,12 +1659,15 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     const root = runtimeRoots(this.dataDirectory).models;
     validateManagedStorage(this.environment, [root, this.paths.hfHome, this.paths.hfHub, this.paths.hfXet, this.paths.temporary]);
     const python = this.getManagerPython();
-    for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper']]) {
-      const modelName = role === 'asr' ? 'Whisper Large-v3' : 'Silero VAD';
+    for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper'], ['speaker_purity', 'ecapa']]) {
+      const modelName = role === 'asr' ? 'Whisper Large-v3'
+        : role === 'speaker_purity' ? 'WeSpeaker ECAPA-TDNN512-LM' : 'Silero VAD';
       const tracker = new DownloadProgressTracker();
       this.setComponent(context, component, { state: 'downloading', failure_code: null, message: null,
         progress: null, progress_indeterminate: true,
-        identity: role === 'asr' ? `Whisper Large-v3/${profile.modelPlatform}` : 'manifest-pinned Silero ONNX' });
+        identity: role === 'asr' ? `Whisper Large-v3/${profile.modelPlatform}`
+          : role === 'speaker_purity' ? 'Wespeaker/wespeaker-ecapa-tdnn512-LM@a2f3dcb1c8702caccc7a55ceb57f5e8d1842112b'
+            : 'manifest-pinned Silero ONNX' });
       let result;
       let progressBuffer = '';
       let stallTimer;
@@ -1932,7 +1927,7 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     }
     const modelPlatform = selectRuntimeProfile(this.environment).modelPlatform;
     const modelPaths = {};
-    for (const [role, name] of [['asr', 'whisper'], ['speech_detection', 'silero'], ['speaker_purity', 'titanet'], ['diarization', 'pyannote']]) {
+    for (const [role, name] of [['asr', 'whisper'], ['speech_detection', 'silero'], ['speaker_purity', 'ecapa'], ['diarization', 'pyannote']]) {
       const item = components[name];
       const candidate = item?.report?.root || item?.path;
       if (candidate && managedPath(candidate)) modelPaths[role] = managedPath(candidate);
@@ -1943,7 +1938,8 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       SPEECHCRAFT_MODEL_PLATFORM: modelPlatform,
       SPEECHCRAFT_ASR_MODEL_PATH: modelPaths.asr || '',
       SPEECHCRAFT_SILERO_ONNX_PATH: modelPaths.speech_detection ? path.join(modelPaths.speech_detection, 'silero_vad.onnx') : '',
-      SPEECHCRAFT_TITANET_ONNX_PATH: modelPaths.speaker_purity ? path.join(modelPaths.speaker_purity, 'nemo_en_titanet_large.onnx') : '',
+      SPEECHCRAFT_ECAPA_ONNX_PATH: modelPaths.speaker_purity ? path.join(modelPaths.speaker_purity, 'voxceleb_ECAPA512_LM.onnx') : '',
+      SPEECHCRAFT_ECAPA_MODEL_PATH: modelPaths.speaker_purity || '',
       SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH: modelPaths.diarization || '',
       SPEECHCRAFT_FFMPEG_BIN: ['verified', 'files_verified', 'runtime_ready'].includes(components.ffmpeg?.state) && managedPath(components.ffmpeg.path) ? path.join(components.ffmpeg.path, 'ffmpeg') : '',
       SPEECHCRAFT_FFPROBE_BIN: ['verified', 'files_verified', 'runtime_ready'].includes(components.ffmpeg?.state) && managedPath(components.ffmpeg.path) ? path.join(components.ffmpeg.path, 'ffprobe') : '',
@@ -1979,11 +1975,11 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !trustedFileMatches(helper, probe.sha256)) {
         throw new BootstrapError('RUNTIME_PROBE_INTEGRITY_FAILED', 'A runtime-validation helper is outside the application or failed its trusted digest check.');
       }
-      const modelComponent = ['silero', 'whisper', 'pyannote', 'titanet'].includes(probe.component);
+      const modelComponent = ['silero', 'whisper', 'pyannote', 'ecapa'].includes(probe.component);
       this.setComponent(context, probe.component, { state: modelComponent ? 'validating_inference' : 'validating',
         failure_code: null, message: null,
-        ...(modelComponent ? { progress: { phase: 'running_inference', role: ({ silero: 'speech_detection', whisper: 'asr', pyannote: 'diarization', titanet: 'speaker_purity' })[probe.component],
-          model_name: ({ silero: 'Silero VAD', whisper: 'Whisper Large-v3', pyannote: 'pyannote Community-1', titanet: 'TitaNet-Large' })[probe.component],
+        ...(modelComponent ? { progress: { phase: 'running_inference', role: ({ silero: 'speech_detection', whisper: 'asr', pyannote: 'diarization', ecapa: 'speaker_purity' })[probe.component],
+          model_name: ({ silero: 'Silero VAD', whisper: 'Whisper Large-v3', pyannote: 'pyannote Community-1', ecapa: 'WeSpeaker ECAPA-TDNN512-LM' })[probe.component],
           current_filename: null, downloaded_bytes: null, total_bytes: null, bytes_per_second: null,
           eta_seconds: null, files_completed: null, files_total: null, transfer_indeterminate: true, stalled: false,
           sampled_at: new Date().toISOString() }, progress_indeterminate: true } : {}) });

@@ -255,8 +255,7 @@ test('controller restart reconstructs all installed model paths and retains the 
   const reports = {
     speech_detection: { install_ready: true, integrity_verified: true, root: path.join(root, 'models', 'silero') },
     asr: { install_ready: true, integrity_verified: true, root: path.join(root, 'models', 'whisper') },
-    speaker_purity: { install_ready: false, integrity_verified: true, complete: true,
-      release_blockers: ['TitaNet provenance unresolved'], root: path.join(root, 'models', 'titanet') },
+    speaker_purity: { install_ready: true, integrity_verified: true, status: 'verified', root: path.join(root, 'models', 'ecapa') },
     diarization: { install_ready: true, integrity_verified: true, inventory_exact: true, root: path.join(root, 'models', 'pyannote') },
   };
   const tasks = new BootstrapTasks({ dataDirectory: root, wheelPath: undefined, wheelSha256: undefined,
@@ -277,12 +276,12 @@ test('controller restart reconstructs all installed model paths and retains the 
     assert.equal(status.components.model_manager.path, managerRoot);
     assert.equal(status.components.backend_environment.state, 'verified');
     assert.equal(status.runtime_profile.workerProfile, 'linux-x86_64-cuda', 'the prior profile is retained for real inference revalidation');
-    for (const [component, rootName] of [['silero', 'silero'], ['whisper', 'whisper'], ['titanet', 'titanet'], ['pyannote', 'pyannote']]) {
+    for (const [component, rootName] of [['silero', 'silero'], ['whisper', 'whisper'], ['ecapa', 'ecapa'], ['pyannote', 'pyannote']]) {
       assert.equal(status.components[component].path, path.join(root, 'models', rootName));
       assert.equal(status.components[component].runtime_ready, false, 'old inference readiness is never blindly trusted');
     }
-    assert.equal(status.components.titanet.release_approved, false);
-    assert.match(status.components.titanet.message, /provenance/i);
+    assert.equal(status.components.ecapa.identity, 'Wespeaker/wespeaker-ecapa-tdnn512-LM@a2f3dcb1c8702caccc7a55ceb57f5e8d1842112b');
+    assert.equal(status.components.ecapa.verification, 'manifest_size_and_sha256');
   } finally {
     store.releaseOwnership();
     fs.rmSync(root, { recursive: true, force: true });

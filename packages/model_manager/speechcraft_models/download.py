@@ -306,15 +306,11 @@ class _Installer:
     def resolve(self, role, platform, *, experimental=False):
         artifact = select_artifact(self.catalog, role, platform)
         model = next(m for m in self.catalog['models'] if m['role'] == role)
-        experimental_titanet = (experimental and role == 'speaker_purity'
-                                and model['id'] == 'titanet-large-speaker-purity'
-                                and artifact.get('source', {}).get('repo_id')
-                                == 'csukuangfj/speaker-embedding-models')
         if (artifact['availability'] != 'verified' or not artifact['inventory_complete']
                 or not artifact['required_files']
-                or artifact.get('release_blockers') and not experimental_titanet):
+                or artifact.get('release_blockers')):
             raise InstallError('artifact is unresolved or release-blocked')
-        if model['license'].get('status') != 'verified' and not experimental_titanet:
+        if model['license'].get('status') != 'verified':
             raise InstallError('model licensing is unresolved')
         if not re.fullmatch(r'[a-zA-Z0-9_-]+', model['id']):
             raise InstallError('unsafe model id')
@@ -722,7 +718,7 @@ class _Installer:
                     report = verify_directory_fd(final, artifact, str(path))
                 finally:
                     os.close(final)
-                if report['install_ready'] or (experimental and report['integrity_verified']):
+                if report['install_ready']:
                     try:
                         _remove_tree(model, stage_name)
                     except FileNotFoundError:
@@ -768,7 +764,7 @@ class _Installer:
                 self.emit('verifying')
                 report = verify_directory_fd(payload, artifact, str(path))
                 if (not report['integrity_verified']
-                        or not report['install_ready'] and not experimental):
+                        or not report['install_ready']):
                     code = 'HF_SNAPSHOT_INTEGRITY_FAILED' if artifact.get('source', {}).get('authentication') == 'gated' else 'MODEL_FILES_NOT_VERIFIED'
                     raise InstallError(f'{code}: staged artifact failed trusted file verification')
                 if artifact.get('source', {}).get('type') == 'huggingface':
@@ -1002,11 +998,7 @@ class _Installer:
 
 
 def install_model(root, role, platform, *, progress=None, experimental=False):
-    """Install from the shipped catalog; experimental bypass is TitaNet-only.
-
-    Experimental TitaNet acquisition can verify file bytes while keeping
-    ``install_ready`` false until its release blockers are resolved.
-    """
+    """Install from the immutable shipped model catalog."""
     return _Installer(root, load_catalog(), progress=progress).install(
         role, platform, experimental=experimental)
 

@@ -11,8 +11,8 @@ from pathlib import Path
 # This is an explicit filename allowlist in addition to the packaged catalog.
 # Extend only alongside reviewed catalog records.
 PUBLIC_REPOSITORIES = {
-    "csukuangfj/speaker-embedding-models": frozenset({
-        "nemo_en_titanet_large.onnx",
+    "Wespeaker/wespeaker-ecapa-tdnn512-LM": frozenset({
+        "voxceleb_ECAPA512_LM.onnx",
     }),
     "Systran/faster-whisper-large-v3": frozenset({
         "config.json", "model.bin", "preprocessor_config.json",

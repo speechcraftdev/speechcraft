@@ -21,7 +21,7 @@ PROBE_FIXTURES = {
     "ffmpeg": ("speech-compressed.mp3", "e61a459dfc841b060aa2db5119ddd527346177ab965f290986a46c965302c33a", 144908),
     "silero": ("speech-silence.wav", "65afa781f190dd7e6ee3b719e0b200b1224d057d4ae4c5077cd1b125685cda06", 640078),
     "whisper": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
-    "titanet": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
+    "ecapa": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
     "pyannote": ("community1-two-voice.wav", "981721582d5a7524cd8e825d8331d433b9e06a346de76f99855b026ca4216e7d", 768078),
     "cuda": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
 }
@@ -169,20 +169,24 @@ def run(component: str) -> dict:
                           inference_completed=True, measurements={"segments": len(rows), "transcript_characters": text_length,
                                                                   "language": info.language,
                                                                   "recording_duration_seconds": recording_duration})
-    elif component == "titanet":
+    elif component == "ecapa":
         import numpy as np
         import soundfile as sf
-        from speechcraft_dataset.eval_speaker_purity import embedding_vector, load_titanet_model
+        from speechcraft_dataset.eval_speaker_purity import embedding_vector, load_speaker_purity_model
+        from speechcraft_dataset.runtime_tools import verify_managed_model
+        from speechcraft_dataset.wespeaker_ecapa_runtime import MODEL_FILENAME, MODEL_ID, MODEL_REPO, MODEL_REVISION, MODEL_SHA256
 
-        raw = Path(os.environ.get("SPEECHCRAFT_TITANET_ONNX_PATH", ""))
-        if os.environ.get("SPEECHCRAFT_EXPERIMENTAL_TITANET") != "1":
-            raise RuntimeError("TitaNet probe is disabled: licensing/checkpoint approval is unresolved.")
-        recording = audio_file("titanet")
+        root = Path(os.environ.get("SPEECHCRAFT_ECAPA_MODEL_PATH", ""))
+        model_path = root / MODEL_FILENAME
+        if not root.is_dir() or root.is_symlink():
+            raise RuntimeError("Verified local WeSpeaker ECAPA model directory is unavailable.")
+        verify_managed_model("speaker_purity", root, os.environ.get("SPEECHCRAFT_MODEL_PLATFORM", "linux-x86_64"))
+        recording = audio_file("ecapa")
         samples, rate = sf.read(str(recording), dtype="float32", always_2d=True)
         mono = samples.mean(axis=1)
         if rate != 16_000:
-            raise RuntimeError("TitaNet probe audio must be 16 kHz.")
-        model = load_titanet_model("titanet-large-speaker-purity", "cpu", raw)
+            raise RuntimeError("WeSpeaker ECAPA probe audio must be 16 kHz.")
+        model = load_speaker_purity_model(MODEL_ID, "cpu", model_path)
         first, _ = model.infer_segment(mono)
         second, _ = model.infer_segment(mono)
         norm = float(np.linalg.norm(first))
@@ -190,14 +194,14 @@ def run(component: str) -> dict:
         normalized_second = embedding_vector(second)
         normalized_norm = float(np.linalg.norm(normalized))
         similarity = float(np.dot(normalized, normalized_second))
-        if first.size != model.dimension or not np.isfinite(first).all() or norm <= 1e-12 or abs(normalized_norm - 1.0) > 1e-5 or similarity < 0.99:
-            raise RuntimeError("TitaNet output failed shape, finiteness, norm, or repeatability checks.")
-        result.update(identity=f"experimental-titanet-onnx-sha256:{digest(raw)}", backend="sherpa-onnx",
+        if first.size != 192 or not np.isfinite(first).all() or norm <= 1e-12 or abs(normalized_norm - 1.0) > 1e-5 or similarity < 0.99:
+            raise RuntimeError("WeSpeaker ECAPA output failed shape, finiteness, norm, or repeatability checks.")
+        result.update(identity=f"{MODEL_REPO}@{MODEL_REVISION}:{MODEL_SHA256}", backend="onnxruntime-cpu",
                       device="cpu", inference_completed=True,
                       measurements={"embedding_dimension": int(first.size), "raw_l2_norm": norm,
                                     "normalized_l2_norm": normalized_norm,
                                     "repeat_cosine_similarity": similarity,
-                                    "release_blocked": True})
+                                    "score_status": "uncalibrated_review_required"})
     elif component == "pyannote":
         import soundfile as sf
         from speechcraft_dataset.diarization import community1_annotation, load_community1_pipeline, run_community1_pipeline
@@ -318,7 +322,7 @@ def run(component: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("component", choices=("ffmpeg", "silero", "whisper", "titanet", "pyannote", "cuda"))
+    parser.add_argument("component", choices=("ffmpeg", "silero", "whisper", "ecapa", "pyannote", "cuda"))
     args = parser.parse_args()
     try:
         # Third-party inference libraries may print banners; reserve stdout for
@@ -338,7 +342,7 @@ def main() -> int:
                       else "runtime_probe_failed")
         safe_message = {
             "model_snapshot_missing": "Authorized local Community-1 snapshot is missing or incomplete.",
-            "model_release_blocked": "TitaNet remains blocked pending licensing and checkpoint approval.",
+            "model_release_blocked": "Speaker Purity model files or inference probe failed.",
             "probe_audio_missing": "Provide a local intelligible recording through SPEECHCRAFT_RUNTIME_PROBE_AUDIO.",
             "cuda_runtime_unavailable": "CUDA inference failed in the managed worker environment; the validated CPU profile remains available.",
             "runtime_tool_unavailable": "A trusted managed FFmpeg/FFprobe executable is not installed.",

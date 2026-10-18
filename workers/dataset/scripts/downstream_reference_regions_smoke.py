@@ -101,9 +101,11 @@ def main() -> int:
     if transcript_summary.get("schema_version") != 1 or transcript_summary.get("scored_count") != len(candidates) \
             or purity_summary.get("schema_version") != 1 or purity_summary.get("scored_count") != len(candidates):
         raise RuntimeError("Transcript QC or Speaker Purity summary failed its schema/count checks.")
-    if purity.get("embedding_backend") != "sherpa-onnx" or purity.get("score_calibration") != "pending_evaluation" \
+    if purity.get("embedding_backend") != "onnxruntime-cpu" or purity.get("score_calibration") != "uncalibrated_review_required" \
+            or purity.get("model") != "wespeaker-ecapa-tdnn512-lm" \
+            or not purity.get("model_sha256") \
             or any(row.get("speaker_score_calibrated") is not False for row in purity_rows):
-        raise RuntimeError("Speaker Purity did not retain its experimental uncalibrated backend metadata.")
+        raise RuntimeError("Speaker Purity did not retain the verified ECAPA identity and uncalibrated review status.")
     tc_scores = [row.get("transcript_match_score") for row in transcript_rows]
     sp_scores = [row.get("speaker_check_score") for row in purity_rows]
     if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in tc_scores + sp_scores):

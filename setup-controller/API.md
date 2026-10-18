@@ -140,9 +140,7 @@ The earlier real `bootstrap` mode uses these ordered stages:
 inference or workstation readiness. `technical_processing_ready` is derived
 from current managed environments, verified tools/models, real inference
 probes, and authenticated backend health. `production_ready` additionally
-requires release approvals. With current TitaNet provenance, FFmpeg
-redistribution, and Community-1 access gates, production readiness remains
-false. `bootstrap_ready` covers only uv, managed CPython and model-manager
+requires release approvals. With FFmpeg redistribution review and Community-1 access gates, production readiness can remain false while `technical_processing_ready` independently reflects working inference. `bootstrap_ready` covers only uv, managed CPython and model-manager
 verification; `files_verified` does not mean `runtime_ready`.
 
 ## Snapshot and job shape
@@ -264,7 +262,7 @@ the browser setup client.
 Runtime mode includes a `components` map in status and SSE snapshots. Each item
 reports identity, state, verification method, last verified time, failure code
 and a safe message. Components include uv, managed Python, model manager,
-backend/worker environments, FFmpeg, Silero, Whisper, TitaNet, pyannote,
+backend/worker environments, FFmpeg, Silero, Whisper, WeSpeaker ECAPA, pyannote,
 runtime probes, backend service and dataset processing. Pyannote component states
 include `waiting_for_token`, `checking_token`, `checking_model_access`,
 `access_denied`, `downloading`, `files_verified`, `validating_inference`,
@@ -275,7 +273,7 @@ only.
 
 ### `GET /setup-api/models`
 
-Requires the session cookie. Returns public state for Silero, Whisper, TitaNet,
+Requires the session cookie. Returns public state for Silero, Whisper, WeSpeaker ECAPA,
 and Community-1; it excludes local credential material and file-level reports.
 
 ```json
@@ -448,9 +446,7 @@ A backend exit invalidates service and processing readiness.
 
 `technical_processing_ready` means those current technical prerequisites
 pass; it is separate from public-release readiness. `production_ready` also
-requires licensing, provenance, and redistribution approvals. The selected
-TitaNet artifact and FFmpeg distribution still have release blockers, so
-current production readiness remains false. A completed setup plan only
+requires licensing, provenance, and redistribution approvals. FFmpeg distribution review remains a separate release blocker; ECAPA does not add a provenance blocker, and technical readiness remains based on the real inference probes. A completed setup plan only
 means its configured stages finished. The `simulated` field describes the
 configured controller mode.
 

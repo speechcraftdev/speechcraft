@@ -41,13 +41,18 @@ test('CUDA remains a candidate until its recipe and independent Torch/CTranslate
 test('readiness derives technical processing and release approval from current component evidence', () => {
   const components = Object.fromEntries(['managed_python', 'backend_environment', 'worker_environment', 'backend_service']
     .map((name) => [name, { state: 'verified', verification: name === 'backend_service' ? 'internal_health_identity' : 'trusted_recipe' }]));
-  for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+  for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa']) {
     components[name] = { state: 'runtime_ready', runtime_ready: true };
   }
   components.ffmpeg.redistribution_approved = true;
-  components.titanet.release_approved = true;
   let readiness = evaluateRuntimeReadiness(components);
   assert.deepEqual(readiness, { technical_ready: true, production_ready: true, blockers: [], release_blockers: [] });
+  components.ffmpeg.redistribution_approved = false;
+  readiness = evaluateRuntimeReadiness(components);
+  assert.equal(readiness.technical_ready, true, 'FFmpeg redistribution approval is not an inference prerequisite');
+  assert.equal(readiness.production_ready, false);
+  assert.equal(readiness.release_blockers[0].code, 'FFMPEG_RELEASE_REVIEW_REQUIRED');
+  components.ffmpeg.redistribution_approved = true;
   components.pyannote = { state: 'waiting_for_token', failure_code: 'HF_MODEL_ACCESS_REQUIRED', message: 'Accept access.' };
   readiness = evaluateRuntimeReadiness(components);
   assert.equal(readiness.technical_ready, false);
@@ -56,24 +61,25 @@ test('readiness derives technical processing and release approval from current c
   readiness = evaluateRuntimeReadiness(components);
   assert.equal(readiness.blockers[0].code, 'PYANNOTE_RUNTIME_VALIDATION_FAILED');
   components.pyannote = { state: 'runtime_ready', runtime_ready: true };
-  components.titanet.release_approved = false;
+  components.ffmpeg.redistribution_approved = false;
   components.backend_service = { state: 'failed', failure_code: 'BACKEND_EXITED', message: 'Backend exited.' };
   readiness = evaluateRuntimeReadiness(components);
   assert.equal(readiness.technical_ready, false);
   assert.equal(readiness.blockers.find((item) => item.component === 'backend_service').code, 'BACKEND_EXITED');
-  assert.equal(readiness.release_blockers.find((item) => item.component === 'titanet').code, 'TITANET_PROVENANCE_UNRESOLVED');
+  assert.equal(readiness.release_blockers.find((item) => item.component === 'ffmpeg').code, 'FFMPEG_RELEASE_REVIEW_REQUIRED');
+  assert.equal(readiness.technical_ready, false, 'backend failure is technical; FFmpeg compliance remains separately reported');
 });
 
 test('each technical prerequisite independently blocks readiness and repaired evidence clears stale errors', () => {
   const components = Object.fromEntries(['managed_python', 'backend_environment', 'worker_environment']
     .map((name) => [name, { state: 'verified', verification: 'trusted_recipe' }]));
-  for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+  for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa']) {
     components[name] = { state: 'runtime_ready', runtime_ready: true };
   }
   components.backend_service = { state: 'verified', verification: 'internal_health_identity' };
   const restore = structuredClone(components);
   for (const name of ['managed_python', 'backend_environment', 'worker_environment', 'backend_service',
-    'ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+    'ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa']) {
     const expected = structuredClone(restore);
     expected[name] = { state: 'failed', failure_code: `${name.toUpperCase()}_FAILED`, message: `${name} repair required.` };
     const failed = evaluateRuntimeReadiness(expected);
@@ -101,7 +107,7 @@ test('checked-in backend recipe identity is verified and unsupported components 
   assert.equal(runtimeManifest.worker.profiles['macos-arm64'].lock_verified, true);
   assert.equal(runtimeManifest.worker.profiles['macos-arm64'].inference_validated, false);
   assert.equal(initialComponents().pyannote.state, 'waiting_for_token');
-  assert.equal(initialComponents().titanet.state, 'blocked');
+  assert.equal(initialComponents().ecapa.state, 'pending');
   assert.equal(initialComponents().runtime_probes.state, 'pending');
   assert.equal(runtimeManifest.runtime_validation.available, true);
   for (const probe of runtimeManifest.runtime_validation.probes) {
@@ -303,7 +309,7 @@ test('backend failure transitions invalidate stale instance health and readiness
   const state = { service_process: { pid: 44, nonce: 'owned' }, job: { bootstrap_status: { components: {
     managed_python: { state: 'verified' }, backend_environment: { state: 'verified' }, worker_environment: { state: 'verified' },
     ffmpeg: { state: 'runtime_ready' }, silero: { state: 'runtime_ready' }, whisper: { state: 'runtime_ready' },
-    pyannote: { state: 'runtime_ready' }, titanet: { state: 'runtime_ready' },
+    pyannote: { state: 'runtime_ready' }, ecapa: { state: 'runtime_ready' },
     backend_service: { state: 'verified', verification: 'internal_health_identity', health_instance_id: 'old-instance' },
   } } } };
   const store = { snapshot: () => structuredClone(state), commit(mutator) { mutator(state); } };
@@ -511,7 +517,7 @@ test('model stage invokes the existing model-manager contract for platform-selec
     componentStatus: tasks.initialBootstrapStatus(), onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };
   await tasks.run('install_models', context);
   assert.deepEqual(calls.map((args) => args[args.findIndex((value) => value === 'install' || value === 'status') + 1]),
-    ['speech_detection', 'asr', 'diarization']);
+    ['speech_detection', 'asr', 'speaker_purity', 'diarization']);
   assert.ok(calls.every((args) => args.includes('--platform') && args[args.indexOf('--platform') + 1] === 'windows-wsl2'));
   assert.equal(context.componentStatus.components.silero.state, 'files_verified');
   assert.equal(context.componentStatus.components.whisper.state, 'files_verified');

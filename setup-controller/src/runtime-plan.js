@@ -53,7 +53,7 @@ export function selectRuntimeProfile(host = hostEnvironment(), capabilities = {}
 const TECHNICAL_COMPONENTS = Object.freeze([
   ['managed_python', 'verified'], ['backend_environment', 'verified'], ['worker_environment', 'verified'],
   ['ffmpeg', 'runtime_ready'], ['silero', 'runtime_ready'], ['whisper', 'runtime_ready'],
-  ['pyannote', 'runtime_ready'], ['titanet', 'runtime_ready'], ['backend_service', 'verified'],
+  ['pyannote', 'runtime_ready'], ['ecapa', 'runtime_ready'], ['backend_service', 'verified'],
 ]);
 
 /** Single source of truth for technical processing and release readiness. */
@@ -69,8 +69,6 @@ export function evaluateRuntimeReadiness(components = {}) {
   }
   const technicalReady = blockers.length === 0;
   const releaseBlockers = [];
-  if (components.titanet?.release_approved !== true) releaseBlockers.push({ component: 'titanet',
-    code: 'TITANET_PROVENANCE_UNRESOLVED', message: components.titanet?.message || 'TitaNet checkpoint provenance and redistribution approval remain unresolved.' });
   if (components.ffmpeg?.redistribution_approved !== true) releaseBlockers.push({ component: 'ffmpeg',
     code: 'FFMPEG_RELEASE_REVIEW_REQUIRED', message: 'FFmpeg product redistribution compliance review remains required.' });
   if (components.pyannote?.state !== 'runtime_ready') releaseBlockers.push({ component: 'pyannote',
@@ -107,7 +105,7 @@ export function initialComponents() {
       : component('blocked', null, { code: 'runtime_tool_unavailable', message: runtimeManifest.ffmpeg.reason }),
     silero: component('pending', 'manifest-pinned Silero ONNX'),
     whisper: component('pending', 'Whisper Large-v3; platform-selected format'),
-    titanet: component('blocked', null, { code: 'model_release_blocked', message: runtimeManifest.models.blocked_roles.speaker_purity }),
+    ecapa: component('pending', 'WeSpeaker ECAPA-TDNN512-LM / pinned ONNX'),
     pyannote: component('waiting_for_token', 'pyannote/speaker-diarization-community-1',
       { code: 'HF_MODEL_ACCESS_REQUIRED', message: 'Accept the Community-1 conditions and submit a Hugging Face read token to install this model.' }),
     runtime_probes: runtimeManifest.runtime_validation.available === true

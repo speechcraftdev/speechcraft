@@ -92,13 +92,10 @@ The Linux CPU recipe and the host-specific Linux CUDA route are documented in
 `workers/dataset/RUNTIME_PROFILES.md`; the manifest contains the current
 validated recipes. macOS runtime validation remains pending Kavin's hardware
 test. Managed FFmpeg/FFprobe is available and locally verified, while product
-redistribution review remains a release blocker. TitaNet provenance remains
-blocked, and Community-1 requires an authorized snapshot plus the real offline
-probe. The API reports technical and release blockers separately.
+redistribution review remains a release blocker. WeSpeaker ECAPA requires a hash-verified artifact and real offline embedding probe; its cosine scores remain uncalibrated. Community-1 requires an authorized snapshot plus the real offline probe. The API reports technical and release blockers separately.
 
 Model status distinguishes `files_verified` from `runtime_ready`. A completed
-setup plan is not a production-ready workstation. No placeholder inference or
-automatic experimental TitaNet override is used.
+setup plan is not a production-ready workstation. No placeholder inference or model-integrity bypass is used.
 
 ## Authentication handoff
 
@@ -131,7 +128,7 @@ launcher-provided digest. Startup locates the versioned isolated manager env by
 its trusted environment name, then checks its installed distribution metadata,
 wheel archive digest, dependency-lock identity, package catalog, and executable.
 Fresh installation and repair still require the separately trusted wheel and
-digest. Local Silero, Whisper, TitaNet and Community-1 artifacts are
+digest. Local Silero, Whisper, WeSpeaker ECAPA and Community-1 artifacts are
 re-enumerated by the manager's integrity status operation; Community-1 does not
 require another token when its exact local snapshot remains valid. The last
 selected CUDA worker environment is checked and its CUDA probe rerun before it

@@ -105,10 +105,13 @@ export function TranscriptPanel({
               </div>
               <div>
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                  Speaker purity
+                  Speaker Purity · uncalibrated review score
                 </p>
                 <p className="mt-1 text-2xl font-medium tabular-nums">
                   {formatNullableQcScore(clip.speakerCheckRaw, formatQcScore)}
+                </p>
+                <p className="mt-1 text-[10px] leading-snug text-muted-foreground">
+                  Similarity score, not a probability. Listen before accepting this clip.
                 </p>
               </div>
             </div>
