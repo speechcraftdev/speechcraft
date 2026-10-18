@@ -9,8 +9,9 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from speechcraft_models.download import _Installer
+from speechcraft_models.cli import _safe_diagnostic_from_chain
 from speechcraft_models.huggingface_source import (
-    GATED_REPOSITORIES, HuggingFaceAcquisitionError, acquire_gated_snapshot,
+    GATED_REPOSITORIES, HuggingFaceAcquisitionError, _safe_exception_diagnostic, acquire_gated_snapshot,
     validate_gated_request,
 )
 from speechcraft_models.manifest import load_catalog
@@ -72,6 +73,27 @@ def tiny_catalog():
 
 
 class GatedAcquisitionTests(unittest.TestCase):
+    def test_huggingface_transfer_diagnostic_contains_only_exception_type_and_status(self):
+        class SignedUrlFailure(Exception):
+            response = SimpleNamespace(status_code=503)
+
+        error = SignedUrlFailure('hf_secret https://storage.example/file?X-Amz-Signature=secret')
+        self.assertEqual(_safe_exception_diagnostic(error), {
+            'exception_type': 'SignedUrlFailure', 'http_status': 503,
+        })
+        self.assertNotIn('hf_secret', json.dumps(_safe_exception_diagnostic(error)))
+        self.assertNotIn('X-Amz-Signature', json.dumps(_safe_exception_diagnostic(error)))
+
+        acquisition = HuggingFaceAcquisitionError('safe message', diagnostic={
+            'exception_type': 'SignedUrlFailure', 'http_status': 503,
+            'url': 'https://storage.example/file?token=secret',
+        })
+        install_error = RuntimeError('nested wrapper')
+        install_error.__cause__ = acquisition
+        self.assertEqual(_safe_diagnostic_from_chain(install_error), {
+            'exception_type': 'SignedUrlFailure', 'http_status': 503,
+        })
+
     def test_production_community_catalog_matches_the_independent_gate_allowlist(self):
         catalog = load_catalog()
         artifact = select_artifact(catalog, 'diarization', 'linux-x86_64')

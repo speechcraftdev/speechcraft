@@ -1864,9 +1864,20 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         MODEL_INSTALL_FAILED: 'Community-1 could not be installed. Review the sanitized diagnostics and retry.',
       };
       const waiting = ['HF_TOKEN_INVALID', 'HF_MODEL_ACCESS_REQUIRED', 'HF_TOKEN_PERMISSION_DENIED', 'HF_APPROVAL_PENDING'].includes(code);
+      const diagnostic = gatedReport.diagnostic && typeof gatedReport.diagnostic === 'object'
+        ? gatedReport.diagnostic : {};
+      const detailParts = [];
+      if (typeof diagnostic.exception_type === 'string'
+          && /^[A-Za-z][A-Za-z0-9]{0,79}$/.test(diagnostic.exception_type)) {
+        detailParts.push(`exception=${diagnostic.exception_type}`);
+      }
+      if (Number.isInteger(diagnostic.http_status) && diagnostic.http_status >= 100 && diagnostic.http_status <= 599) {
+        detailParts.push(`http_status=${diagnostic.http_status}`);
+      }
+      const failureMessage = `${safeMessages[code]}${detailParts.length ? ` (diagnostic: ${detailParts.join('; ')})` : ''}`;
       this.setComponent(context, 'pyannote', { state: waiting ? 'access_denied' : 'failed', failure_code: code,
-        message: safeMessages[code], runtime_ready: false, progress: null, progress_indeterminate: false });
-      const error = new BootstrapError(code, safeMessages[code]);
+        message: failureMessage, runtime_ready: false, progress: null, progress_indeterminate: false });
+      const error = new BootstrapError(code, failureMessage);
       throw error;
     }
     if (gatedReport.install_ready !== true || gatedReport.integrity_verified !== true || gatedReport.inventory_exact !== true) {

@@ -9,6 +9,27 @@ from .download import InstallError, check_installation, install_gated_model, ins
 from .manifest import ManifestError, load_catalog, select_artifact, verify_artifact
 
 
+def _safe_diagnostic_from_chain(exc):
+    cause = exc
+    for _ in range(8):
+        candidate = getattr(cause, 'diagnostic', None)
+        if isinstance(candidate, dict):
+            diagnostic = {}
+            if isinstance(candidate.get('exception_type'), str) and re.fullmatch(
+                r'[A-Za-z][A-Za-z0-9]{0,79}', candidate['exception_type']
+            ):
+                diagnostic['exception_type'] = candidate['exception_type']
+            status = candidate.get('http_status')
+            if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+                diagnostic['http_status'] = status
+            if diagnostic:
+                return diagnostic
+        cause = getattr(cause, '__cause__', None)
+        if cause is None:
+            break
+    return {}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Install or verify SpeechCraft model files (no inference).')
     parser.add_argument('action', choices=('install', 'status', 'verify', 'authorize-install'))
@@ -62,7 +83,9 @@ def main(argv=None):
                        'MODEL_STORAGE_INSUFFICIENT', 'AUTHORIZATION_REQUIRED_AFTER_RESTART'}
             if code not in allowed:
                 code, safe = 'MODEL_INSTALL_FAILED', 'Community-1 authorization or installation failed safely.'
-        print(json.dumps({'status': 'error', 'error_code': code, 'error': safe[:320], 'runtime_ready': None}))
+        diagnostic = _safe_diagnostic_from_chain(exc)
+        print(json.dumps({'status': 'error', 'error_code': code, 'error': safe[:320],
+                          'diagnostic': diagnostic or None, 'runtime_ready': None}))
         return 1
 
 

@@ -38,9 +38,26 @@ GATED_REPOSITORIES = {
 
 class HuggingFaceAcquisitionError(RuntimeError):
     """Safe diagnostic without signed URLs or request credentials."""
-    def __init__(self, message: str, *, transient: bool = False):
+    def __init__(self, message: str, *, transient: bool = False,
+                 diagnostic: dict[str, str | int] | None = None):
         super().__init__(message)
         self.transient = transient
+        self.diagnostic = diagnostic or {}
+
+
+def _safe_exception_diagnostic(exc: Exception) -> dict[str, str | int]:
+    """Return only exception type and HTTP status; never include upstream text or URLs."""
+    name = type(exc).__name__
+    diagnostic: dict[str, str | int] = {}
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,79}", name):
+        diagnostic["exception_type"] = name
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is None:
+        status = getattr(response, "status", None)
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        diagnostic["http_status"] = status
+    return diagnostic
 
 
 def validate_request(repo_id: str, revision: str, filenames: list[str]) -> None:
@@ -109,7 +126,8 @@ def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], to
         raise
     except Exception as exc:
         code, message, transient = _safe_hf_code(exc)
-        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient) from None
+        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient,
+                                          diagnostic=_safe_exception_diagnostic(exc)) from None
 
     progress({"event": "authorization_status", "state": "checking_model_access", "source": "huggingface"})
     try:
@@ -128,7 +146,8 @@ def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], to
         raise
     except Exception as exc:
         code, message, transient = _safe_hf_code(exc)
-        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient) from None
+        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient,
+                                          diagnostic=_safe_exception_diagnostic(exc)) from None
 
     class _FileProgress:
         # snapshot_download's supported tqdm hook reports file completion. Byte
@@ -175,7 +194,8 @@ def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], to
         raise
     except Exception as exc:
         code, message, transient = _safe_hf_code(exc)
-        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient) from None
+        raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient,
+                                          diagnostic=_safe_exception_diagnostic(exc)) from None
 
 
 def acquire_public_snapshot(repo_id: str, revision: str, filenames: list[str],
