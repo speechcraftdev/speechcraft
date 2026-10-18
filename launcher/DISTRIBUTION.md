@@ -12,9 +12,9 @@ The Linux bootstrap is the only production-targeted flow in this implementation.
 
 ## Public installation status
 
-There is no public installer URL yet. The earlier `v0.1.0` candidate remains an untouched draft. The current internal candidate is [`v0.1.0-internal.1`](https://github.com/speechcraftdev/speechcraft/releases/tag/untagged-9388570a0d98439bf5c8), built from source commit `2ab0aa01ef988f80588fc0d854798bfbfba377e3`. Both drafts require authenticated GitHub access and are not anonymously downloadable. Do not use `curl | sh` from either draft.
+There is no public installer URL yet. The earlier `v0.1.0` and `v0.1.0-internal.1` candidates remain untouched drafts. The current internal candidate is [`v0.1.0-internal.2`](https://github.com/speechcraftdev/speechcraft/releases/tag/untagged-f2aab91f4ef790a86767), built from source commit `0abf8a9038c5d07ebe579ecc6c48e7eab993f716`. Draft assets require authenticated GitHub access and are not anonymously downloadable. Do not use `curl | sh` from a draft.
 
-For an authorized test download of the current draft's real GitHub assets, use `gh release download v0.1.0-internal.1 --repo speechcraftdev/speechcraft`. The uploaded bootstrap asset URL is `https://github.com/speechcraftdev/speechcraft/releases/download/untagged-9388570a0d98439bf5c8/install.sh`; draft access is authenticated. This URL is for internal testing only, not a public install entry point.
+For an authorized test download of the current draft's real GitHub assets, use `gh release download v0.1.0-internal.2 --repo speechcraftdev/speechcraft`. The uploaded bootstrap asset URL is `https://github.com/speechcraftdev/speechcraft/releases/download/untagged-f2aab91f4ef790a86767/install.sh`; draft access is authenticated. This URL is for internal testing only, not a public install entry point.
 
 After a production release has passed the compliance and publisher-authentication gates, its versioned GitHub bootstrap URL will be:
 
