@@ -33,14 +33,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Confirm the requested source is an accepted main commit
+      - name: Confirm the requested source is the current main commit
         env:
           SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: |
           case "$SOURCE_COMMIT" in *[!0-9a-f]*|'') echo 'source_commit must be a lowercase 40-character SHA' >&2; exit 1 ;; esac
           test "${#SOURCE_COMMIT}" -eq 40
           git cat-file -e "$SOURCE_COMMIT^{commit}"
-          git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
+          test "$SOURCE_COMMIT" = "$(git rev-parse origin/main)"
 
       - name: Check out the pinned source revision
         uses: actions/checkout@v4
