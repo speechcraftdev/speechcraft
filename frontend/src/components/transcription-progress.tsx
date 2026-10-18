@@ -16,32 +16,20 @@ import {
   refreshRun,
   resolveWhisperModel,
   resumeProcessing,
-  slicerRerun,
   startRun,
   waitForRun,
 } from "./wizard/wizard-api";
+import {
+  completedAtStage,
+  WIZARD_SELECTED_SPEAKER_STOP_AFTER,
+} from "./wizard/processing-plan.mjs";
 
-const STAGE_ORDER = [
-  "ingest", "source_audio", "audio_variants", "vad", "diarization", "buffers",
-  "asr_queue", "asr", "normalization", "mfa", "alignment_qc", "safe_cutpoints",
-  "candidate_review_clips", "transcript_qc", "speaker_purity", "native_export",
-];
-const stageIdx = (s: string) => {
-  const i = STAGE_ORDER.indexOf(s);
-  return i < 0 ? 0 : i;
-};
-const reachedStage = (run: DatasetRunView, target: string) =>
-  stageIdx(run.stage) >= stageIdx(target);
-
-// The wizard runs the full post-selection pass automatically. Phases map to
-// backend segments: resume(->alignment_qc) -> slicer(->candidate clips) ->
-// qc(scores). No tuning knobs; Advanced = diagnostics only.
-type Phase = "aligning" | "slicing" | "scoring" | "error";
+// The worker's supported sequence is slicing, then transcript and speaker QC.
+type Phase = "slicing" | "scoring" | "error";
 
 const PHASE_COPY: Record<Exclude<Phase, "error">, { title: string; sub: string; pct: number }> = {
-  aligning: { title: "Transcribing & aligning", sub: "Running ASR and forced alignment…", pct: 33 },
-  slicing: { title: "Slicing clips", sub: "Cutting training-ready candidate clips…", pct: 66 },
-  scoring: { title: "Scoring quality", sub: "Machine QC over every clip…", pct: 90 },
+  slicing: { title: "Slicing clips", sub: "Running the locked VR O0_4 slicing pass…", pct: 55 },
+  scoring: { title: "Scoring transcript and speaker quality", sub: "Running Transcript Correctness and Speaker Purity…", pct: 90 },
 };
 
 function detectLanguage(run: DatasetRunView | null): string | null {
@@ -61,7 +49,7 @@ export function TranscriptionProgress() {
   const runId = params.get("run");
   const demo = demoEnabled(params);
 
-  const [phase, setPhase] = useState<Phase>("aligning");
+  const [phase, setPhase] = useState<Phase>("slicing");
   const [error, setError] = useState<string | null>(null);
   const [run, setRun] = useState<DatasetRunView | null>(null);
   const [language, setLanguage] = useState<string | null>(null);
@@ -69,9 +57,9 @@ export function TranscriptionProgress() {
 
   const stages: DiagnosticStage[] = [
     { key: "diarization", label: "Speaker detection", status: "completed" },
-    { key: "asr", label: "Transcription & alignment", status: phase === "aligning" ? "running" : "completed" },
-    { key: "slice", label: "Slicing", status: phase === "aligning" ? "pending" : phase === "slicing" ? "running" : "completed" },
-    { key: "qc", label: "Quality scoring", status: phase === "scoring" ? "running" : phase === "error" ? "failed" : ["aligning", "slicing"].includes(phase) ? "pending" : "completed" },
+    { key: "slice", label: "VR O0_4 slicing", status: phase === "slicing" ? "running" : phase === "scoring" ? "completed" : "failed" },
+    { key: "asr", label: "Transcript Correctness", status: phase === "slicing" ? "pending" : phase === "scoring" ? "running" : "failed" },
+    { key: "qc", label: "Speaker Purity", status: phase === "scoring" ? "running" : "failed" },
   ];
 
   useEffect(() => {
@@ -103,28 +91,20 @@ export function TranscriptionProgress() {
     const ctrl = new AbortController();
     (async () => {
       try {
-        setPhase("aligning");
-        await resumeProcessing(runId, "alignment_qc");
-        const aligned = await waitForRun(
-          runId,
-          (r) => r.status === "completed" && reachedStage(r, "alignment_qc"),
-          { signal: ctrl.signal, onTick: setRun },
-        );
-        setLanguage(detectLanguage(aligned));
-
         setPhase("slicing");
-        await slicerRerun(runId, {});
-        await waitForRun(
+        await resumeProcessing(runId, WIZARD_SELECTED_SPEAKER_STOP_AFTER);
+        const sliced = await waitForRun(
           runId,
-          (r) => r.status === "completed" && reachedStage(r, "candidate_review_clips"),
+          (r) => completedAtStage(r, "candidate_review_clips"),
           { signal: ctrl.signal, onTick: setRun },
         );
+        setLanguage(detectLanguage(sliced));
 
         setPhase("scoring");
         await generateQc(runId, false);
         await waitForRun(
           runId,
-          (r) => r.status === "completed" && reachedStage(r, "transcript_qc"),
+          (r) => completedAtStage(r, "speaker_purity"),
           { signal: ctrl.signal, onTick: setRun },
         );
 

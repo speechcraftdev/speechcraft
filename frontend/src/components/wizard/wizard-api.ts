@@ -4,6 +4,11 @@
 
 import { SpeechcraftApiError } from "@/components/lab/speechcraft-write-api";
 import { speechcraftApiBase } from "@/lib/api-base";
+import {
+  WIZARD_SELECTED_SPEAKER_STOP_AFTER,
+  wizardResumeOptions,
+  wizardRunOptions,
+} from "./processing-plan.mjs";
 
 const BASE = speechcraftApiBase();
 
@@ -216,7 +221,7 @@ export function createDatasetRun(
     target_speaker_label: "speaker_0",
     language: body.language ?? "auto",
     whisper_model_size: body.whisper_model_size,
-    stop_after: body.stop_after ?? "alignment_qc",
+    ...wizardRunOptions(body.stop_after),
   });
 }
 
@@ -247,10 +252,10 @@ export function saveSpeakerSelection(
 
 export function resumeProcessing(
   runId: string,
-  stopAfter: "buffers" | "normalization" | "mfa" | "alignment_qc" = "alignment_qc",
+  stopAfter: "buffers" | "candidate_review_clips" | "transcript_qc" | "speaker_purity" | "native_export" = WIZARD_SELECTED_SPEAKER_STOP_AFTER,
 ): Promise<DatasetRunView> {
   return sendJson<DatasetRunView>(`/api/dataset-runs/${runId}/resume-processing`, "POST", {
-    stop_after: stopAfter,
+    ...wizardResumeOptions(stopAfter),
   });
 }
 
