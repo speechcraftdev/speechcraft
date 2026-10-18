@@ -40,6 +40,8 @@ The command builds the Linux package and release-specific `install.sh`, creates 
 
 The manual GitHub Actions workflow in `.github/workflows/release-draft.yml` runs the same command with least-privilege `contents: write`. It takes an exact commit and a never-before-used semantic version tag. It creates draft assets only. The checked-out commit must already be reachable from `main`.
 
+The repository has an active `immutable version tags` ruleset for `refs/tags/v*`. It blocks updates and deletions with no bypass actors; the existing `main` review ruleset is unchanged. A candidate version tag is created once on its exact source commit before the draft release is created.
+
 ## Licensing gate and publication
 
 Creating release infrastructure and uploading a draft are separate from publicly publishing an application. The source documentation marks FFmpeg redistribution and experimental TitaNet provenance as unresolved. The Linux application archive does not ship model weights or a prebuilt FFmpeg binary, but its runtime setup can acquire FFmpeg and contains the experimental TitaNet integration and provenance record. Those points remain blockers for publicly advertising or publishing SpeechCraft until the project documents clearance. A GitHub prerelease is public once published and does not satisfy this gate.
