@@ -9,6 +9,7 @@
     "start": "next start --hostname 127.0.0.1 -p 3002",
     "typecheck": "tsc --noEmit",
     "test:wizard-plan": "node --test tests/processing-plan.test.mjs",
+    "test:qc-score-display": "node --test tests/qc-score-display.test.mjs",
     "test:setup-api": "node scripts/setup-api-integration.mjs",
     "test:launcher": "node --test ../launcher/tests/launcher.test.js && node ../launcher/scripts/integration.mjs"
   },

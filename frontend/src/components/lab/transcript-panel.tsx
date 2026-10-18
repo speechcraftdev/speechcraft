@@ -8,6 +8,7 @@ import { Textarea } from "@midday/ui/textarea";
 import { useEffect, useRef, useState } from "react";
 import { SavingBar } from "@/components/saving-bar";
 import { type LabClip, formatQcScore } from "./lab-data";
+import { formatNullableQcScore } from "./qc-score-display.mjs";
 
 type TranscriptPanelProps = {
   clip: LabClip;
@@ -99,7 +100,7 @@ export function TranscriptPanel({
                   Transcript confidence
                 </p>
                 <p className="mt-1 text-2xl font-medium tabular-nums">
-                  {formatQcScore(clip.transcriptConfidence)}
+                  {formatNullableQcScore(clip.transcriptMatchRaw, formatQcScore)}
                 </p>
               </div>
               <div>
@@ -107,7 +108,7 @@ export function TranscriptPanel({
                   Speaker purity
                 </p>
                 <p className="mt-1 text-2xl font-medium tabular-nums">
-                  {formatQcScore(clip.speakerPurity)}
+                  {formatNullableQcScore(clip.speakerCheckRaw, formatQcScore)}
                 </p>
               </div>
             </div>
