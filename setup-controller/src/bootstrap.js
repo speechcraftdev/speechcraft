@@ -26,21 +26,230 @@ import hashlib, importlib, pathlib
 assert sys.version_info[:3] == (3, 12, 15), sys.version
 for module in (json, os, platform, ssl, sys, sysconfig, venv, hashlib, importlib, pathlib): assert module
 print(json.dumps({"kind":"SPEECHCRAFT_PYTHON_PROBE","version":".".join(map(str,sys.version_info[:3])),"machine":platform.machine(),"system":platform.system(),"executable":os.path.realpath(sys.executable),"prefix":os.path.realpath(sys.prefix),"base_prefix":os.path.realpath(sys.base_prefix)}))`;
-const MANAGER_PROBE = String.raw`import importlib.metadata as md, json, os, platform, sys
-from speechcraft_models.manifest import load_catalog, validate_manifest
-catalog = load_catalog(); validate_manifest(catalog)
-forbidden = {"torch", "pytorch", "pyannote.audio", "faster-whisper", "mlx", "mlx-whisper", "nemo-toolkit", "sherpa-onnx"}
-installed = {d.metadata.get("Name", "").lower().replace("_", "-") for d in md.distributions()}
-unexpected = sorted(installed & forbidden)
-assert not unexpected, unexpected
-assert md.version("speechcraft-model-manager") == "0.1.0"
-dist = md.distribution("speechcraft-model-manager")
-direct = json.loads(dist.read_text("direct_url.json") or "{}")
-archive = direct.get("archive_info", {})
-wheel_sha256 = archive.get("hashes", {}).get("sha256")
-if not wheel_sha256 and isinstance(archive.get("hash"), str) and archive["hash"].startswith("sha256="):
-    wheel_sha256 = archive["hash"].split("=", 1)[1]
-print(json.dumps({"kind":"SPEECHCRAFT_MODEL_MANAGER_PROBE","version":md.version("speechcraft-model-manager"),"roles":sorted(item["role"] for item in catalog["models"]),"python":platform.python_version(),"prefix":os.path.realpath(sys.prefix),"base_prefix":os.path.realpath(sys.base_prefix),"heavy_dependencies":unexpected,"executable":sys.executable,"wheel_sha256":wheel_sha256}))`;
+const MANAGER_PROBE = String.raw`import base64, csv, hashlib, importlib.metadata as md, io, json, os, platform, stat, sys, zipfile
+from email.parser import Parser
+
+class ProbeFailure(Exception):
+    def __init__(self, code): self.code = code
+
+def safe_relative(value):
+    if not isinstance(value, str) or not value or value.startswith("/") or "\\" in value or "\x00" in value:
+        return False
+    parts = value.rstrip("/").split("/")
+    return bool(parts) and ":" not in parts[0] and all(part not in ("", ".", "..") for part in parts)
+
+def within(root, target):
+    try: return os.path.commonpath((root, target)) == root
+    except ValueError: return False
+
+def regular_without_symlink_parents(root, relative):
+    current = root
+    parts = relative.split("/")
+    for index, part in enumerate(parts):
+        current = os.path.join(current, part)
+        info = os.lstat(current)
+        if stat.S_ISLNK(info.st_mode): return False
+        if index < len(parts) - 1 and not stat.S_ISDIR(info.st_mode): return False
+        if index == len(parts) - 1 and not stat.S_ISREG(info.st_mode): return False
+    return True
+
+def read_regular_no_follow(path, failure_code="MODEL_MANAGER_INSTALLED_FILES_MISMATCH"):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ProbeFailure(failure_code)
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            return stream.read()
+    finally:
+        if descriptor >= 0: os.close(descriptor)
+
+def directory_without_symlink_parents(root, relative):
+    current = root
+    for part in relative.split("/"):
+        current = os.path.join(current, part)
+        info = os.lstat(current)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode): return False
+    return True
+
+def installed_relative(name):
+    parts = name.split("/")
+    if parts[0].endswith(".data"):
+        if len(parts) < 3 or parts[1] not in ("purelib", "platlib"):
+            raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+        return "/".join(parts[2:])
+    return name
+
+def generated_installer_file(relative, dist_info):
+    if relative in {dist_info + "/direct_url.json", dist_info + "/INSTALLER", dist_info + "/REQUESTED", dist_info + "/uv_cache.json"}:
+        return True
+    parts = relative.split("/")
+    return "__pycache__" in parts and relative.endswith(".pyc")
+
+def verify_wheel_and_install(wheel_path, trusted_sha):
+    try:
+        wheel_info = os.lstat(wheel_path)
+        if not stat.S_ISREG(wheel_info.st_mode) or stat.S_ISLNK(wheel_info.st_mode):
+            raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+        wheel_bytes = read_regular_no_follow(wheel_path, "MODEL_MANAGER_WHEEL_INVALID")
+        wheel_sha = hashlib.sha256(wheel_bytes).hexdigest()
+        if wheel_sha != trusted_sha:
+            return {"wheel_sha256": wheel_sha, "trusted_wheel_valid": False}
+        with zipfile.ZipFile(io.BytesIO(wheel_bytes)) as archive:
+            wheel_files = {}
+            names = set()
+            for info in archive.infolist():
+                raw_name = info.filename[:-1] if info.is_dir() else info.filename
+                if not safe_relative(raw_name) or info.filename in names:
+                    raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+                names.add(info.filename)
+                mode = (info.external_attr >> 16) & 0xffff
+                kind = stat.S_IFMT(mode)
+                if info.is_dir():
+                    if kind not in (0, stat.S_IFDIR): raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+                    continue
+                if kind not in (0, stat.S_IFREG): raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+                wheel_files[raw_name] = archive.read(info)
+
+        record_names = [name for name in wheel_files if name.endswith(".dist-info/RECORD")]
+        metadata_names = [name for name in wheel_files if name.endswith(".dist-info/METADATA")]
+        if len(record_names) != 1 or len(metadata_names) != 1:
+            raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+        dist_info = metadata_names[0].rsplit("/", 1)[0]
+        record_name = record_names[0]
+        if record_name.rsplit("/", 1)[0] != dist_info:
+            raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+        rows = {}
+        for row in csv.reader(io.StringIO(wheel_files[record_name].decode("utf-8"))):
+            if len(row) != 3 or not safe_relative(row[0]) or row[0] in rows:
+                raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+            rows[row[0]] = (row[1], row[2])
+        if set(rows) != set(wheel_files): raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+        trusted_installed = {}
+        for name, content in wheel_files.items():
+            encoded_hash, recorded_size = rows[name]
+            if name == record_name:
+                if encoded_hash or recorded_size: raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+            else:
+                if not encoded_hash.startswith("sha256=") or not recorded_size.isdigit():
+                    raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+                expected_hash = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode("ascii").rstrip("=")
+                if encoded_hash[7:] != expected_hash or int(recorded_size) != len(content):
+                    raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+            installed_name = installed_relative(name)
+            if installed_name in trusted_installed: raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+            trusted_installed[installed_name] = (content, rows[name])
+
+        dist = md.distribution("speechcraft-model-manager")
+        metadata_path_raw = os.path.abspath(os.fspath(dist.locate_file(dist_info + "/METADATA")))
+        site_root_raw = os.path.abspath(os.fspath(dist.locate_file("")))
+        site_root = os.path.realpath(site_root_raw)
+        prefix = os.path.realpath(sys.prefix)
+        if not within(prefix, site_root) or site_root_raw != site_root \
+                or os.path.basename(os.fspath(dist._path)) != dist_info \
+                or metadata_path_raw != os.path.join(site_root, dist_info, "METADATA"):
+            raise ProbeFailure("MODEL_MANAGER_ENVIRONMENT_PATH_MISMATCH")
+        if not directory_without_symlink_parents(prefix, os.path.relpath(site_root, prefix).replace(os.sep, "/")):
+            raise ProbeFailure("MODEL_MANAGER_ENVIRONMENT_PATH_MISMATCH")
+
+        if not regular_without_symlink_parents(site_root, dist_info + "/METADATA"):
+            raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+        installed_metadata = Parser().parsestr(read_regular_no_follow(metadata_path_raw).decode("utf-8"))
+        wheel_metadata = Parser().parsestr(wheel_files[metadata_names[0]].decode("utf-8"))
+        if wheel_metadata.get("Name", "").lower().replace("_", "-") != "speechcraft-model-manager":
+            raise ProbeFailure("MODEL_MANAGER_WHEEL_INVALID")
+        if installed_metadata.get("Version") != wheel_metadata.get("Version"):
+            raise ProbeFailure("MODEL_MANAGER_PACKAGE_VERSION_MISMATCH")
+        if installed_metadata.get("Name", "").lower().replace("_", "-") != "speechcraft-model-manager":
+            raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+        version = installed_metadata.get("Version")
+
+        installed_record_path = os.path.join(site_root, dist_info, "RECORD")
+        if not regular_without_symlink_parents(site_root, dist_info + "/RECORD"):
+            raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+        installed_rows = {}
+        for row in csv.reader(io.StringIO(read_regular_no_follow(installed_record_path).decode("utf-8"))):
+            if len(row) != 3 or not safe_relative(row[0]) or row[0] in installed_rows:
+                raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+            installed_rows[row[0]] = (row[1], row[2])
+        for name in installed_rows:
+            if name not in trusted_installed and not generated_installer_file(name, dist_info):
+                raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+        for name, (content, (expected_hash, expected_size)) in trusted_installed.items():
+            if name == dist_info + "/RECORD": continue
+            actual_hash, actual_size = installed_rows.get(name, (None, None))
+            if (actual_hash, actual_size) != (expected_hash, expected_size):
+                raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+            if not regular_without_symlink_parents(site_root, name):
+                raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+            path = os.path.join(site_root, *name.split("/"))
+            actual = hashlib.sha256(read_regular_no_follow(path)).digest()
+            if len(content) != int(expected_size) or actual != hashlib.sha256(content).digest():
+                raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+
+        expected_roots = {name.split("/", 1)[0] for name in trusted_installed}
+        for root_name in expected_roots:
+            root_path = os.path.join(site_root, root_name)
+            root_info = os.lstat(root_path)
+            if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+                raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+            for current, directories, files in os.walk(root_path, followlinks=False):
+                for child in directories:
+                    info = os.lstat(os.path.join(current, child))
+                    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                        raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+                for child in files:
+                    file_path = os.path.join(current, child)
+                    info = os.lstat(file_path)
+                    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                        raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+                    relative = os.path.relpath(file_path, site_root).replace(os.sep, "/")
+                    if relative not in trusted_installed and not generated_installer_file(relative, dist_info):
+                        raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+
+        return {"wheel_sha256": wheel_sha, "trusted_wheel_valid": True, "version": version,
+            "prefix": prefix, "base_prefix": os.path.realpath(sys.base_prefix),
+            "python": platform.python_version(), "site_root": site_root,
+            "dist_info": dist_info, "trusted_installed": trusted_installed}
+    except ProbeFailure:
+        raise
+    except Exception:
+        raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+
+result = {"kind": "SPEECHCRAFT_MODEL_MANAGER_PROBE"}
+try:
+    wheel_path, trusted_sha = sys.argv[1:3]
+    verified = verify_wheel_and_install(wheel_path, trusted_sha)
+    result.update({key: value for key, value in verified.items() if key != "trusted_installed"})
+    if not verified.get("trusted_wheel_valid"):
+        result["failure_code"] = "MODEL_MANAGER_WHEEL_HASH_MISMATCH"
+    else:
+        try:
+            import speechcraft_models
+            from speechcraft_models.manifest import load_catalog, validate_manifest
+            expected_init = os.path.join(verified["site_root"], "speechcraft_models", "__init__.py")
+            if os.path.realpath(speechcraft_models.__file__) != expected_init:
+                raise ProbeFailure("MODEL_MANAGER_INSTALLED_FILES_MISMATCH")
+            catalog = load_catalog(); validate_manifest(catalog)
+            roles = sorted(item["role"] for item in catalog["models"])
+            required = {"diarization", "asr", "speech_detection", "speaker_purity"}
+            result["roles"] = roles
+            result["catalog_valid"] = required.issubset(set(roles))
+            if not result["catalog_valid"]: result["failure_code"] = "MODEL_MANAGER_CATALOG_INVALID"
+        except ProbeFailure as error:
+            result["catalog_valid"] = False
+            result["failure_code"] = error.code
+        except Exception:
+            result["catalog_valid"] = False
+            result["failure_code"] = "MODEL_MANAGER_CATALOG_INVALID"
+        forbidden = {"torch", "pytorch", "pyannote.audio", "faster-whisper", "mlx", "mlx-whisper", "nemo-toolkit", "sherpa-onnx"}
+        installed = {d.metadata.get("Name", "").lower().replace("_", "-") for d in md.distributions()}
+        result["heavy_dependencies"] = sorted(installed & forbidden)
+except ProbeFailure as error:
+    result["failure_code"] = error.code
+except Exception:
+    result["failure_code"] = "MODEL_MANAGER_PROBE_FAILED"
+print(json.dumps(result, sort_keys=True))`;
 
 export class BootstrapError extends Error {
   constructor(code, message, options = {}) {
@@ -1098,24 +1307,56 @@ export class BootstrapTasks {
     const wheel = this.managerWheelIdentity();
     const identity = await hashFile(wheel);
     if (identity.sha256 !== this.wheelSha256) throw new BootstrapError('MODEL_MANAGER_WHEEL_HASH_MISMATCH', 'The model-manager wheel did not match its trusted SHA-256.');
-    const result = await this.runProcess(python, ['-I', '-c', MANAGER_PROBE], context, {
-      env: { ...this.makeEnvironment(this.paths), SPEECHCRAFT_EXPECTED_MODEL_MANAGER_WHEEL_SHA256: this.wheelSha256,
-        SPEECHCRAFT_EXPECTED_MANAGER_PREFIX: this.paths.environmentRoot,
+    const result = await this.runProcess(python, ['-I', '-B', '-c', MANAGER_PROBE, wheel, this.wheelSha256], context, {
+      env: { ...this.makeEnvironment(this.paths), SPEECHCRAFT_EXPECTED_MANAGER_PREFIX: this.paths.environmentRoot,
         SPEECHCRAFT_EXPECTED_MANAGED_PYTHON_ROOT: this.paths.pythonRoot },
     });
-    const probe = parseProbe(result, 'SPEECHCRAFT_MODEL_MANAGER_PROBE', 'MODEL_MANAGER_VALIDATION_FAILED');
+    return this.validateManagerProbe(parseProbe(result, 'SPEECHCRAFT_MODEL_MANAGER_PROBE', 'MODEL_MANAGER_PROBE_FAILED'), this.paths.environmentRoot);
+  }
+
+  validateManagerProbe(probe, expectedEnvironmentRoot) {
+    if (probe.failure_code) {
+      const messages = {
+        MODEL_MANAGER_WHEEL_HASH_MISMATCH: 'The locally shipped model-manager wheel did not match its trusted SHA-256.',
+        MODEL_MANAGER_WHEEL_INVALID: 'The trusted model-manager wheel has an invalid or unsafe archive structure.',
+        MODEL_MANAGER_INSTALLED_FILES_MISMATCH: 'Installed model-manager files differ from the trusted wheel contents.',
+        MODEL_MANAGER_PACKAGE_VERSION_MISMATCH: 'The installed model-manager package version does not match the supported release.',
+        MODEL_MANAGER_ENVIRONMENT_PATH_MISMATCH: 'The model-manager virtual environment or managed Python path is invalid.',
+        MODEL_MANAGER_MANAGED_PYTHON_PATH_MISMATCH: 'The model-manager virtual environment or managed Python path is invalid.',
+        MODEL_MANAGER_CATALOG_INVALID: 'The installed model-manager catalog is invalid or missing required model roles.',
+        UNEXPECTED_ML_DEPENDENCY: 'The lightweight model-manager environment contains an unexpected ML dependency.',
+      };
+      throw new BootstrapError(probe.failure_code, messages[probe.failure_code] || 'The installed model-manager package failed validation.');
+    }
+    if (probe.version !== (this.manifest.model_manager.version || '0.1.0')) {
+      throw new BootstrapError('MODEL_MANAGER_PACKAGE_VERSION_MISMATCH', 'The installed model-manager package version does not match the supported release.');
+    }
+    if (probe.python !== this.manifest.python.version) {
+      throw new BootstrapError('MODEL_MANAGER_MANAGED_PYTHON_VERSION_MISMATCH', 'The model-manager environment uses an unexpected managed Python version.');
+    }
+    const expectedPrefix = fs.realpathSync(expectedEnvironmentRoot);
     const managedPythonRoot = fs.realpathSync(this.paths.pythonRoot);
     const basePrefix = probe.base_prefix || '';
-    if (probe.version !== '0.1.0' || probe.wheel_sha256 !== this.wheelSha256
-        || probe.prefix !== this.paths.environmentRoot
-        || (basePrefix !== managedPythonRoot && !basePrefix.startsWith(`${managedPythonRoot}${path.sep}`))
+    if (probe.prefix !== expectedPrefix) {
+      throw new BootstrapError('MODEL_MANAGER_ENVIRONMENT_PATH_MISMATCH', 'The model-manager virtual environment or managed Python path is invalid.');
+    }
+    if (basePrefix !== managedPythonRoot && !basePrefix.startsWith(`${managedPythonRoot}${path.sep}`)) {
+      throw new BootstrapError('MODEL_MANAGER_MANAGED_PYTHON_PATH_MISMATCH', 'The model-manager virtual environment or managed Python path is invalid.');
+    }
+    if (!probe.catalog_valid || !Array.isArray(probe.roles)
         || !['diarization', 'asr', 'speech_detection', 'speaker_purity'].every((role) => probe.roles.includes(role))) {
-      throw new BootstrapError('MODEL_MANAGER_VALIDATION_FAILED', 'The installed model manager catalog or package version is not valid.');
+      throw new BootstrapError('MODEL_MANAGER_CATALOG_INVALID', 'The installed model-manager catalog is invalid or missing required model roles.');
+    }
+    if (!Array.isArray(probe.heavy_dependencies) || probe.heavy_dependencies.length) {
+      throw new BootstrapError('UNEXPECTED_ML_DEPENDENCY', 'The lightweight model-manager environment contains an unexpected ML dependency.');
     }
     return probe;
   }
 
   async findInstalledModelManager(context) {
+    const wheel = this.managerWheelIdentity();
+    const identity = await hashFile(wheel);
+    if (identity.sha256 !== this.wheelSha256) throw new BootstrapError('MODEL_MANAGER_WHEEL_HASH_MISMATCH', 'The model-manager wheel did not match its trusted SHA-256.');
     const version = this.manifest.model_manager.version || '0.1.0';
     const pythonVersion = this.manifest.python.version;
     const lockSha = this.manifest.model_manager.requirements_sha256;
@@ -1135,6 +1376,7 @@ export class BootstrapTasks {
     }
     const pattern = new RegExp(`^${version.replaceAll('.', '\\.')}\\-py${pythonVersion.replaceAll('.', '\\.')}\\-${this.environment.profile}\\-([a-f0-9]{12})\\-${lockSha.slice(0, 12)}$`);
     const candidates = entries.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && pattern.test(entry.name));
+    let validationFailure = null;
     for (const entry of candidates) {
       const environmentRoot = path.join(parent, entry.name);
       const python = path.join(environmentRoot, 'bin', 'python');
@@ -1150,24 +1392,25 @@ export class BootstrapTasks {
         if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || resolvedEnvironment !== environmentRoot
             || !binInfo.isDirectory() || binInfo.isSymbolicLink() || !info.isFile()
             || !trustedPythonPath || (info.mode & 0o111) === 0) continue;
-        const result = await this.runProcess(python, ['-I', '-c', MANAGER_PROBE], context, { allowFailure: true,
+        const result = await this.runProcess(python, ['-I', '-B', '-c', MANAGER_PROBE, wheel, this.wheelSha256], context, { allowFailure: true,
           env: { ...this.makeEnvironment(this.paths), SPEECHCRAFT_EXPECTED_MANAGER_PREFIX: environmentRoot,
             SPEECHCRAFT_EXPECTED_MANAGED_PYTHON_ROOT: this.paths.pythonRoot } });
         const probe = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
         const wheelPrefix = entry.name.match(pattern)?.[1];
-        if (result.code === 0 && probe.kind === 'SPEECHCRAFT_MODEL_MANAGER_PROBE'
-            && probe.version === version && probe.prefix === environmentRoot
-            && (probe.base_prefix === this.paths.pythonRoot || probe.base_prefix.startsWith(`${this.paths.pythonRoot}${path.sep}`))
-            && /^[a-f0-9]{64}$/.test(probe.wheel_sha256 || '')
-            && probe.wheel_sha256.slice(0, 12) === wheelPrefix
-            && ['diarization', 'asr', 'speech_detection', 'speaker_purity'].every((role) => probe.roles.includes(role))
-            && Array.isArray(probe.heavy_dependencies) && probe.heavy_dependencies.length === 0) {
-          return { ...probe, environmentRoot, python };
+        if (result.code === 0 && probe.kind === 'SPEECHCRAFT_MODEL_MANAGER_PROBE') {
+          try {
+            const validated = this.validateManagerProbe(probe, environmentRoot);
+            if (validated.wheel_sha256 !== this.wheelSha256 || validated.wheel_sha256.slice(0, 12) !== wheelPrefix) {
+              throw new BootstrapError('MODEL_MANAGER_WHEEL_HASH_MISMATCH', 'The installed environment identity does not match the trusted model-manager wheel.');
+            }
+            return { ...validated, environmentRoot, python };
+          } catch (error) { validationFailure = error; }
         }
       } catch (error) {
         if (['BOOTSTRAP_CANCELLED', 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN'].includes(error.code)) throw error;
       }
     }
+    if (validationFailure) throw validationFailure;
     throw new BootstrapError('MODEL_MANAGER_ENVIRONMENT_UNAVAILABLE', 'No installed model-manager environment passed its pinned package, wheel, lock, and catalog identity checks. Trusted repair inputs are required to reinstall it.');
   }
 

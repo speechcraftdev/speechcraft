@@ -44,7 +44,7 @@ const runtime = process.env.UV_PYTHON_INSTALL_DIR;
 if (source.includes('SPEECHCRAFT_PYTHON_PROBE')) {
   console.log(JSON.stringify({ kind: 'SPEECHCRAFT_PYTHON_PROBE', version: '3.12.15', machine: 'x86_64', system: 'Linux', executable, prefix: runtime, base_prefix: runtime }));
 } else if (source.includes('SPEECHCRAFT_MODEL_MANAGER_PROBE')) {
-  console.log(JSON.stringify({ kind: 'SPEECHCRAFT_MODEL_MANAGER_PROBE', version: '0.1.0', roles: ['asr', 'diarization', 'speaker_purity', 'speech_detection'], python: '3.12.15', prefix: process.env.SPEECHCRAFT_EXPECTED_MANAGER_PREFIX, base_prefix: process.env.SPEECHCRAFT_EXPECTED_MANAGED_PYTHON_ROOT, heavy_dependencies: [], executable, wheel_sha256: process.env.SPEECHCRAFT_EXPECTED_MODEL_MANAGER_WHEEL_SHA256 || null }));
+  console.log(JSON.stringify({ kind: 'SPEECHCRAFT_MODEL_MANAGER_PROBE', version: '0.1.0', roles: ['asr', 'diarization', 'speaker_purity', 'speech_detection'], catalog_valid: true, python: '3.12.15', prefix: process.env.SPEECHCRAFT_EXPECTED_MANAGER_PREFIX, base_prefix: process.env.SPEECHCRAFT_EXPECTED_MANAGED_PYTHON_ROOT, heavy_dependencies: [], executable, wheel_sha256: process.env.SPEECHCRAFT_EXPECTED_MODEL_MANAGER_WHEEL_SHA256 || null }));
 } else if (process.argv.includes('--help')) {
   console.log('speechcraft_models install verify status');
 } else {
@@ -161,24 +161,24 @@ test('bootstrap checks capacity before acquisition but allows reuse below the in
   (error) => error.code === 'INSUFFICIENT_DISK_SPACE');
 });
 
-test('ordinary installed-runtime recovery resolves the verified model-manager environment without an installer wheel', async () => {
+test('ordinary installed-runtime recovery requires and binds reuse to the trusted shipped wheel', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-manager-recovery-'));
-  const wheelSha = 'b'.repeat(64);
-  const tasks = new BootstrapTasks({ dataDirectory: root, wheelPath: undefined, wheelSha256: undefined,
+  const wheel = path.join(root, 'speechcraft_model_manager-0.1.0-py3-none-any.whl');
+  fs.writeFileSync(wheel, 'trusted wheel fixture');
+  const wheelSha = hash(fs.readFileSync(wheel));
+  const tasks = new BootstrapTasks({ dataDirectory: root, wheelPath: wheel, wheelSha256: wheelSha,
     processRunner: async (_exe, _args, options) => ({ code: 0, stdout: JSON.stringify({ kind: 'SPEECHCRAFT_MODEL_MANAGER_PROBE', version: '0.1.0',
-      roles: ['diarization', 'asr', 'speech_detection', 'speaker_purity'], heavy_dependencies: [],
+      roles: ['diarization', 'asr', 'speech_detection', 'speaker_purity'], catalog_valid: true, python: '3.12.15', heavy_dependencies: [],
       prefix: options.env.SPEECHCRAFT_EXPECTED_MANAGER_PREFIX,
       base_prefix: options.env.SPEECHCRAFT_EXPECTED_MANAGED_PYTHON_ROOT, wheel_sha256: wheelSha }) }) });
   tasks.environment = { profile: 'linux-x86_64' };
-  assert.throws(() => tasks.getPaths('linux-x86_64'), (error) => error.code === 'MODEL_MANAGER_WHEEL_REQUIRED',
-    'fresh installation paths still require trusted wheel metadata');
-  tasks.paths = tasks.getPaths('linux-x86_64', { allowMissingManager: true });
-  assert.equal(tasks.paths.environmentRoot, null);
+  tasks.paths = tasks.getPaths('linux-x86_64');
   fs.mkdirSync(tasks.paths.pythonRoot, { recursive: true });
   const version = tasks.manifest.python.version;
   const lockPrefix = tasks.manifest.model_manager.requirements_sha256.slice(0, 12);
   const target = path.join(root, 'environments', 'speechcraft-model-manager',
     `0.1.0-py${version}-linux-x86_64-${wheelSha.slice(0, 12)}-${lockPrefix}`);
+  assert.equal(target, tasks.paths.environmentRoot);
   fs.mkdirSync(path.join(target, 'bin'), { recursive: true, mode: 0o700 });
   const python = path.join(target, 'bin', 'python');
   fs.writeFileSync(python, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
@@ -187,6 +187,11 @@ test('ordinary installed-runtime recovery resolves the verified model-manager en
   assert.equal(found.environmentRoot, target);
   assert.equal(found.python, python);
   assert.equal(found.wheel_sha256, wheelSha);
+  const noWheel = new BootstrapTasks({ dataDirectory: root, wheelPath: undefined, wheelSha256: undefined });
+  noWheel.environment = { profile: 'linux-x86_64' };
+  noWheel.paths = noWheel.getPaths('linux-x86_64', { allowMissingManager: true });
+  await assert.rejects(noWheel.findInstalledModelManager({ attemptId: 'fixture', signal: new AbortController().signal }),
+    (error) => error.code === 'MODEL_MANAGER_WHEEL_REQUIRED');
   fs.rmSync(root, { recursive: true, force: true });
 });
 
