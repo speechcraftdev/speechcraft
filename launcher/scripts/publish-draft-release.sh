@@ -16,8 +16,8 @@ cd "$repo_root"
 head=$(git rev-parse HEAD)
 [ "$head" = "$revision" ] || { printf 'Checkout HEAD must equal requested source commit %s.\n' "$revision" >&2; exit 1; }
 [ -z "$(git status --porcelain)" ] || { printf 'Release source checkout must be clean.\n' >&2; exit 1; }
-if git ls-remote --exit-code --tags https://github.com/speechcraftdev/speechcraft.git "refs/tags/$tag" "refs/tags/$tag^{}" >/dev/null 2>&1; then
-  printf 'Refusing to reuse existing tag %s.\n' "$tag" >&2
+if gh release view "$tag" --repo speechcraftdev/speechcraft >/dev/null 2>&1; then
+  printf 'Refusing to overwrite existing release %s.\n' "$tag" >&2
   exit 1
 fi
 
@@ -30,5 +30,16 @@ trap cleanup EXIT HUP INT TERM
 node launcher/scripts/package-linux.mjs --source-revision "$revision" --output "$output"
 node launcher/scripts/generate-bootstrap.mjs --tag "$tag" --source-revision "$revision" --output "$output"
 printf 'SpeechCraft %s Linux x86-64 candidate release.\n\nSource commit: `%s`\n\nSupport status: Linux x86-64 package only. macOS Apple Silicon and Windows WSL2 packages are development artifacts and are not production-supported.\n\nThis release is a draft for authenticated inspection. It is not publicly downloadable. FFmpeg redistribution review and TitaNet provenance approval remain unresolved; do not publish this release until both gates are documented as cleared. No model weights or developer credentials are included.\n' "$(node -p "require('./frontend/package.json').version")" "$revision" > "$notes"
+tag_ref="refs/tags/$tag"
+tag_record=$(gh api "repos/speechcraftdev/speechcraft/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha' 2>/dev/null || true)
+if [ -n "$tag_record" ]; then
+  set -- $tag_record
+  if [ "$1" != commit ] || [ "$2" != "$revision" ]; then
+    printf 'Refusing to reuse or move existing tag %s.\n' "$tag" >&2
+    exit 1
+  fi
+else
+  gh api repos/speechcraftdev/speechcraft/git/refs --method POST -f ref="$tag_ref" -f sha="$revision" >/dev/null
+fi
 gh release create "$tag" "$output"/* --repo speechcraftdev/speechcraft --target "$revision" --draft \
   --title "SpeechCraft $tag (Linux candidate)" --notes-file "$notes"
