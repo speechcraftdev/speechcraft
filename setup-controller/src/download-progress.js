@@ -6,6 +6,10 @@ const SAMPLE_WINDOW_MS = 5_000;
 const MIN_SAMPLE_MS = 250;
 const MIN_EMIT_INTERVAL_MS = 750;
 const MIN_EMIT_BYTES = 1024 * 1024;
+const SETUP_PHASES = new Set([
+  'queued', 'inspecting', 'downloading', 'verifying', 'verified', 'installing',
+  'running_inference', 'interrupted', 'complete',
+]);
 
 function byteCount(value) {
   return Number.isSafeInteger(value) && value >= 0 && value <= MAX_SAFE_BYTES ? value : null;
@@ -23,10 +27,9 @@ export function safeDisplayFilename(value) {
 
 export function sanitizeProgressTelemetry(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const phases = new Set(['downloading', 'verifying', 'installing', 'running_inference', 'interrupted']);
   const roles = new Set(['speech_detection', 'asr', 'diarization', 'speaker_purity']);
   const result = {};
-  if (phases.has(value.phase)) result.phase = value.phase;
+  if (SETUP_PHASES.has(value.phase)) result.phase = value.phase;
   if (roles.has(value.role)) result.role = value.role;
   for (const key of ['model_name']) {
     if (typeof value[key] === 'string' && value[key].length <= 100 && !/[\u0000-\u001f\u007f]/.test(value[key])
@@ -169,9 +172,12 @@ export class DownloadProgressTracker {
     const now = this.clock();
     const previous = this.lastEmission;
     const attempt = this.transfer?.attempt ?? null;
+    const downloaded = byteCount(progress.downloaded_bytes);
+    const total = byteCount(progress.total_bytes);
+    const transferComplete = downloaded !== null && total !== null && total > 0 && downloaded >= total;
     if (force || !previous || previous.phase !== progress.phase || previous.filename !== progress.current_filename
         || previous.attempt !== attempt || previous.filesCompleted !== progress.files_completed
-        || progress.downloaded_bytes === progress.total_bytes) {
+        || transferComplete) {
       this.lastEmission = { ...previous, at: now, downloaded: progress.downloaded_bytes,
         filename: progress.current_filename, attempt, phase: progress.phase, filesCompleted: progress.files_completed };
       return true;

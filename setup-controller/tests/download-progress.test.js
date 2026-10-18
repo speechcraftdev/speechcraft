@@ -101,6 +101,36 @@ test('completion and phase changes do not retain a download ETA or speed', () =>
   assert.equal(tracker.stalled(), null, 'finished or interrupted child processes leave no active speed estimate');
 });
 
+test('setup phases survive progress sanitization while unknown phases are omitted', () => {
+  for (const phase of ['queued', 'inspecting', 'installing', 'verifying', 'complete']) {
+    assert.equal(sanitizeProgressTelemetry({ phase }).phase, phase);
+  }
+  assert.equal(sanitizeProgressTelemetry({ phase: 'future_setup_step' }).phase, undefined);
+  assert.equal(sanitizeProgressTelemetry({ downloaded_bytes: 50 }).phase, undefined);
+});
+
+test('unknown-size progress events are throttled and valid completion emits immediately', () => {
+  let now = 0;
+  const tracker = new DownloadProgressTracker({ clock: () => now });
+  const unknown = tracker.accept({ ...base, event: 'source_progress', path: 'snapshot/part.bin',
+    downloaded_bytes: null, total_bytes: null, transfer_attempt_bytes: null,
+    transfer_indeterminate: true, files_completed: 1, files_total: 8 }, 'diarization', 'pyannote Community-1');
+  let emissions = Number(tracker.shouldEmit(unknown));
+  for (let index = 0; index < 1_000; index += 1) {
+    now += 1;
+    const progress = tracker.accept({ ...base, event: 'source_progress', path: 'snapshot/part.bin',
+      downloaded_bytes: null, total_bytes: null, transfer_attempt_bytes: null,
+      transfer_indeterminate: true, files_completed: 1, files_total: 8 }, 'diarization', 'pyannote Community-1');
+    if (tracker.shouldEmit(progress)) emissions += 1;
+  }
+  assert.equal(emissions, 2, 'a burst emits once initially and again only after the throttle interval');
+
+  now += 1;
+  const completed = tracker.accept({ ...base, event: 'source_progress', path: 'snapshot/part.bin',
+    downloaded_bytes: 1_000, total_bytes: 1_000, transfer_attempt_bytes: 1_000 }, 'diarization', 'pyannote Community-1');
+  assert.equal(tracker.shouldEmit(completed), true, 'genuine completion bypasses the throttle');
+});
+
 test('malformed, out-of-order, or secret-bearing progress cannot become public telemetry', () => {
   let now = 0;
   const tracker = new DownloadProgressTracker({ clock: () => now });

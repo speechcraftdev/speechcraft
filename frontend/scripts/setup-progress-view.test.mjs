@@ -54,7 +54,28 @@ test('verification and inference phases do not render download percentage, speed
       total_bytes: 2_000, bytes_per_second: 100, eta_seconds: 10, transfer_indeterminate: false });
     assert.match(markup, new RegExp(phase === 'running_inference' ? 'Running inference'
       : phase === 'verifying' ? 'Verifying files' : 'Installing'));
-    assert.match(markup, /Download progress is not shown during this phase/);
+    assert.match(markup, /Setup is working/);
     assert.doesNotMatch(markup, /role="progressbar"|Speed:|ETA:|aria-valuenow|\d+%/);
   }
+});
+
+test('queued, inspecting, installation, verification, and completion stay outside download UI', () => {
+  const labels = new Map([
+    ['queued', 'Queued'], ['inspecting', 'Inspecting'], ['installing', 'Installing'],
+    ['verifying', 'Verifying files'], ['complete', 'Complete'], ['future_setup_step', 'Working'],
+  ]);
+  for (const [phase, label] of labels) {
+    const markup = html({ phase, model_name: 'Whisper Large-v3', downloaded_bytes: 900,
+      total_bytes: 1_000, bytes_per_second: 300, eta_seconds: 1, files_completed: 4,
+      files_total: 4, transfer_indeterminate: false });
+    assert.match(markup, new RegExp(label));
+    assert.doesNotMatch(markup, /role="progressbar"|Speed:|ETA:|aria-valuenow|900 B|1 KB|files completed|\d+%/);
+  }
+});
+
+test('missing phase renders a neutral working state instead of a download', () => {
+  const markup = html({ model_name: 'SpeechCraft setup', downloaded_bytes: 900, total_bytes: 1_000,
+    bytes_per_second: 300, eta_seconds: 1 });
+  assert.match(markup, />Working</);
+  assert.doesNotMatch(markup, /role="progressbar"|Speed:|ETA:|aria-valuenow|900 B|1 KB|\d+%/);
 });

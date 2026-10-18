@@ -11,7 +11,9 @@ function formatBytes(value: number | null | undefined) {
 }
 
 function phaseLabel(phase: string | null | undefined) {
-  return ({ downloading: "Downloading", verifying: "Verifying files", installing: "Installing", running_inference: "Running inference", interrupted: "Download interrupted" } as Record<string, string>)[phase || ""] || "Working";
+  return ({ queued: "Queued", inspecting: "Inspecting", downloading: "Downloading", verifying: "Verifying files",
+    verified: "Verified", installing: "Installing", running_inference: "Running inference",
+    interrupted: "Download interrupted", complete: "Complete" } as Record<string, string>)[phase || ""] || "Working";
 }
 
 function formatDuration(seconds: number | null | undefined) {
@@ -27,7 +29,7 @@ function formatDuration(seconds: number | null | undefined) {
 
 export function ProgressDetails({ progress, fallbackName }: { progress: ProgressTelemetry | null | undefined; fallbackName: string }) {
   if (!progress) return null;
-  const phase = progress.phase || "downloading";
+  const phase = progress.phase;
   const isDownload = phase === "downloading";
   const downloadedBytes = progress.downloaded_bytes ?? progress.current ?? null;
   const totalBytes = progress.total_bytes ?? progress.total ?? null;
@@ -43,7 +45,7 @@ export function ProgressDetails({ progress, fallbackName }: { progress: Progress
     ? `${formatBytes(progress.bytes_per_second)}/s` : null;
   const eta = isDownload && !progress.transfer_indeterminate && !progress.indeterminate && !progress.stalled
     ? formatDuration(progress.eta_seconds) : null;
-  const fileCount = Number.isSafeInteger(progress.files_completed) && Number.isSafeInteger(progress.files_total)
+  const fileCount = isDownload && Number.isSafeInteger(progress.files_completed) && Number.isSafeInteger(progress.files_total)
     ? `${progress.files_completed} / ${progress.files_total} files completed` : null;
   const label = progress.model_name || fallbackName;
   const ariaLabel = `${label}: ${phaseLabel(phase).toLowerCase()}${percent === null ? "" : ` ${percent}%`}`;
@@ -69,6 +71,6 @@ export function ProgressDetails({ progress, fallbackName }: { progress: Progress
       <span>Speed: {progress.stalled ? "Stalled" : speed || "unavailable"}</span>
       <span>ETA: {progress.stalled ? "Unavailable" : eta || (progress.transfer_indeterminate || progress.indeterminate ? "unavailable" : "Calculating…")}</span>
     </div>}
-    {!isDownload && <p className="text-xs text-[#777]">Download progress is not shown during this phase.</p>}
+    {!isDownload && <p className="text-xs text-[#777]">Setup is working. Download progress is unavailable for this phase.</p>}
   </div>;
 }
