@@ -11,8 +11,23 @@ const value = (flag) => { const index = args.indexOf(flag); return index < 0 ? n
 const output = value('--output');
 const tag = value('--tag');
 const revision = value('--source-revision');
+const requestedAssetBaseUrl = value('--asset-base-url');
 if (!output || !/^v[0-9]+\.[0-9]+\.[0-9]+(?:-internal\.[1-9][0-9]*)?$/.test(tag || '') || !/^[a-f0-9]{40}$/.test(revision || '')) {
-  throw new Error('Usage: node launcher/scripts/generate-bootstrap.mjs --tag vX.Y.Z[-internal.N] --source-revision 40-character-commit --output DIRECTORY');
+  throw new Error('Usage: node launcher/scripts/generate-bootstrap.mjs --tag vX.Y.Z[-internal.N] --source-revision 40-character-commit --output DIRECTORY [--asset-base-url HTTPS-URL|LOOPBACK-HTTP-URL]');
+}
+const defaultAssetBaseUrl = `https://github.com/speechcraftdev/speechcraft/releases/download/${tag}`;
+const assetBaseUrl = requestedAssetBaseUrl || defaultAssetBaseUrl;
+let parsedAssetBaseUrl;
+try { parsedAssetBaseUrl = new URL(assetBaseUrl); } catch { throw new Error('Release asset base URL must be a valid absolute URL.'); }
+const isLoopbackHttp = parsedAssetBaseUrl.protocol === 'http:'
+  && (parsedAssetBaseUrl.hostname === '127.0.0.1' || parsedAssetBaseUrl.hostname === 'localhost')
+  && parsedAssetBaseUrl.port !== '';
+if (parsedAssetBaseUrl.protocol !== 'https:' && !isLoopbackHttp) {
+  throw new Error('Release asset base URL must use HTTPS; HTTP is allowed only with an explicit loopback port for private staging.');
+}
+if (parsedAssetBaseUrl.username || parsedAssetBaseUrl.password || parsedAssetBaseUrl.search || parsedAssetBaseUrl.hash
+  || !/^[A-Za-z0-9._~:/-]+$/.test(assetBaseUrl) || assetBaseUrl.endsWith('/')) {
+  throw new Error('Release asset base URL must not contain credentials, query or fragment values, or unsafe characters.');
 }
 const destination = path.resolve(output);
 const run = spawnSync('git', ['rev-parse', `${revision}^{commit}`], { cwd: root, encoding: 'utf8', shell: false });
@@ -53,6 +68,7 @@ const pins = {
   MANIFEST_SHA256: sha(releaseManifest),
   INSTALLER_SHA256: sha(pythonInstaller),
   INSTALLER_SH_SHA256: sha(shellInstaller),
+  ASSET_BASE_URL: assetBaseUrl,
 };
 let template = fs.readFileSync(path.join(root, 'launcher/installer/install.sh.in'), 'utf8');
 for (const [key, pin] of Object.entries(pins)) template = template.replaceAll(`@@${key}@@`, pin);
