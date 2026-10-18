@@ -472,6 +472,8 @@ test('a passing CUDA Whisper probe updates the selected runtime device and worke
   await tasks.validateRuntime(context);
   assert.equal(context.componentStatus.runtime_profile.accelerator, 'cuda');
   assert.equal(context.componentStatus.components.worker_environment.effective_profile, 'linux-x86_64-cuda');
+  assert.equal(context.componentStatus.components.worker_environment.message, null,
+    'a successful CUDA Whisper inference must not retain the preflight candidate message');
   assert.equal(context.componentStatus.components.whisper.device, 'NVIDIA RTX 4060');
   assert.equal(context.componentStatus.components.whisper.verification, 'trusted_cpu_and_cuda_inference_probes');
   assert.equal(context.componentStatus.production_ready, false);

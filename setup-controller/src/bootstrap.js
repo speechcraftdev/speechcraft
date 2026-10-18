@@ -2059,7 +2059,7 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
           const candidate = context.componentStatus.components.worker_cuda_candidate;
           this.setComponent(context, 'worker_environment', { ...candidate, state: 'verified',
             identity: `${this.runtimeRecipe.worker.distribution}/v${this.runtimeRecipe.worker.profiles['linux-x86_64-cuda'].environment_version}/linux-x86_64-cuda`,
-            effective_profile: 'linux-x86_64-cuda', device: report.device });
+            effective_profile: 'linux-x86_64-cuda', device: report.device, message: null });
           // The ordinary Whisper probe runs before CUDA is considered, against
           // the safe CPU environment. Once the dedicated CUDA probe proves a
           // real Large-v3 transcription, expose that as the selected runtime
