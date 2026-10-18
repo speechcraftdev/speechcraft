@@ -63,6 +63,11 @@ export class RuntimeTasks extends BootstrapTasks {
     super.status(context, { ...patch, components: derived.components,
       technical_processing_ready: derived.readiness.technical_ready,
       release_blockers: derived.readiness.release_blockers, production_ready: derived.readiness.production_ready });
+    // Startup restoration keeps this alias so BootstrapTasks.run can continue
+    // from the most recently revalidated snapshot. super.status replaces
+    // componentStatus with a new object, so leaving the alias untouched causes
+    // validate_runtime to rewind to the stale pre-revalidation state.
+    if (Object.hasOwn(context, 'bootstrapStatus')) context.bootstrapStatus = context.componentStatus;
   }
 
   setComponent(context, name, patch) {
