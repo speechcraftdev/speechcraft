@@ -5,6 +5,7 @@ import re
 import io
 import shutil
 import stat
+import traceback
 from pathlib import Path
 
 # This is an explicit filename allowlist in addition to the packaged catalog.
@@ -45,10 +46,10 @@ class HuggingFaceAcquisitionError(RuntimeError):
         self.diagnostic = diagnostic or {}
 
 
-def _safe_exception_diagnostic(exc: Exception) -> dict[str, str | int]:
-    """Return only exception type and HTTP status; never include upstream text or URLs."""
+def _safe_exception_diagnostic(exc: Exception) -> dict[str, object]:
+    """Return allowlisted structural details; never include upstream text or URLs."""
     name = type(exc).__name__
-    diagnostic: dict[str, str | int] = {}
+    diagnostic: dict[str, object] = {}
     if re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,79}", name):
         diagnostic["exception_type"] = name
     response = getattr(exc, "response", None)
@@ -57,6 +58,26 @@ def _safe_exception_diagnostic(exc: Exception) -> dict[str, str | int]:
         status = getattr(response, "status", None)
     if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
         diagnostic["http_status"] = status
+    if isinstance(exc, AttributeError):
+        missing = getattr(exc, "name", None)
+        if isinstance(missing, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", missing):
+            diagnostic["attribute"] = missing
+        obj = getattr(exc, "obj", None)
+        object_type = type(obj).__name__ if obj is not None else None
+        if isinstance(object_type, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", object_type):
+            diagnostic["object_type"] = object_type
+    frames = []
+    tb = exc.__traceback__
+    while tb is not None:
+        frame = tb.tb_frame
+        module = frame.f_globals.get("__name__")
+        function = frame.f_code.co_name
+        if (isinstance(module, str) and re.fullmatch(r"[A-Za-z0-9_.]{1,160}", module)
+                and re.fullmatch(r"[A-Za-z0-9_]{1,100}", function)):
+            frames.append({"module": module, "function": function})
+        tb = tb.tb_next
+    if frames:
+        diagnostic["frames"] = frames[-4:]
     return diagnostic
 
 

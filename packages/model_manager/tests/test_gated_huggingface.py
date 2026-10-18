@@ -94,6 +94,19 @@ class GatedAcquisitionTests(unittest.TestCase):
             'exception_type': 'SignedUrlFailure', 'http_status': 503,
         })
 
+        try:
+            missing = AttributeError('private upstream text', 'ignored', 'missing_member')
+            missing.name = 'missing_member'
+            missing.obj = object()
+            raise missing
+        except AttributeError as caught:
+            detail = _safe_exception_diagnostic(caught)
+        self.assertEqual(detail['exception_type'], 'AttributeError')
+        self.assertEqual(detail['attribute'], 'missing_member')
+        self.assertEqual(detail['object_type'], 'object')
+        self.assertTrue(detail['frames'])
+        self.assertNotIn('private upstream text', json.dumps(detail))
+
     def test_production_community_catalog_matches_the_independent_gate_allowlist(self):
         catalog = load_catalog()
         artifact = select_artifact(catalog, 'diarization', 'linux-x86_64')

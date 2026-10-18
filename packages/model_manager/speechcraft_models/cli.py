@@ -22,6 +22,22 @@ def _safe_diagnostic_from_chain(exc):
             status = candidate.get('http_status')
             if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
                 diagnostic['http_status'] = status
+            for key in ('attribute', 'object_type'):
+                value = candidate.get(key)
+                if isinstance(value, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}', value):
+                    diagnostic[key] = value
+            frames = candidate.get('frames')
+            if isinstance(frames, list):
+                safe_frames = []
+                for frame in frames[-4:]:
+                    if not isinstance(frame, dict):
+                        continue
+                    module, function = frame.get('module'), frame.get('function')
+                    if (isinstance(module, str) and re.fullmatch(r'[A-Za-z0-9_.]{1,160}', module)
+                            and isinstance(function, str) and re.fullmatch(r'[A-Za-z0-9_]{1,100}', function)):
+                        safe_frames.append({'module': module, 'function': function})
+                if safe_frames:
+                    diagnostic['frames'] = safe_frames
             if diagnostic:
                 return diagnostic
         cause = getattr(cause, '__cause__', None)

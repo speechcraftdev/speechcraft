@@ -1874,6 +1874,17 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       if (Number.isInteger(diagnostic.http_status) && diagnostic.http_status >= 100 && diagnostic.http_status <= 599) {
         detailParts.push(`http_status=${diagnostic.http_status}`);
       }
+      for (const field of ['attribute', 'object_type']) {
+        if (typeof diagnostic[field] === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(diagnostic[field])) {
+          detailParts.push(`${field}=${diagnostic[field]}`);
+        }
+      }
+      if (Array.isArray(diagnostic.frames)) {
+        const frames = diagnostic.frames.slice(-4).filter((frame) => frame &&
+          typeof frame.module === 'string' && /^[A-Za-z0-9_.]{1,160}$/.test(frame.module) &&
+          typeof frame.function === 'string' && /^[A-Za-z0-9_]{1,100}$/.test(frame.function));
+        if (frames.length) detailParts.push(`trace=${frames.map((frame) => `${frame.module}.${frame.function}`).join('>')}`);
+      }
       const failureMessage = `${safeMessages[code]}${detailParts.length ? ` (diagnostic: ${detailParts.join('; ')})` : ''}`;
       this.setComponent(context, 'pyannote', { state: waiting ? 'access_denied' : 'failed', failure_code: code,
         message: failureMessage, runtime_ready: false, progress: null, progress_indeterminate: false });
