@@ -4,10 +4,56 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { BackendService } from '../src/backend-service.js';
 import { assertTrustedBackendRecipe, cudaProfileReady, evaluateRuntimeReadiness, initialComponents, runtimeManifest, selectRuntimeProfile } from '../src/runtime-plan.js';
 import { RuntimeTasks } from '../src/runtime-tasks.js';
 
 const sha = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+test('managed backend passes only the verified ECAPA model root and ONNX path to dataset workers', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-ecapa-worker-environment-'));
+  const originalStart = BackendService.prototype.start;
+  try {
+    let environmentVars;
+    let startCalls = 0;
+    BackendService.prototype.start = async function startForTest() {
+      startCalls += 1;
+      environmentVars = this.environmentVars;
+      return { port: 8010 };
+    };
+    const tasks = new RuntimeTasks({ dataDirectory: root });
+    tasks.environment = { profile: 'linux-x86_64', os: 'linux', architecture: 'x86_64', wsl: false };
+    tasks.paths = { home: root, uvCache: root, pythonRoot: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
+    tasks.backendEnvironmentPath = () => path.join(root, 'environments', 'backend', 'bin', 'python');
+    const modelRoot = path.join(root, 'models');
+    const components = {
+      backend_environment: { state: 'verified' },
+      worker_environment: { state: 'verified', path: path.join(root, 'environments', 'worker'), library_paths: [] },
+      ffmpeg: { state: 'runtime_ready', path: path.join(root, 'tools', 'ffmpeg') },
+      silero: { state: 'runtime_ready', path: path.join(modelRoot, 'silero') },
+      whisper: { state: 'runtime_ready', path: path.join(modelRoot, 'whisper') },
+      pyannote: { state: 'runtime_ready', path: path.join(modelRoot, 'community-1') },
+      ecapa: { state: 'runtime_ready', path: path.join(modelRoot, 'wespeaker-ecapa-tdnn512-lm') },
+    };
+    await tasks.startServices({ attemptId: 'ecapa-env-test', signal: new AbortController().signal,
+      componentStatus: { components, runtime_profile: { accelerator: 'cuda' } } });
+    assert.equal(environmentVars.SPEECHCRAFT_ECAPA_MODEL_PATH, components.ecapa.path);
+    assert.equal(environmentVars.SPEECHCRAFT_ECAPA_ONNX_PATH,
+      path.join(components.ecapa.path, 'voxceleb_ECAPA512_LM.onnx'));
+
+    // A stale or unverified component must not provide a worker model path.
+    components.ecapa.state = 'files_verified';
+    tasks.service = null;
+    const unverifiedStatus = { components, runtime_profile: { accelerator: 'cuda' } };
+    await tasks.startServices({ attemptId: 'ecapa-env-unverified-test', signal: new AbortController().signal,
+      componentStatus: unverifiedStatus });
+    assert.equal(startCalls, 1, 'the backend cannot start without verified ECAPA inference');
+    assert.equal(unverifiedStatus.components.backend_service.failure_code, 'runtime_prerequisite_unavailable');
+  } finally {
+    BackendService.prototype.start = originalStart;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('platform selection keeps WSL storage host identity separate from model artifact selection', () => {
   assert.equal(selectRuntimeProfile({ os: 'linux', architecture: 'x86_64', profile: 'linux-x86_64', wsl: true }).modelPlatform, 'windows-wsl2');

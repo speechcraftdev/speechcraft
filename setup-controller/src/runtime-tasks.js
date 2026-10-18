@@ -383,7 +383,7 @@ export class RuntimeTasks extends BootstrapTasks {
       return;
     }
     const components = context.componentStatus.components || {};
-    const prerequisites = ['worker_environment', 'ffmpeg', 'silero', 'whisper', 'pyannote'];
+    const prerequisites = ['worker_environment', 'ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa'];
     const missing = prerequisites.filter((name) => {
       const item = components[name];
       return name === 'worker_environment' ? item?.state !== 'verified' : item?.state !== 'runtime_ready';
@@ -409,6 +409,12 @@ export class RuntimeTasks extends BootstrapTasks {
     const asr = components.whisper?.state === 'runtime_ready' ? components.whisper.path : null;
     const silero = components.silero?.state === 'runtime_ready' ? components.silero.path : null;
     const pyannote = components.pyannote?.state === 'runtime_ready' ? components.pyannote.path : null;
+    const ecapaCandidate = components.ecapa?.state === 'runtime_ready' && typeof components.ecapa.path === 'string'
+      ? path.resolve(components.ecapa.path) : null;
+    const modelRootResolved = path.resolve(modelRoot);
+    const ecapaRelative = ecapaCandidate ? path.relative(modelRootResolved, ecapaCandidate) : '';
+    const ecapa = ecapaCandidate && ecapaRelative && ecapaRelative !== '..'
+      && !ecapaRelative.startsWith(`..${path.sep}`) && !path.isAbsolute(ecapaRelative) ? ecapaCandidate : null;
     const modelPlatform = selectRuntimeProfile(this.environment).modelPlatform;
     const ffmpegDir = components.ffmpeg?.state === 'runtime_ready' ? components.ffmpeg.path : null;
     const workerPython = worker?.state === 'verified' ? path.join(worker.path, 'bin', 'python') : null;
@@ -424,6 +430,8 @@ export class RuntimeTasks extends BootstrapTasks {
       SPEECHCRAFT_SILERO_MODEL_DIR: silero || '',
       SPEECHCRAFT_SILERO_ONNX_PATH: silero ? path.join(silero, 'silero_vad.onnx') : '',
       SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH: pyannote || '',
+      SPEECHCRAFT_ECAPA_MODEL_PATH: ecapa || '',
+      SPEECHCRAFT_ECAPA_ONNX_PATH: ecapa ? path.join(ecapa, 'voxceleb_ECAPA512_LM.onnx') : '',
       SPEECHCRAFT_FFMPEG_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffmpeg') : '',
       SPEECHCRAFT_FFPROBE_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffprobe') : '',
       SPEECHCRAFT_FFMPEG_DIR: ffmpegDir || '',
@@ -462,7 +470,7 @@ export class RuntimeTasks extends BootstrapTasks {
     const components = context.componentStatus.components;
     const bootstrapVerified = ['uv', 'managed_python', 'backend_environment', 'worker_environment', 'backend_service']
       .every((name) => components?.[name]?.state === 'verified');
-    const inferenceVerified = ['ffmpeg', 'silero', 'whisper']
+    const inferenceVerified = ['ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa']
       .every((name) => components?.[name]?.state === 'runtime_ready');
     this.status(context, { bootstrap_ready: Boolean(context.componentStatus.uv_verified && context.componentStatus.python_verified && context.componentStatus.model_manager_verified),
       partial_ready: bootstrapVerified && inferenceVerified, production_ready: false });
