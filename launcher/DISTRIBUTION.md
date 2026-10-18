@@ -36,7 +36,7 @@ From a clean checkout at the exact source commit, run:
 launcher/scripts/publish-draft-release.sh v0.1.0 <40-character-source-commit>
 ```
 
-The command builds the Linux package, creates a release-specific `install.sh`, then calls `gh release create --draft`. It refuses a pre-existing tag and always creates a draft. The release includes the archive, checksum, release JSON manifest, `install.sh`, `install-linux.py`, and `install-linux.sh`. Its notes record the source commit, platform support status, and the unresolved publication gate. Inspect draft asset contents through authenticated `gh release download`; users cannot anonymously download draft assets.
+The command builds the Linux package and release-specific `install.sh`, creates the version tag on the exact source commit if it does not already exist, then calls `gh release create --draft`. It refuses an existing release or a tag that points elsewhere, and never force-moves a tag. The release includes the archive, checksum, release JSON manifest, `install.sh`, `install-linux.py`, and `install-linux.sh`. Its notes record the source commit, platform support status, and the unresolved publication gate. Inspect draft asset contents through authenticated `gh release download`; users cannot anonymously download draft assets.
 
 The manual GitHub Actions workflow in `.github/workflows/release-draft.yml` runs the same command with least-privilege `contents: write`. It takes an exact commit and a never-before-used semantic version tag. It creates draft assets only. The checked-out commit must already be reachable from `main`.
 
