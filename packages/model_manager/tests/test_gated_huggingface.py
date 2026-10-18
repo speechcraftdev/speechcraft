@@ -136,6 +136,9 @@ class GatedAcquisitionTests(unittest.TestCase):
         def download_snapshot(*, repo_id, repo_type, revision, token, local_dir, allow_patterns, max_workers, tqdm_class):
             assert (repo_id, repo_type, revision, token) == (REPO, 'model', REVISION, TOKEN)
             assert set(allow_patterns) == set(FILES)
+            # huggingface_hub uses tqdm.contrib.concurrent.thread_map even
+            # with one worker; its lock helpers must be inherited by the hook.
+            assert callable(getattr(tqdm_class, 'get_lock', None))
             attempts['snapshot'] += 1
             root = Path(local_dir)
             if interrupt_once and attempts['snapshot'] == 1:

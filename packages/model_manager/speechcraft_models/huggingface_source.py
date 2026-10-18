@@ -170,26 +170,24 @@ def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], to
         raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient,
                                           diagnostic=_safe_exception_diagnostic(exc)) from None
 
-    class _FileProgress:
-        # snapshot_download's supported tqdm hook reports file completion. Byte
-        # values remain unknown rather than fabricating a percentage.
+    # snapshot_download's supported tqdm hook reports file completion. Byte
+    # values remain unknown rather than fabricating a percentage.
+    from tqdm.auto import tqdm
+    class _FileProgress(tqdm):
         def __init__(self, *args, **kwargs):
-            from tqdm.auto import tqdm
-            self._bar = tqdm(*args, **kwargs, disable=True)
+            kwargs["disable"] = True
+            super().__init__(*args, **kwargs)
 
         def update(self, n=1):
-            result = self._bar.update(n)
+            result = super().update(n)
             progress({"event": "source_progress", "source": "huggingface",
                       "state": "downloading", "current_file": None,
                       "downloaded_bytes": None, "transferred_bytes": None,
                       "total_bytes": total_bytes,
                       "transfer_indeterminate": True,
-                      "files_completed": int(self._bar.n),
-                      "files_total": int(self._bar.total) if self._bar.total is not None else None})
+                      "files_completed": int(self.n),
+                      "files_total": int(self.total) if self.total is not None else None})
             return result
-
-        def __getattr__(self, name):
-            return getattr(self._bar, name)
 
     try:
         progress({"event": "authorization_status", "state": "downloading", "source": "huggingface"})
