@@ -15,6 +15,10 @@ INSTALLER_SH_SHA256='@@INSTALLER_SH_SHA256@@'
 
 fail() { printf 'SpeechCraft installer: %s\n' "$*" >&2; exit 1; }
 
+if [ "$#" -ne 0 ]; then
+  fail 'this release-pinned installer takes no arguments; download the matching release script for another version.'
+fi
+
 if [ "$(uname -s 2>/dev/null || true)" != Linux ]; then
   fail 'supported platform: Linux x86-64 only. See platform instructions for macOS and Windows.'
 fi
@@ -38,7 +42,7 @@ download() {
     --connect-timeout 15 --max-time 600 --output "$target" --write-out '%{url_effective}' "$url") \
     || fail "download failed for $name; check your connection and retry."
   case "$effective_url" in
-    https://github.com/*|https://release-assets.githubusercontent.com/*|https://objects.githubusercontent.com/*) ;;
+    https://github.com/*|https://release-assets.githubusercontent.com/*|https://objects.githubusercontent.com/*|https://github-releases.githubusercontent.com/*) ;;
     *) fail "download for $name ended at an unexpected HTTPS host." ;;
   esac
 }
@@ -69,11 +73,12 @@ python3 - "$checksum_path" "$manifest_path" "$ARCHIVE" "$ARCHIVE_SHA256" "$ARCHI
 import json, pathlib, re, sys
 checksum_path, manifest_path, archive, digest, size, version, revision = sys.argv[1:]
 if not re.fullmatch(r"[a-f0-9]{64}", digest) or not re.fullmatch(r"[a-f0-9]{40}", revision): raise SystemExit("malformed bootstrap trust pins")
-parts = pathlib.Path(checksum_path).read_text("ascii").split()
-if len(parts) < 2 or parts[0] != digest or parts[-1] != archive: raise SystemExit("checksum content mismatch")
+parts = pathlib.Path(checksum_path).read_text("ascii").strip().split()
+if len(parts) != 2 or parts[0] != digest or parts[1] != archive: raise SystemExit("checksum content mismatch")
 manifest = json.loads(pathlib.Path(manifest_path).read_text("utf-8"))
 expected = {"schema_version": 1, "archive": archive, "archive_sha256": digest, "archive_size_bytes": int(size), "application_version": version, "platform": "linux-x86_64", "source_revision": revision}
-if any(manifest.get(key) != value for key, value in expected.items()): raise SystemExit("manifest does not match pinned release identity")
+if not isinstance(manifest, dict) or any(manifest.get(key) != value for key, value in expected.items()): raise SystemExit("manifest does not match pinned release identity")
+if not re.fullmatch(r"[a-f0-9]{64}", str(manifest.get("model_manager_wheel_sha256", ""))): raise SystemExit("manifest has no valid model-manager wheel identity")
 PY
 
 if ! (cd "$tmp_dir" && sh "$installer_sh_path" "$archive_path"); then

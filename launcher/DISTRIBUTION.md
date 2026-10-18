@@ -10,9 +10,21 @@
 
 The Linux bootstrap is the only production-targeted flow in this implementation. Model weights are not part of any package. Runtime and model preparation stays in the local `/setup` page. SpeechCraft binds its services to loopback.
 
-## User installation flow
+## Public installation status
 
-For a published Linux release, the intended command is:
+There is no public installer URL yet. The only existing GitHub release is the draft candidate `v0.1.0`, whose assets require authenticated GitHub access. Its release page is [available for authenticated inspection](https://github.com/speechcraftdev/speechcraft/releases/tag/untagged-200784c21a5744c7d660); its assets are not anonymously downloadable. Do not use `curl | sh` from that draft.
+
+After a production release has passed the compliance and publisher-authentication gates, its versioned GitHub bootstrap URL will be:
+
+```text
+https://github.com/speechcraftdev/speechcraft/releases/download/<approved-tag>/install.sh
+```
+
+`<approved-tag>` is a placeholder, not a currently working URL. No temporary or custom install domain is configured. The intended convenience command after approval is `curl -fsSL <approved-versioned-bootstrap-url> | sh`; until then, do not advertise that command as available.
+
+## Bootstrap behavior
+
+For a published Linux release, the versioned bootstrap performs the following:
 
 ```sh
 curl -fsSLo install.sh https://<temporary-host>/install.sh
@@ -24,7 +36,18 @@ The temporary host contains only the generated release-specific `install.sh` and
 
 The bootstrap fails before downloading if the OS is not Linux, the architecture is not x86-64, or system Python is older than 3.9. It uses `curl` with HTTPS-only bounded redirects, retries, and timeouts; accepted redirect hosts are GitHub and GitHub's release asset hosts. A trapped temporary directory is removed on success or failure. No `sudo`, global Node/Bun install, repository clone, model download, or telemetry is involved.
 
-The checksum delivered beside an archive is only a consistency check. Trust comes from reviewing the release-specific bootstrap's pins over HTTPS and the immutable source commit/tag in the official repository. The bootstrap pins the archive, metadata, checksum file, and official installers individually, so a modified adjacent checksum or installer is rejected. The current repository does not publish a signed release attestation; GitHub-hosted signed/provenance metadata can be added later without weakening the pinned hash checks.
+The checksum delivered beside an archive is only a consistency check. The generated script pins the archive, metadata, checksum, and official installer bytes, so changes to any downloaded file are detected. However, if the bootstrap itself is fetched from the same release, those pins do not authenticate the publisher independently. The current workflow therefore creates internal draft candidates only and is not production-secure. Before public installation, establish an independent publisher trust anchor and have the bootstrap verify it (for example, a signed build attestation rooted in the reviewed GitHub Actions identity). The release report states this limitation explicitly.
+
+When a release is approved, the safe user flow is to download the *versioned* bootstrap as a file, verify it through the documented independent publisher mechanism, inspect the pinned release identity, then execute it:
+
+```sh
+curl -fSLo install.sh 'https://github.com/speechcraftdev/speechcraft/releases/download/<approved-tag>/install.sh'
+# Verify install.sh with the independently published signature/attestation instructions.
+less install.sh
+sh install.sh
+```
+
+Do not substitute a moving `latest` URL or treat a checksum beside the archive as publisher authentication.
 
 ## Create a draft release
 
@@ -36,7 +59,7 @@ From a clean checkout at the exact source commit, run:
 launcher/scripts/publish-draft-release.sh v0.1.0 <40-character-source-commit>
 ```
 
-The command builds the Linux package and release-specific `install.sh`, creates the version tag on the exact source commit if it does not already exist, then calls `gh release create --draft`. It refuses an existing release or a tag that points elsewhere, and never force-moves a tag. The release includes the archive, checksum, release JSON manifest, `install.sh`, `install-linux.py`, and `install-linux.sh`. Its notes record the source commit, platform support status, and the unresolved publication gate. Inspect draft asset contents through authenticated `gh release download`; users cannot anonymously download draft assets.
+The command runs bootstrap and official-installer tests, builds the Linux package and release-specific `install.sh`, runs the installed-package smoke, writes a `VERIFICATION.md` report, creates the version tag on the exact source commit if it does not already exist, then calls `gh release create --draft`. It refuses an existing release or a tag that points elsewhere, and never force-moves a tag. The release includes the archive, checksum, release JSON manifest, `install.sh`, official `install-linux.py` and `install-linux.sh`, and the verification report. Its notes record the source commit, platform support status, and unresolved publication and trust gates. Inspect draft asset contents through authenticated `gh release download`; users cannot anonymously download draft assets.
 
 The manual GitHub Actions workflow in `.github/workflows/release-draft.yml` runs the same command with least-privilege `contents: write`. It takes an exact commit and a never-before-used semantic version tag. It creates draft assets only. The checked-out commit must already be reachable from `main`.
 
@@ -59,3 +82,19 @@ When the project chooses a permanent domain, configure that domain as a custom d
 - [macOS status and manual archive installer](MACOS.md)
 - [Windows PowerShell and WSL2 installer](WINDOWS.md)
 - [Linux package and application behavior](README.md)
+
+## First run, upgrades, and data
+
+The Linux command installs per-user under `~/.local/share/speechcraft/app` and registers `~/.local/bin/speechcraft`. The official installer uses a versioned releases directory and atomically switches the `current` pointer after verification. Reinstalling the same version is safe; installing a lower version is rejected. Upgrades preserve the separate user data tree, including models, projects, recordings, exported datasets, credentials, and controller state.
+
+After installation, run `speechcraft`, open the local `/setup` page, and follow its runtime preparation flow. Model downloads and gated Hugging Face authorization happen there; the bootstrap never accepts model terms or downloads models. Use `speechcraft status` and `speechcraft stop` to inspect and stop the local services.
+
+To uninstall while preserving all user data, stop SpeechCraft, remove only the versioned application and command registration, and keep `~/.local/share/speechcraft` data intact. The supported manual sequence is:
+
+```sh
+speechcraft stop
+rm -rf -- "$HOME/.local/share/speechcraft/app"
+rm -f -- "$HOME/.local/bin/speechcraft"
+```
+
+This uninstall command assumes the command path is the installer-managed SpeechCraft wrapper; inspect it first if it was replaced or customized. To remove user data as well, do that separately and only after making any backups you need.

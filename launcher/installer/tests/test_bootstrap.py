@@ -37,7 +37,8 @@ class BootstrapTests(unittest.TestCase):
         (self.assets / f"{archive_name}.sha256").write_text(f"{digest(archive)}  {archive_name}\n")
         manifest = {"schema_version": 1, "archive": archive_name, "archive_size_bytes": len(archive),
                     "archive_sha256": digest(archive), "application_version": "0.1.0",
-                    "platform": "linux-x86_64", "source_revision": source_revision}
+                    "platform": "linux-x86_64", "source_revision": source_revision,
+                    "model_manager_wheel_sha256": "a" * 64}
         (self.assets / f"{archive_name}.release.json").write_text(json.dumps(manifest) + "\n")
         (self.assets / "install-linux.py").write_text("# verified test fixture\n")
         (self.assets / "install-linux.sh").write_text("#!/bin/sh\nprintf installed > \"$INSTALL_MARKER\"\n")
@@ -47,7 +48,7 @@ class BootstrapTests(unittest.TestCase):
         shutil.copyfile(self.assets / "install.sh", self.script)
         (self.mockbin / "curl").write_text("""#!/bin/sh
 set -eu
-if [ "${MOCK_CURL_FAIL:-}" = 1 ]; then exit 28; fi
+if [ "${MOCK_CURL_FAIL:-}" = 1 ]; then printf partial > "$out"; exit 28; fi
 out=
 url=
 while [ "$#" -gt 0 ]; do
@@ -82,6 +83,17 @@ printf 'https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.0/%
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.marker.read_text(), "installed")
         self.assertIn("SpeechCraft 0.1.0 is installed", result.stdout)
+        self.assert_clean_tmp()
+
+    def test_unexpected_arguments_are_rejected_before_download(self):
+        env = {**os.environ, "HOME": str(self.home), "TMPDIR": str(self.tmpdir),
+               "TEST_ASSET_DIR": str(self.assets), "INSTALL_MARKER": str(self.marker),
+               "PATH": f"{self.mockbin}:{os.environ['PATH']}"}
+        result = subprocess.run(["sh", str(self.script), "--version"], env=env, text=True,
+                                capture_output=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("takes no arguments", result.stderr)
+        self.assertFalse(self.marker.exists())
         self.assert_clean_tmp()
 
     def test_corrupted_archive_fails_closed(self):
