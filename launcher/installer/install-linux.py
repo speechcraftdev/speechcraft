@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 MANDATORY_RUNTIME_FILES = {
     "setup-controller/src/server.js",
@@ -36,6 +37,8 @@ MANDATORY_RUNTIME_FILES = {
     "workers/dataset/model-manifest.schema.json",
 }
 MANDATORY_APP_FILES = {"runtime/node", "bin/speechcraft"}
+INSTALL_LOCK_NAME = ".speechcraft-install.lock"
+LOCK_WAIT_SECONDS = 45
 
 
 def fail(message):
@@ -86,6 +89,98 @@ def inspect_command(command, app_base):
     if content != expected:
         fail(f"refusing to replace unrelated command: {command}")
     return {"kind": "file", "content": content, "mode": stat.S_IMODE(info.st_mode)}
+
+
+def _pid_alive(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _lock_is_live(lock):
+    info = os.lstat(lock)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail("SpeechCraft install lock is not a real directory; no files were changed")
+    pid_path = lock / "pid"
+    try:
+        pid_info = os.lstat(pid_path)
+    except FileNotFoundError:
+        return time.time() - info.st_mtime < 2
+    if stat.S_ISLNK(pid_info.st_mode) or not stat.S_ISREG(pid_info.st_mode):
+        fail("SpeechCraft install lock identity is not a regular file; no files were changed")
+    try:
+        pid = int(pid_path.read_text("ascii").strip())
+    except (OSError, ValueError):
+        return False
+    if pid == os.getpid():
+        return True
+    return _pid_alive(pid)
+
+
+def _remove_stale_lock(lock):
+    pid_path = lock / "pid"
+    try:
+        if not stat.S_ISLNK(os.lstat(pid_path).st_mode):
+            os.unlink(pid_path)
+    except FileNotFoundError:
+        pass
+    try:
+        os.rmdir(lock)
+    except OSError:
+        pass
+
+
+def acquire_install_lock(share_root):
+    info = os.lstat(share_root)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        fail(f"installation directory is not a real directory owned by this user: {share_root}")
+    lock = share_root / INSTALL_LOCK_NAME
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            os.mkdir(lock, 0o700)
+        except FileExistsError:
+            if _lock_is_live(lock):
+                if time.monotonic() >= deadline:
+                    fail("another SpeechCraft install or uninstall holds the install lock; retry after it finishes")
+                time.sleep(0.05)
+                continue
+            _remove_stale_lock(lock)
+            continue
+        pid_path = lock / "pid"
+        try:
+            fd = os.open(pid_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except Exception:
+            _remove_stale_lock(lock)
+            raise
+        return lock
+
+
+def release_install_lock(lock):
+    if lock is None:
+        return
+    pid_path = lock / "pid"
+    try:
+        info = os.lstat(lock)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            return
+        if int(pid_path.read_text("ascii").strip()) != os.getpid():
+            return
+        os.unlink(pid_path)
+        os.rmdir(lock)
+    except (OSError, ValueError):
+        return
 
 
 def restore_command(command, prior):
@@ -159,9 +254,21 @@ def main(archive_arg):
         if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
             fail(f"application install directory is not a real directory owned by this user: {directory}")
     stage_parent = releases
-    stage = pathlib.Path(tempfile.mkdtemp(prefix=".install-", dir=stage_parent))
-    os.chmod(stage, 0o700)
+    stage = None
+    lock_dir = None
     try:
+        lock_dir = acquire_install_lock(home / ".local/share/speechcraft")
+        prior_command = inspect_command(command, app_base)
+        prior_current_target = None
+        if old_current.exists() or old_current.is_symlink():
+            if not old_current.is_symlink():
+                fail("active application pointer is not a symlink; refusing to replace it")
+            prior_current_target = os.readlink(old_current)
+            resolved_current = old_current.resolve(strict=False)
+            if not str(resolved_current).startswith(str(releases.resolve(strict=False)) + os.sep):
+                fail("active application pointer escapes the versioned release directory")
+        stage = pathlib.Path(tempfile.mkdtemp(prefix=".install-", dir=stage_parent))
+        os.chmod(stage, 0o700)
         with tarfile.open(archive, "r:gz") as tar:
             members = tar.getmembers()
             if not members or len(members) > 10_000 or sum(max(0, member.size) for member in members) > 1024 * 1024 * 1024:
@@ -358,6 +465,7 @@ def main(archive_arg):
     finally:
         if stage is not None:
             shutil.rmtree(stage, ignore_errors=True)
+        release_install_lock(lock_dir)
 
 
 if __name__ == "__main__":

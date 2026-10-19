@@ -22,6 +22,8 @@ FFmpeg is not a redistributed Apple Silicon binary. The controller downloads the
 
 MLX inference, Community-1, and WeSpeaker ECAPA were not executed here. `inference_validated` stays false.
 
+`speechcraft uninstall` is implemented for the Linux per-user install only. This Mac package does not register that command, and uninstall has not been verified on macOS.
+
 ## M4 Pro acceptance
 
 Run `launcher/macos/accept-macos.sh` on the Mac. It is pending until that machine completes it. Do not put a Hugging Face token on the command line.

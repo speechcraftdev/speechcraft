@@ -11,6 +11,7 @@ import { ownedProcessIdentity, terminateRecoveredProcess } from '../../setup-con
 import { assertCurrentWslGuest, assertExistingManagedFiles, freeBytes, hostEnvironment, managedStorageLocations, probeLoopback, probeProcessGroup, sanitizeWslProcessEnvironment, validateManagedStorage, validateManagedStorageTargets, WSL_LAUNCH_FREE_BYTES } from '../../setup-controller/src/platform.js';
 import { selectRuntimeProfile } from '../../setup-controller/src/runtime-plan.js';
 import { createLaunchLogSession, formatLaunchAccess, launchOutputMode } from './launch-log.js';
+import { runLinuxUninstall } from './uninstall-linux.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const FRONTEND_PORT = 3002;
@@ -30,9 +31,9 @@ function bounded(promise, timeoutMs, onTimeout) {
 }
 
 export function parseArgs(args) {
-  const result = { command: 'start', dataDirectory: null, development: false, simulated: false, openBrowser: true, json: false, verbose: false };
+  const result = { command: 'start', dataDirectory: null, development: false, simulated: false, openBrowser: true, json: false, verbose: false, yes: false, purge: false };
   let index = 0;
-  if (['status', 'stop'].includes(args[0])) result.command = args[index++];
+  if (['status', 'stop', 'uninstall'].includes(args[0])) result.command = args[index++];
   for (; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--data-dir' && args[index + 1]) result.dataDirectory = path.resolve(args[++index]);
@@ -41,6 +42,8 @@ export function parseArgs(args) {
     else if (arg === '--no-browser') result.openBrowser = false;
     else if (arg === '--verbose' && result.command === 'start') result.verbose = true;
     else if (arg === '--json' && result.command === 'status') result.json = true;
+    else if ((arg === '--yes' || arg === '--force') && result.command === 'uninstall') result.yes = true;
+    else if ((arg === '--purge' || arg === '--remove-data') && result.command === 'uninstall') result.purge = true;
     else if (arg === '--prove-frontend' && args[index + 1] && /^[A-Za-z0-9_-]{16,128}$/.test(args[index + 1])) {
       result.proveFrontend = args[++index];
     }
@@ -651,12 +654,60 @@ export async function openDefaultBrowser(url, { platform = process.platform, env
   return true;
 }
 
+export async function stopForUninstall(dataDirectory) {
+  let info;
+  try { info = fs.lstatSync(dataDirectory); }
+  catch (error) {
+    if (error.code !== 'ENOENT') {
+      throw new Error(`Cannot inspect the data directory (${error.message}). Uninstall aborted; no application files were removed.`);
+    }
+    if (!(await isPortAvailable(CONTROLLER_PORT)) || !(await isPortAvailable(FRONTEND_PORT))) {
+      throw new Error('A process is listening on SpeechCraft port 4317 or 3002, but there is no data directory credential to authenticate shutdown. Uninstall aborted; no application files were removed.');
+    }
+    return { stopped: true, status: 'not_running' };
+  }
+  if (!info.isDirectory() || info.isSymbolicLink() || (typeof process.getuid === 'function' && info.uid !== process.getuid())) {
+    throw new Error('SpeechCraft data directory is not a real directory owned by the current user. Uninstall aborted; no application files were removed.');
+  }
+  try {
+    return await stopManagedApplication(dataDirectory);
+  } catch (error) {
+    throw new Error(`${error.message} Uninstall aborted; no application files were removed.`);
+  }
+}
+
 export async function runLauncher({ args = process.argv.slice(2), env = process.env, signal = null,
   onUrl = (url) => console.log(`SpeechCraft is available at ${url}`), open = openDefaultBrowser } = {}) {
   const options = parseArgs(args);
   if (options.help) {
-    console.log('Usage: speechcraft [--data-dir PATH] [--development] [--simulated] [--no-browser] [--verbose]\n       speechcraft status [--json] [--data-dir PATH]\n       speechcraft stop [--data-dir PATH]\nSPEECHCRAFT_LOG_LEVEL=verbose prints service output. Services stay on 127.0.0.1.');
+    console.log([
+      'Usage: speechcraft [--data-dir PATH] [--development] [--simulated] [--no-browser] [--verbose]',
+      '       speechcraft status [--json] [--data-dir PATH]',
+      '       speechcraft stop [--data-dir PATH]',
+      '       speechcraft uninstall [--yes|--force] [--purge|--remove-data] [--data-dir PATH]',
+      'SPEECHCRAFT_LOG_LEVEL=verbose prints service output. Services stay on 127.0.0.1.',
+      'uninstall removes the Linux per-user application (~/.local/share/speechcraft/app and ~/.local/bin/speechcraft) and keeps user data unless --purge is also confirmed.',
+    ].join('\n'));
     return { help: true };
+  }
+  if (options.command === 'uninstall') {
+    const wsl = process.platform === 'linux' && hostEnvironment().wsl === true;
+    return runLinuxUninstall({
+      home: os.homedir(),
+      env,
+      yes: options.yes,
+      purge: options.purge,
+      dataDirectory: options.dataDirectory,
+      stdin: process.stdin,
+      stdout: process.stdout,
+      stderr: process.stderr,
+      isTTY: process.stdin.isTTY === true,
+      platform: process.platform,
+      cwd: process.cwd(),
+      invocationRoot: ROOT,
+      wsl,
+      stopServices: stopForUninstall,
+    });
   }
   if (options.proveFrontend) {
     const host = hostEnvironment();
