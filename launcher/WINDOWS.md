@@ -99,4 +99,10 @@ Run this on a separate Windows 11 laptop; Linux simulations do not satisfy it:
 5. Upload a real Windows-hosted WAV or MP3 using Browse or drag-and-drop; run diarization, speaker selection, slicing, QC, Clip Lab, accept/reject review and verify a downloaded export.
 6. Run default uninstall and confirm personal projects, recordings, models and exports remain. Test purge only against disposable test data.
 
+The infrastructure smoke harness at `launcher/windows/smoke-wsl2.ps1` also performs an install, restart and uninstall. It requires an explicit `-ConfirmDisposable` flag and named `-Distribution`, and exits before installation if the guest already has a SpeechCraft command or managed data. Run it only against a fresh disposable Ubuntu 24.04 WSL distribution:
+
+```powershell
+pwsh -NoProfile -File .\launcher\windows\smoke-wsl2.ps1 -InstallerUrl https://<verified-candidate-host>/install.sh -Distribution Ubuntu-24.04 -ConfirmDisposable
+```
+
 The full pipeline checklist is an upcoming host acceptance run. This infrastructure work does not claim that Windows browser connectivity or real CUDA/model inference has passed.
