@@ -32,18 +32,18 @@ class BootstrapTests(unittest.TestCase):
         self.marker = self.home / "installer-ran"
         source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         archive = b"test-only package bytes"
-        archive_name = "speechcraft-0.1.0-linux-x86_64.tar.gz"
+        archive_name = "speechcraft-0.1.1-linux-x86_64.tar.gz"
         (self.assets / archive_name).write_bytes(archive)
         (self.assets / f"{archive_name}.sha256").write_text(f"{digest(archive)}  {archive_name}\n")
         manifest = {"schema_version": 1, "archive": archive_name, "archive_size_bytes": len(archive),
-                    "archive_sha256": digest(archive), "application_version": "0.1.0",
+                    "archive_sha256": digest(archive), "application_version": "0.1.1",
                     "platform": "linux-x86_64", "source_revision": source_revision,
                     "model_manager_wheel_sha256": "a" * 64}
         (self.assets / f"{archive_name}.release.json").write_text(json.dumps(manifest) + "\n")
         (self.assets / "install-linux.py").write_text("# verified test fixture\n")
         (self.assets / "install-linux.sh").write_text("#!/bin/sh\nprintf installed > \"$INSTALL_MARKER\"\n")
         self.script = self.root / "install.sh"
-        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.0", "--source-revision", source_revision,
+        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.1", "--source-revision", source_revision,
                         "--output", str(self.assets)], cwd=ROOT, check=True, capture_output=True)
         shutil.copyfile(self.assets / "install.sh", self.script)
         (self.mockbin / "curl").write_text("""#!/bin/sh
@@ -64,7 +64,7 @@ cp "$TEST_ASSET_DIR/$name" "$out"
 case "${MOCK_EFFECTIVE_URL:-}" in
   __REQUEST_URL__) printf '%s' "$url" ;;
   __ATTACKER__) printf 'http://127.0.0.1:18765.attacker.example/%s' "$name" ;;
-  *) printf 'https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.0/%s' "$name" ;;
+  *) printf 'https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.1/%s' "$name" ;;
 esac
 """)
         os.chmod(self.mockbin / "curl", 0o755)
@@ -87,7 +87,7 @@ esac
         result = self.run_bootstrap()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.marker.read_text(), "installed")
-        self.assertIn("SpeechCraft 0.1.0 is installed", result.stdout)
+        self.assertIn("SpeechCraft 0.1.1 is installed", result.stdout)
         self.assert_clean_tmp()
 
     def test_numbered_internal_release_tag_is_bound_to_application_version(self):
@@ -97,11 +97,11 @@ esac
             if item.name != "install.sh":
                 shutil.copyfile(item, output / item.name)
         source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.0-internal.1",
+        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.1-internal.1",
                         "--source-revision", source_revision, "--output", str(output)],
                        cwd=ROOT, check=True, capture_output=True)
-        self.assertIn("RELEASE_TAG='v0.1.0-internal.1'", (output / "install.sh").read_text())
-        self.assertIn("APP_VERSION='0.1.0'", (output / "install.sh").read_text())
+        self.assertIn("RELEASE_TAG='v0.1.1-internal.1'", (output / "install.sh").read_text())
+        self.assertIn("APP_VERSION='0.1.1'", (output / "install.sh").read_text())
 
     def test_loopback_staging_bootstrap_downloads_exact_pinned_urls(self):
         output = self.root / "staged"
@@ -110,7 +110,7 @@ esac
             if item.name != "install.sh":
                 shutil.copyfile(item, output / item.name)
         source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.0-internal.1", "--source-revision", source_revision,
+        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.1-internal.1", "--source-revision", source_revision,
                         "--asset-base-url", "http://127.0.0.1:18765", "--output", str(output)],
                        cwd=ROOT, check=True, capture_output=True)
         script = output / "install.sh"
@@ -125,7 +125,7 @@ esac
         output = self.root / "remote-http"
         output.mkdir()
         source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        result = subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.0-internal.1", "--source-revision", source_revision,
+        result = subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.1-internal.1", "--source-revision", source_revision,
                                  "--asset-base-url", "http://staging.example.invalid", "--output", str(output)],
                                 cwd=ROOT, text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
@@ -139,7 +139,7 @@ esac
             if item.name != "install.sh":
                 shutil.copyfile(item, output / item.name)
         source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.0-internal.1", "--source-revision", source_revision,
+        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.1-internal.1", "--source-revision", source_revision,
                         "--asset-base-url", "http://127.0.0.1:18765", "--output", str(output)],
                        cwd=ROOT, check=True, capture_output=True)
         shutil.copyfile(output / "install.sh", self.script)
