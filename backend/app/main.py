@@ -115,8 +115,14 @@ from .models import (
     SourceTranscriptionRequest,
 )
 from .repository import repository
-from .audio_ingestion import CHUNK_SIZE, AudioUploadManager, UploadError, UploadSessionCreate
-from .audio_normalization import inspect_and_normalize
+from .audio_ingestion import (
+    CHUNK_SIZE,
+    AudioUploadManager,
+    UploadError,
+    UploadIdentityMismatch,
+    UploadSessionCreate,
+)
+from .audio_normalization import inspect_and_normalize, validate_decoded_sample_count
 
 
 DEFAULT_ALLOWED_ORIGINS = (
@@ -163,7 +169,7 @@ app.add_middleware(
 
 native_cliplab_store = NativeClipLabStore(repository.db_path, repository.media_root)
 audio_uploads = AudioUploadManager(repository.media_root)
-repository.cleanup_orphan_source_files()
+repository.cleanup_orphan_source_files(audio_uploads.recovery_root)
 
 
 @app.get("/healthz")
@@ -711,7 +717,8 @@ def create_source_recording_upload_session(
     try:
         repository.get_project(project_id)
         return audio_uploads.create(
-            project_id, payload.filename, payload.size, payload.sha256, payload.client_upload_id
+            project_id, payload.filename, payload.size, payload.sha256,
+            payload.file_identity_sha256, payload.chunk_hashes, payload.client_upload_id,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
@@ -720,16 +727,22 @@ def create_source_recording_upload_session(
 
 
 @app.get("/api/projects/{project_id}/source-recordings/upload-sessions/{upload_id}")
-def source_recording_upload_status(project_id: str, upload_id: str, request: Request) -> dict[str, object]:
+def source_recording_upload_status(
+    project_id: str, upload_id: str, request: Request, file_identity_sha256: str
+) -> dict[str, object]:
     _check_local_upload_request(request)
     try:
         folder, data = audio_uploads._session(upload_id)
         if data["project_id"] != project_id:
             raise KeyError(upload_id)
-        result = audio_uploads.status(upload_id, verify_chunks=True)
+        result = audio_uploads.status(
+            upload_id, verify_chunks=True, expected_identity=file_identity_sha256
+        )
         result["completed"] = bool(data.get("completed"))
         result["recording_id"] = data.get("recording_id")
         return result
+    except UploadIdentityMismatch as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (KeyError, UploadError) as exc:
         raise HTTPException(status_code=404, detail="Upload session not found") from exc
 
@@ -765,11 +778,14 @@ def _finalize_source_recording_upload(project_id: str, upload_id: str) -> Source
         if session["project_id"] != project_id:
             raise KeyError(upload_id)
         if session.get("recording_id"):
+            audio_uploads.remove_promotion_marker(upload_id)
             return next(item for item in repository.list_source_recordings(project_id) if item.id == session["recording_id"])
         recovered_id = repository.find_source_recording_for_upload(project_id, upload_id)
         if recovered_id:
             audio_uploads.mark_completed(upload_id, recovered_id)
+            audio_uploads.remove_promotion_marker(upload_id)
             return next(item for item in repository.list_source_recordings(project_id) if item.id == recovered_id)
+        repository.cleanup_orphan_source_files(audio_uploads.recovery_root, upload_id=upload_id)
         repository.get_project(project_id)
         extension = Path(session["filename"]).suffix.lower()
         staged_original = session_folder / f"original{extension}"
@@ -780,41 +796,37 @@ def _finalize_source_recording_upload(project_id: str, upload_id: str) -> Source
         channels, sample_width, sample_rate, frames = repository.read_pcm_wav_header(working_path)
         if sample_width != 2:
             raise UploadError("Working audio must be PCM16 WAV")
-        output_duration = frames / sample_rate
-        if abs(output_duration - media["duration_seconds"]) > max(2.0, media["duration_seconds"] * 0.02):
-            raise UploadError("Decoded WAV duration does not match the inspected audio stream")
+        validate_decoded_sample_count(frames, sample_rate, media["duration_seconds"])
         recording_id = repository.new_source_recording_id()
         source_dir = repository.media_root / "sources"
         source_dir.mkdir(parents=True, exist_ok=True)
         original_target = source_dir / f"{recording_id}.original{extension}"
         target_path = repository.managed_source_recording_path(recording_id)
-        try:
-            if working_path == staged_original:
-                os.replace(staged_original, target_path)
-                original_target = target_path
-            else:
-                os.replace(staged_original, original_target)
-                os.replace(staged_working, target_path)
-            metadata = {
-                "upload_session_id": upload_id,
-                "original_filename": session["filename"], "original_format": extension.lstrip("."),
-                "original_path": str(original_target), "original_sha256": original_hash,
-                "working_sha256": _file_sha256(target_path),
-                "converted": media["converted"], "conversion": "ffmpeg pcm_s16le wav" if media["converted"] else None,
-                "codec": media["codec"], "sample_rate": sample_rate, "channels": channels,
-                "duration_seconds": media["duration_seconds"],
-            }
-            recording = repository.create_source_recording(SourceRecordingCreate(
-                id=recording_id, batch_id=project_id, file_path=str(target_path),
-                sample_rate=sample_rate, num_channels=channels, num_samples=frames,
-            ), artifact_metadata=metadata)
-            audio_uploads.mark_completed(upload_id, recording_id)
-            return next(item for item in repository.list_source_recordings(project_id) if item.id == recording.id)
-        except Exception:
-            target_path.unlink(missing_ok=True)
-            if original_target != target_path:
-                original_target.unlink(missing_ok=True)
-            raise
+        if working_path == staged_original:
+            original_target = target_path
+        owned_files = list(dict.fromkeys([target_path.name, original_target.name]))
+        audio_uploads.write_promotion_marker(upload_id, recording_id, owned_files)
+        if working_path == staged_original:
+            os.replace(staged_original, target_path)
+        else:
+            os.replace(staged_original, original_target)
+            os.replace(staged_working, target_path)
+        metadata = {
+            "upload_session_id": upload_id,
+            "original_filename": session["filename"], "original_format": extension.lstrip("."),
+            "original_path": str(original_target), "original_sha256": original_hash,
+            "working_sha256": _file_sha256(target_path),
+            "converted": media["converted"], "conversion": "ffmpeg pcm_s16le wav" if media["converted"] else None,
+            "codec": media["codec"], "sample_rate": sample_rate, "channels": channels,
+            "duration_seconds": media["duration_seconds"],
+        }
+        recording = repository.create_source_recording(SourceRecordingCreate(
+            id=recording_id, batch_id=project_id, file_path=str(target_path),
+            sample_rate=sample_rate, num_channels=channels, num_samples=frames,
+        ), artifact_metadata=metadata)
+        audio_uploads.mark_completed(upload_id, recording_id)
+        audio_uploads.remove_promotion_marker(upload_id)
+        return next(item for item in repository.list_source_recordings(project_id) if item.id == recording.id)
     except KeyError:
         raise
 

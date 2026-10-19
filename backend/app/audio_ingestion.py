@@ -24,20 +24,52 @@ class UploadError(ValueError):
     pass
 
 
+class UploadIdentityMismatch(UploadError):
+    pass
+
+
 class UploadSessionCreate(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     size: int
     sha256: str | None = None
+    file_identity_sha256: str
+    chunk_hashes: list[str] = Field(min_length=1)
     client_upload_id: str | None = None
+
+
+def file_identity_hash(size: int, chunk_hashes: list[str]) -> str:
+    digest_manifest = size.to_bytes(8, "big") + b"".join(bytes.fromhex(item) for item in chunk_hashes)
+    return hashlib.sha256(digest_manifest).hexdigest()
 
 
 class AudioUploadManager:
     def __init__(self, media_root: Path):
+        self.media_root = media_root
         self.root = media_root / ".uploads"
+        self.recovery_root = media_root / ".ingest-recovery"
         self.root.mkdir(parents=True, exist_ok=True)
+        self.recovery_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._finalize_locks: dict[str, threading.Lock] = {}
         self.cleanup_stale()
+
+    def write_promotion_marker(self, upload_id: str, recording_id: str, filenames: list[str]) -> Path:
+        if not SESSION_ID_RE.fullmatch(upload_id) or not re.fullmatch(r"source-[0-9a-f]{32}", recording_id):
+            raise UploadError("Invalid promotion identity")
+        if not filenames or any(Path(name).name != name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) for name in filenames):
+            raise UploadError("Invalid promotion file list")
+        marker = self.recovery_root / f"{upload_id}.json"
+        temp = marker.with_suffix(".tmp")
+        with temp.open("w", encoding="utf-8") as stream:
+            json.dump({"upload_id": upload_id, "recording_id": recording_id, "filenames": filenames}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, marker)
+        return marker
+
+    def remove_promotion_marker(self, upload_id: str) -> None:
+        if SESSION_ID_RE.fullmatch(upload_id):
+            (self.recovery_root / f"{upload_id}.json").unlink(missing_ok=True)
 
     @contextmanager
     def finalization_lock(self, upload_id: str):
@@ -69,7 +101,7 @@ class AudioUploadManager:
 
     def create(
         self, project_id: str, filename: str, size: int, file_hash: str | None,
-        client_upload_id: str | None = None,
+        file_identity_sha256: str, chunk_hashes: list[str], client_upload_id: str | None = None,
     ) -> dict[str, Any]:
         name = filename.replace("\\", "/").rsplit("/", 1)[-1]
         if not name or Path(name).suffix.lower() not in ALLOWED_EXTENSIONS:
@@ -78,6 +110,13 @@ class AudioUploadManager:
             raise UploadError("File must be larger than zero and no larger than 8 GiB")
         if file_hash is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", file_hash):
             raise UploadError("Invalid file SHA-256")
+        expected_chunks = (size + CHUNK_SIZE - 1) // CHUNK_SIZE
+        if len(chunk_hashes) != expected_chunks or any(not re.fullmatch(r"[0-9a-fA-F]{64}", item) for item in chunk_hashes):
+            raise UploadError("Invalid chunk hash manifest")
+        normalized_chunk_hashes = [item.lower() for item in chunk_hashes]
+        actual_identity = file_identity_hash(size, normalized_chunk_hashes)
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", file_identity_sha256) or actual_identity != file_identity_sha256.lower():
+            raise UploadError("File identity did not match its chunk hashes")
         if client_upload_id is not None and not SESSION_ID_RE.fullmatch(client_upload_id):
             raise UploadError("Invalid client upload id")
         if client_upload_id:
@@ -87,18 +126,20 @@ class AudioUploadManager:
                 except (OSError, ValueError, KeyError):
                     continue
                 if existing.get("client_upload_id") == client_upload_id:
-                    if (existing.get("project_id"), existing.get("filename"), existing.get("size"), existing.get("file_hash")) != (
-                        project_id, name, size, file_hash.lower() if file_hash else None
+                    if (existing.get("project_id"), existing.get("filename"), existing.get("size"), existing.get("file_identity_sha256")) != (
+                        project_id, name, size, actual_identity
                     ):
                         raise UploadError("Client upload id was already used for a different file")
                     return self.status(existing["id"])
-        if shutil.disk_usage(self.root).free < size + min(size, MAX_WAV_BYTES) + 128 * 1024 * 1024:
+        peak_staging_bytes = 2 * size + 128 * 1024 * 1024
+        if shutil.disk_usage(self.root).free < peak_staging_bytes:
             raise UploadError("Not enough free disk space to import this recording")
         upload_id = uuid.uuid4().hex
         folder = self.root / upload_id
         folder.mkdir(mode=0o700)
         data = {"id": upload_id, "project_id": project_id, "filename": name, "size": size,
                 "file_hash": file_hash.lower() if file_hash else None, "chunk_size": CHUNK_SIZE,
+                "file_identity_sha256": actual_identity, "chunk_hashes": normalized_chunk_hashes,
                 "client_upload_id": client_upload_id, "chunks": {}, "created": __import__("time").time()}
         self._save(folder, data)
         return self.status(upload_id)
@@ -109,8 +150,12 @@ class AudioUploadManager:
         tmp.write_text(json.dumps(data), encoding="utf-8")
         os.replace(tmp, folder / "session.json")
 
-    def status(self, upload_id: str, *, verify_chunks: bool = False) -> dict[str, Any]:
+    def status(
+        self, upload_id: str, *, verify_chunks: bool = False, expected_identity: str | None = None
+    ) -> dict[str, Any]:
         folder, data = self._session(upload_id)
+        if expected_identity is not None and data.get("file_identity_sha256") != expected_identity.lower():
+            raise UploadIdentityMismatch("Selected file does not match this upload session")
         if verify_chunks:
             with self._lock:
                 changed = False
@@ -135,7 +180,8 @@ class AudioUploadManager:
         indexes = sorted(int(index) for index in data["chunks"])
         return {"upload_id": upload_id, "chunk_size": data["chunk_size"],
                 "chunk_count": (data["size"] + data["chunk_size"] - 1) // data["chunk_size"],
-                "completed_chunks": indexes, "committed_bytes": sum(data["chunks"][str(i)]["size"] for i in indexes)}
+                "completed_chunks": indexes, "committed_bytes": sum(data["chunks"][str(i)]["size"] for i in indexes),
+                "file_identity_sha256": data["file_identity_sha256"]}
 
     def put_chunk(self, upload_id: str, index: int, content: bytes, digest: str) -> dict[str, Any]:
         with self._lock:
@@ -144,7 +190,9 @@ class AudioUploadManager:
                 raise UploadError("Invalid chunk index")
             expected = min(CHUNK_SIZE, data["size"] - index * CHUNK_SIZE)
             actual_hash = hashlib.sha256(content).hexdigest()
-            if len(content) != expected or not re.fullmatch(r"[0-9a-fA-F]{64}", digest) or actual_hash != digest.lower():
+            expected_hash = data["chunk_hashes"][index]
+            if (len(content) != expected or not re.fullmatch(r"[0-9a-fA-F]{64}", digest)
+                    or actual_hash != digest.lower() or actual_hash != expected_hash):
                 raise UploadError("Chunk size or SHA-256 did not match")
             chunk = folder / f"{index:08d}.chunk"
             previous = data["chunks"].get(str(index))
@@ -168,6 +216,8 @@ class AudioUploadManager:
             if data.get("completed"):
                 return data, data["assembled_sha256"]
             count = (data["size"] + CHUNK_SIZE - 1) // CHUNK_SIZE
+            if file_identity_hash(data["size"], data["chunk_hashes"]) != data["file_identity_sha256"]:
+                raise UploadError("Upload session file identity failed integrity verification")
             if len(data["chunks"]) != count:
                 raise UploadError("Upload is incomplete")
             destination.parent.mkdir(parents=True, exist_ok=True)
