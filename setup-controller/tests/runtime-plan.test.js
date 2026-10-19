@@ -10,6 +10,20 @@ import { RuntimeTasks } from '../src/runtime-tasks.js';
 
 const sha = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
+test('runtime status keeps the startup restoration snapshot current for the next bootstrap stage', () => {
+  const tasks = new RuntimeTasks({ dataDirectory: os.tmpdir() });
+  const context = {
+    componentStatus: { components: { worker_environment: { state: 'pending' } } },
+  };
+  context.bootstrapStatus = context.componentStatus;
+
+  tasks.status(context, { components: { worker_environment: { state: 'verified', path: '/managed/worker' } } });
+
+  assert.equal(context.bootstrapStatus, context.componentStatus);
+  assert.equal(context.bootstrapStatus.components.worker_environment.state, 'verified');
+  assert.equal(context.bootstrapStatus.components.worker_environment.path, '/managed/worker');
+});
+
 test('managed backend passes only the verified ECAPA model root and ONNX path to dataset workers', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-ecapa-worker-environment-'));
   const originalStart = BackendService.prototype.start;
@@ -478,6 +492,8 @@ test('a passing CUDA Whisper probe updates the selected runtime device and worke
   await tasks.validateRuntime(context);
   assert.equal(context.componentStatus.runtime_profile.accelerator, 'cuda');
   assert.equal(context.componentStatus.components.worker_environment.effective_profile, 'linux-x86_64-cuda');
+  assert.equal(context.componentStatus.components.worker_environment.message, null,
+    'a successful CUDA Whisper inference must not retain the preflight candidate message');
   assert.equal(context.componentStatus.components.whisper.device, 'NVIDIA RTX 4060');
   assert.equal(context.componentStatus.components.whisper.verification, 'trusted_cpu_and_cuda_inference_probes');
   assert.equal(context.componentStatus.production_ready, false);

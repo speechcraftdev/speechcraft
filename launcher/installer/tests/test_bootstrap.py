@@ -61,7 +61,11 @@ while [ "$#" -gt 0 ]; do
 done
 name=${url##*/}
 cp "$TEST_ASSET_DIR/$name" "$out"
-printf 'https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.0/%s' "$name"
+case "${MOCK_EFFECTIVE_URL:-}" in
+  __REQUEST_URL__) printf '%s' "$url" ;;
+  __ATTACKER__) printf 'http://127.0.0.1:18765.attacker.example/%s' "$name" ;;
+  *) printf 'https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.0/%s' "$name" ;;
+esac
 """)
         os.chmod(self.mockbin / "curl", 0o755)
         (self.mockbin / "uname").write_text("#!/bin/sh\nif [ \"$1\" = -s ]; then printf '%s\\n' \"${UNAME_VALUE:-Linux}\"; else printf 'x86_64\\n'; fi\n")
@@ -98,6 +102,52 @@ printf 'https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.0/%
                        cwd=ROOT, check=True, capture_output=True)
         self.assertIn("RELEASE_TAG='v0.1.0-internal.1'", (output / "install.sh").read_text())
         self.assertIn("APP_VERSION='0.1.0'", (output / "install.sh").read_text())
+
+    def test_loopback_staging_bootstrap_downloads_exact_pinned_urls(self):
+        output = self.root / "staged"
+        output.mkdir()
+        for item in self.assets.iterdir():
+            if item.name != "install.sh":
+                shutil.copyfile(item, output / item.name)
+        source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.0-internal.1", "--source-revision", source_revision,
+                        "--asset-base-url", "http://127.0.0.1:18765", "--output", str(output)],
+                       cwd=ROOT, check=True, capture_output=True)
+        script = output / "install.sh"
+        self.assertIn("ASSET_BASE_URL='http://127.0.0.1:18765'", script.read_text())
+        shutil.copyfile(script, self.script)
+        result = self.run_bootstrap(MOCK_EFFECTIVE_URL="__REQUEST_URL__")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.marker.read_text(), "installed")
+        self.assert_clean_tmp()
+
+    def test_generator_rejects_non_loopback_http_staging(self):
+        output = self.root / "remote-http"
+        output.mkdir()
+        source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        result = subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.0-internal.1", "--source-revision", source_revision,
+                                 "--asset-base-url", "http://staging.example.invalid", "--output", str(output)],
+                                cwd=ROOT, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("HTTP is allowed only with an explicit loopback port", result.stderr)
+        self.assertFalse((output / "install.sh").exists())
+
+    def test_loopback_staging_rejects_redirects_outside_pinned_url(self):
+        output = self.root / "staged-redirect"
+        output.mkdir()
+        for item in self.assets.iterdir():
+            if item.name != "install.sh":
+                shutil.copyfile(item, output / item.name)
+        source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.0-internal.1", "--source-revision", source_revision,
+                        "--asset-base-url", "http://127.0.0.1:18765", "--output", str(output)],
+                       cwd=ROOT, check=True, capture_output=True)
+        shutil.copyfile(output / "install.sh", self.script)
+        result = self.run_bootstrap(MOCK_EFFECTIVE_URL="__ATTACKER__")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("left its pinned URL", result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assert_clean_tmp()
 
     def test_unexpected_arguments_are_rejected_before_download(self):
         env = {**os.environ, "HOME": str(self.home), "TMPDIR": str(self.tmpdir),

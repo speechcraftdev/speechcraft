@@ -273,6 +273,9 @@ test('controller restart reconstructs all installed model paths and retains the 
     await tasks.recoverInterrupted(store);
     const status = store.snapshot().job.bootstrap_status;
     assert.equal(status.model_manager_verified, true);
+    assert.equal(status.components.managed_python.state, 'verified', 'restart recovery must restore the typed Python readiness component after the trusted interpreter probe');
+    assert.equal(status.components.managed_python.identity, 'CPython 3.12.15');
+    assert.equal(status.components.managed_python.verification, 'runtime_probe');
     assert.equal(status.components.model_manager.path, managerRoot);
     assert.equal(status.components.backend_environment.state, 'verified');
     assert.equal(status.runtime_profile.workerProfile, 'linux-x86_64-cuda', 'the prior profile is retained for real inference revalidation');

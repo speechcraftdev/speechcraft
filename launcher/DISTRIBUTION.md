@@ -34,9 +34,23 @@ sh install.sh
 speechcraft
 ```
 
-The temporary host contains only the generated release-specific `install.sh` and short instructions. The bootstrap downloads the exact tagged GitHub Release archive, adjacent `.sha256`, adjacent `.release.json`, and both official Linux installer files. It checks pinned SHA-256 and byte-size values for every file; verifies the checksum's content and the exact release version, platform, source commit, size, and digest; and only then invokes the per-user installer. The official installer checks the archive again and verifies its complete internal file inventory before activation.
+For the production flow, the temporary host contains only the generated release-specific `install.sh` and short instructions. The bootstrap downloads the exact tagged GitHub Release archive, adjacent `.sha256`, adjacent `.release.json`, and both official Linux installer files. It checks pinned SHA-256 and byte-size values for every file; verifies the checksum's content and the exact release version, platform, source commit, size, and digest; and only then invokes the per-user installer. The official installer checks the archive again and verifies its complete internal file inventory before activation.
 
-The bootstrap fails before downloading if the OS is not Linux, the architecture is not x86-64, or system Python is older than 3.9. It uses `curl` with HTTPS-only bounded redirects, retries, and timeouts; accepted redirect hosts are GitHub and GitHub's release asset hosts. A trapped temporary directory is removed on success or failure. No `sudo`, global Node/Bun install, repository clone, model download, or telemetry is involved.
+The bootstrap fails before downloading if the OS is not Linux, the architecture is not x86-64, or system Python is older than 3.9. Production bootstraps use `curl` with HTTPS-only bounded redirects, retries, and timeouts; accepted redirect hosts are GitHub and GitHub's release asset hosts. A trapped temporary directory is removed on success or failure. No `sudo`, global Node/Bun install, repository clone, model download, or telemetry is involved.
+
+### Private loopback staging for acceptance
+
+When a GitHub draft is not anonymously downloadable, the official generator accepts `--asset-base-url http://127.0.0.1:<port>` or `http://localhost:<port>` for private acceptance staging. HTTP is allowed only for an explicit loopback host and port. The generated bootstrap pins that exact asset base URL, does not accept redirects away from it, and retains the SHA-256, size, release manifest and installer checks. Bind the staging server to loopback and use an authenticated SSH port forward when CozyTent needs to reach the laptop. Do not expose the staging server publicly.
+
+```sh
+node launcher/scripts/generate-bootstrap.mjs \
+  --tag v0.1.0-internal.3 \
+  --source-revision <exact-commit> \
+  --asset-base-url http://127.0.0.1:28413 \
+  --output <directory-containing-the-release-assets>
+```
+
+This validates the real curl bootstrap and package download through private staging. It is not a public installer URL or a production hosting configuration. Generated public bootstraps continue to use HTTPS GitHub release assets and the restricted GitHub redirect allowlist.
 
 The checksum delivered beside an archive is only a consistency check. The generated script pins the archive, metadata, checksum, and official installer bytes, so changes to any downloaded file are detected. However, if the bootstrap itself is fetched from the same release, those pins do not authenticate the publisher independently. The current workflow therefore creates internal draft candidates only and is not production-secure. Before public installation, establish an independent publisher trust anchor and have the bootstrap verify it (for example, a signed build attestation rooted in the reviewed GitHub Actions identity). The release report states this limitation explicitly.
 

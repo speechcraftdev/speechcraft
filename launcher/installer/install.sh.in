@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Generated for one immutable GitHub Release by scripts/generate-bootstrap.mjs.
+# Generated for one immutable SpeechCraft release by scripts/generate-bootstrap.mjs.
 RELEASE_TAG='@@RELEASE_TAG@@'
 APP_VERSION='@@APP_VERSION@@'
 SOURCE_REVISION='@@SOURCE_REVISION@@'
@@ -12,6 +12,7 @@ CHECKSUM_SHA256='@@CHECKSUM_SHA256@@'
 MANIFEST_SHA256='@@MANIFEST_SHA256@@'
 INSTALLER_SHA256='@@INSTALLER_SHA256@@'
 INSTALLER_SH_SHA256='@@INSTALLER_SH_SHA256@@'
+ASSET_BASE_URL='@@ASSET_BASE_URL@@'
 
 fail() { printf 'SpeechCraft installer: %s\n' "$*" >&2; exit 1; }
 
@@ -35,17 +36,29 @@ tmp_dir=$(mktemp -d "$tmp_root/speechcraft-install.XXXXXXXX") || fail 'could not
 cleanup() { rm -rf "$tmp_dir"; }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
-base_url="https://github.com/speechcraftdev/speechcraft/releases/download/$RELEASE_TAG"
+base_url=$ASSET_BASE_URL
+case "$base_url" in
+  https://*) curl_proto='=https' ;;
+  http://127.0.0.1:*|http://localhost:*) curl_proto='=http' ;;
+  *) fail 'release asset base URL must use HTTPS (HTTP is allowed only for loopback staging).' ;;
+esac
 
 download() {
   name=$1; target=$2; url="$base_url/$name"
   effective_url=$(curl --fail --silent --show-error --location --max-redirs 3 \
-    --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 1 \
+    --proto "$curl_proto" --proto-redir "$curl_proto" --retry 3 --retry-delay 1 \
     --connect-timeout 15 --max-time 600 --output "$target" --write-out '%{url_effective}' "$url") \
     || fail "download failed for $name; check your connection and retry."
-  case "$effective_url" in
-    https://github.com/*|https://release-assets.githubusercontent.com/*|https://objects.githubusercontent.com/*|https://github-releases.githubusercontent.com/*) ;;
-    *) fail "download for $name ended at an unexpected HTTPS host." ;;
+  case "$base_url" in
+    https://github.com/speechcraftdev/speechcraft/releases/download/*)
+      case "$effective_url" in
+        https://github.com/*|https://release-assets.githubusercontent.com/*|https://objects.githubusercontent.com/*|https://github-releases.githubusercontent.com/*) ;;
+        *) fail "download for $name ended at an unexpected HTTPS host." ;;
+      esac
+      ;;
+    *)
+      [ "$effective_url" = "$url" ] || fail "staged download for $name left its pinned URL."
+      ;;
   esac
 }
 
