@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import os
-import shutil
 from pathlib import Path
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 
@@ -114,16 +115,8 @@ from .models import (
     SourceTranscriptionRequest,
 )
 from .repository import repository
-
-
-ALLOWED_WAV_CONTENT_TYPES = {
-    "",
-    "application/octet-stream",
-    "audio/vnd.wave",
-    "audio/wav",
-    "audio/wave",
-    "audio/x-wav",
-}
+from .audio_ingestion import CHUNK_SIZE, AudioUploadManager, UploadError, UploadSessionCreate
+from .audio_normalization import inspect_and_normalize
 
 
 DEFAULT_ALLOWED_ORIGINS = (
@@ -169,6 +162,8 @@ app.add_middleware(
 )
 
 native_cliplab_store = NativeClipLabStore(repository.db_path, repository.media_root)
+audio_uploads = AudioUploadManager(repository.media_root)
+repository.cleanup_orphan_source_files()
 
 
 @app.get("/healthz")
@@ -700,55 +695,152 @@ def list_project_source_recordings(project_id: str) -> list[SourceRecordingView]
         raise HTTPException(status_code=404, detail="Project not found") from exc
 
 
-@app.post("/api/projects/{project_id}/source-recordings/upload", response_model=SourceRecordingView)
-async def upload_project_source_recording(
-    project_id: str,
-    file: UploadFile = File(...),
-) -> SourceRecordingView:
-    filename = Path(file.filename or "").name
-    if not filename.lower().endswith(".wav"):
-        raise HTTPException(status_code=400, detail="Only WAV files are supported right now")
-    if (file.content_type or "") not in ALLOWED_WAV_CONTENT_TYPES:
-        raise HTTPException(status_code=400, detail="Only WAV files are supported right now")
+def _check_local_upload_request(request: Request) -> None:
+    if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site upload requests are not allowed")
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") not in get_allowed_origins():
+        raise HTTPException(status_code=403, detail="Upload origin is not allowed")
 
+
+@app.post("/api/projects/{project_id}/source-recordings/upload-sessions")
+def create_source_recording_upload_session(
+    project_id: str, payload: UploadSessionCreate, request: Request
+) -> dict[str, object]:
+    _check_local_upload_request(request)
     try:
         repository.get_project(project_id)
+        return audio_uploads.create(
+            project_id, payload.filename, payload.size, payload.sha256, payload.client_upload_id
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
-
-    recording_id = repository.new_source_recording_id()
-    target_path = repository.managed_source_recording_path(recording_id)
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with target_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer, length=1024 * 1024)
-        channels, _sample_width, sample_rate, frames = repository.read_pcm_wav_header(target_path)
-        recording = repository.create_source_recording(
-            SourceRecordingCreate(
-                id=recording_id,
-                batch_id=project_id,
-                file_path=str(target_path),
-                sample_rate=sample_rate,
-                num_channels=channels,
-                num_samples=frames,
-            )
-        )
-        repository.set_source_recording_artifact_paths(
-            recording_id,
-            artifact_metadata={
-                "original_filename": filename,
-                "upload_content_type": file.content_type or "",
-            },
-        )
-        return next(item for item in repository.list_source_recordings(project_id) if item.id == recording.id)
-    except KeyError as exc:
-        target_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=404, detail="Project not found") from exc
-    except ValueError as exc:
-        target_path.unlink(missing_ok=True)
+    except UploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        await file.close()
+
+
+@app.get("/api/projects/{project_id}/source-recordings/upload-sessions/{upload_id}")
+def source_recording_upload_status(project_id: str, upload_id: str, request: Request) -> dict[str, object]:
+    _check_local_upload_request(request)
+    try:
+        folder, data = audio_uploads._session(upload_id)
+        if data["project_id"] != project_id:
+            raise KeyError(upload_id)
+        result = audio_uploads.status(upload_id, verify_chunks=True)
+        result["completed"] = bool(data.get("completed"))
+        result["recording_id"] = data.get("recording_id")
+        return result
+    except (KeyError, UploadError) as exc:
+        raise HTTPException(status_code=404, detail="Upload session not found") from exc
+
+
+@app.put("/api/projects/{project_id}/source-recordings/upload-sessions/{upload_id}/chunks/{index}")
+async def put_source_recording_upload_chunk(
+    project_id: str, upload_id: str, index: int, request: Request,
+    x_chunk_sha256: str = Header(alias="X-Chunk-SHA256"),
+) -> dict[str, object]:
+    _check_local_upload_request(request)
+    try:
+        _, data = audio_uploads._session(upload_id)
+        if data["project_id"] != project_id:
+            raise KeyError(upload_id)
+        body_buffer = bytearray()
+        async for part in request.stream():
+            body_buffer.extend(part)
+            if len(body_buffer) > CHUNK_SIZE:
+                raise HTTPException(status_code=413, detail="Upload chunks are limited to 8 MiB")
+        body = bytes(body_buffer)
+        return await asyncio.to_thread(audio_uploads.put_chunk, upload_id, index, body, x_chunk_sha256)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Upload session not found") from exc
+    except UploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=507, detail="Not enough free disk space to store this upload chunk") from exc
+
+
+def _finalize_source_recording_upload(project_id: str, upload_id: str) -> SourceRecordingView:
+    try:
+        session_folder, session = audio_uploads._session(upload_id)
+        if session["project_id"] != project_id:
+            raise KeyError(upload_id)
+        if session.get("recording_id"):
+            return next(item for item in repository.list_source_recordings(project_id) if item.id == session["recording_id"])
+        recovered_id = repository.find_source_recording_for_upload(project_id, upload_id)
+        if recovered_id:
+            audio_uploads.mark_completed(upload_id, recovered_id)
+            return next(item for item in repository.list_source_recordings(project_id) if item.id == recovered_id)
+        repository.get_project(project_id)
+        extension = Path(session["filename"]).suffix.lower()
+        staged_original = session_folder / f"original{extension}"
+        staged_working = session_folder / "working.wav"
+        session, original_hash = audio_uploads.assemble(upload_id, staged_original)
+        media = inspect_and_normalize(staged_original, staged_working)
+        working_path = staged_working if media["converted"] else staged_original
+        channels, sample_width, sample_rate, frames = repository.read_pcm_wav_header(working_path)
+        if sample_width != 2:
+            raise UploadError("Working audio must be PCM16 WAV")
+        output_duration = frames / sample_rate
+        if abs(output_duration - media["duration_seconds"]) > max(2.0, media["duration_seconds"] * 0.02):
+            raise UploadError("Decoded WAV duration does not match the inspected audio stream")
+        recording_id = repository.new_source_recording_id()
+        source_dir = repository.media_root / "sources"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        original_target = source_dir / f"{recording_id}.original{extension}"
+        target_path = repository.managed_source_recording_path(recording_id)
+        try:
+            if working_path == staged_original:
+                os.replace(staged_original, target_path)
+                original_target = target_path
+            else:
+                os.replace(staged_original, original_target)
+                os.replace(staged_working, target_path)
+            metadata = {
+                "upload_session_id": upload_id,
+                "original_filename": session["filename"], "original_format": extension.lstrip("."),
+                "original_path": str(original_target), "original_sha256": original_hash,
+                "working_sha256": _file_sha256(target_path),
+                "converted": media["converted"], "conversion": "ffmpeg pcm_s16le wav" if media["converted"] else None,
+                "codec": media["codec"], "sample_rate": sample_rate, "channels": channels,
+                "duration_seconds": media["duration_seconds"],
+            }
+            recording = repository.create_source_recording(SourceRecordingCreate(
+                id=recording_id, batch_id=project_id, file_path=str(target_path),
+                sample_rate=sample_rate, num_channels=channels, num_samples=frames,
+            ), artifact_metadata=metadata)
+            audio_uploads.mark_completed(upload_id, recording_id)
+            return next(item for item in repository.list_source_recordings(project_id) if item.id == recording.id)
+        except Exception:
+            target_path.unlink(missing_ok=True)
+            if original_target != target_path:
+                original_target.unlink(missing_ok=True)
+            raise
+    except KeyError:
+        raise
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while block := stream.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+@app.post("/api/projects/{project_id}/source-recordings/upload-sessions/{upload_id}/finalize", response_model=SourceRecordingView)
+def finalize_source_recording_upload(project_id: str, upload_id: str, request: Request) -> SourceRecordingView:
+    _check_local_upload_request(request)
+    try:
+        with audio_uploads.finalization_lock(upload_id):
+            return _finalize_source_recording_upload(project_id, upload_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Upload session or project not found") from exc
+    except UploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=507, detail="Not enough free disk space to finalize this recording") from exc
 
 
 @app.get("/api/projects/{project_id}/recordings", response_model=list[SourceRecordingQueueView])

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import wave
+from pathlib import Path
 
 from tests.http_support import LiveServerTestCase
 
@@ -16,7 +18,38 @@ def make_wav_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def make_24bit_wav_bytes() -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(3)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(b"\x00\x00\x00" * 160)
+    return buffer.getvalue()
+
+
 class ApiIntegrationTests(LiveServerTestCase):
+    def upload_file(self, project_id: str, filename: str, content: bytes) -> dict[str, object]:
+        session_response = self.client.post(
+            f"/api/projects/{project_id}/source-recordings/upload-sessions",
+            json={"filename": filename, "size": len(content)},
+        )
+        self.assertEqual(session_response.status_code, 200, session_response.text)
+        session = session_response.json()
+        for index, start in enumerate(range(0, len(content), session["chunk_size"])):
+            chunk = content[start : start + session["chunk_size"]]
+            response = self.client.put(
+                f"/api/projects/{project_id}/source-recordings/upload-sessions/{session['upload_id']}/chunks/{index}",
+                content=chunk,
+                headers={"X-Chunk-SHA256": hashlib.sha256(chunk).hexdigest()},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+        response = self.client.post(
+            f"/api/projects/{project_id}/source-recordings/upload-sessions/{session['upload_id']}/finalize"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
     def test_healthz_route_returns_ok_json(self) -> None:
         response = self.client.get("/healthz")
 
@@ -79,13 +112,7 @@ class ApiIntegrationTests(LiveServerTestCase):
         )
         self.assertEqual(create_response.status_code, 200)
 
-        upload_response = self.client.post(
-            "/api/projects/upload-demo/source-recordings/upload",
-            files={"file": ("sample.wav", make_wav_bytes(), "audio/wav")},
-        )
-
-        self.assertEqual(upload_response.status_code, 200)
-        recording = upload_response.json()
+        recording = self.upload_file("upload-demo", "sample.wav", make_wav_bytes())
         self.assertEqual(recording["batch_id"], "upload-demo")
         self.assertIsNone(recording["parent_recording_id"])
         self.assertEqual(recording["sample_rate"], 16000)
@@ -98,7 +125,7 @@ class ApiIntegrationTests(LiveServerTestCase):
         self.assertEqual([item["id"] for item in listed_recordings], [recording["id"]])
         self.assertEqual(listed_recordings[0]["display_name"], "sample.wav")
 
-    def test_project_upload_rejects_non_wav_extension(self) -> None:
+    def test_project_upload_rejects_unsupported_extension(self) -> None:
         create_response = self.client.post(
             "/api/import-batches",
             json={"id": "upload-invalid", "name": "Upload Invalid"},
@@ -106,12 +133,84 @@ class ApiIntegrationTests(LiveServerTestCase):
         self.assertEqual(create_response.status_code, 200)
 
         upload_response = self.client.post(
-            "/api/projects/upload-invalid/source-recordings/upload",
-            files={"file": ("sample.mp3", b"not audio", "audio/mpeg")},
+            "/api/projects/upload-invalid/source-recordings/upload-sessions",
+            json={"filename": "sample.exe", "size": 9},
         )
 
         self.assertEqual(upload_response.status_code, 400)
-        self.assertEqual(upload_response.json()["detail"], "Only WAV files are supported right now")
+        self.assertIn("Supported formats", upload_response.json()["detail"])
+
+    def test_upload_session_creation_is_idempotent(self) -> None:
+        self.client.post("/api/import-batches", json={"id": "upload-retry", "name": "Upload Retry"})
+        payload = {
+            "filename": "retry.wav", "size": len(make_wav_bytes()),
+            "client_upload_id": "a" * 32,
+        }
+        first = self.client.post("/api/projects/upload-retry/source-recordings/upload-sessions", json=payload)
+        second = self.client.post("/api/projects/upload-retry/source-recordings/upload-sessions", json=payload)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["upload_id"], second.json()["upload_id"])
+
+    def test_upload_resume_discards_corrupted_committed_chunks(self) -> None:
+        self.client.post("/api/import-batches", json={"id": "upload-recheck", "name": "Upload Recheck"})
+        session = self.client.post(
+            "/api/projects/upload-recheck/source-recordings/upload-sessions",
+            json={"filename": "resume.wav", "size": 4},
+        ).json()
+        chunk = b"test"
+        upload_path = f"/api/projects/upload-recheck/source-recordings/upload-sessions/{session['upload_id']}"
+        committed = self.client.put(
+            f"{upload_path}/chunks/0", content=chunk,
+            headers={"X-Chunk-SHA256": hashlib.sha256(chunk).hexdigest()},
+        )
+        self.assertEqual(committed.status_code, 200)
+        chunk_path = Path(self._tempdir.name, "data", "media", ".uploads", session["upload_id"], "00000000.chunk")
+        chunk_path.write_bytes(b"bad!")
+        status = self.client.get(upload_path)
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json()["completed_chunks"], [])
+        self.assertEqual(status.json()["committed_bytes"], 0)
+
+    def test_project_upload_validates_media_before_registering(self) -> None:
+        self.client.post("/api/import-batches", json={"id": "upload-corrupt", "name": "Upload Corrupt"})
+        session = self.client.post(
+            "/api/projects/upload-corrupt/source-recordings/upload-sessions",
+            json={"filename": "sample.mp3", "size": 10},
+        ).json()
+        chunk = b"not audio!"
+        self.client.put(
+            f"/api/projects/upload-corrupt/source-recordings/upload-sessions/{session['upload_id']}/chunks/0",
+            content=chunk,
+            headers={"X-Chunk-SHA256": hashlib.sha256(chunk).hexdigest()},
+        )
+        response = self.client.post(
+            f"/api/projects/upload-corrupt/source-recordings/upload-sessions/{session['upload_id']}/finalize"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.get("/api/projects/upload-corrupt/source-recordings").json(), [])
+
+    def test_project_upload_normalizes_mp3_to_pipeline_wav(self) -> None:
+        self.client.post("/api/import-batches", json={"id": "upload-mp3", "name": "Upload MP3"})
+        fixture = Path(__file__).resolve().parents[2] / "workers/dataset/runtime-fixtures/speech-compressed.mp3"
+        recording = self.upload_file("upload-mp3", "speech.mp3", fixture.read_bytes())
+        self.assertEqual(recording["sample_rate"], 16000)
+        self.assertEqual(recording["num_channels"], 1)
+        self.assertGreater(recording["num_samples"], 0)
+        source_files = Path(self._tempdir.name, "data", "media", "sources")
+        original = next(source_files.glob("*.original.mp3"))
+        self.assertEqual(original.read_bytes(), fixture.read_bytes())
+
+    def test_project_upload_non_pcm16_wav_keeps_original_and_creates_working_wav(self) -> None:
+        self.client.post("/api/import-batches", json={"id": "upload-24bit", "name": "Upload 24-bit"})
+        original_bytes = make_24bit_wav_bytes()
+        recording = self.upload_file("upload-24bit", "source.wav", original_bytes)
+        self.assertEqual(recording["sample_rate"], 16000)
+        source_files = Path(self._tempdir.name, "data", "media", "sources")
+        original = next(source_files.glob("*.original.wav"))
+        working = source_files / f"{recording['id']}.wav"
+        self.assertEqual(original.read_bytes(), original_bytes)
+        self.assertNotEqual(working.read_bytes(), original_bytes)
 
     def test_cors_preflight_uses_explicit_origin_for_allowed_frontend(self) -> None:
         response = self.client.options(
