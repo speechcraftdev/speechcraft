@@ -11,7 +11,8 @@ function makeCompleteRuntimeRoot() {
     const filename = path.join(root, relative);
     fs.mkdirSync(path.dirname(filename), { recursive: true });
     fs.writeFileSync(filename, relative === 'setup-controller/resources/runtime-manifest.json'
-      ? JSON.stringify({ worker: { validation_helper: 'workers/dataset/scripts/preflight.py' } }) : 'fixture');
+      ? JSON.stringify({ worker: { validation_helper: 'workers/dataset/scripts/preflight.py' } })
+      : relative === 'frontend-release-manifest.json' ? JSON.stringify({ schema_version: 1, next_build_id: 'fixture', files: [] }) : 'fixture');
   }
   return root;
 }

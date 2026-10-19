@@ -405,7 +405,11 @@ export function ownedProcessIdentity(pid, nonce = null) {
       const details = execFileSync('/bin/ps', ['eww', '-p', String(pid)], {
         encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'],
       }).trim();
-      if (!details.includes(`SPEECHCRAFT_OWNED_PROCESS_NONCE=${nonce}`)) return null;
+      // Next.js replaces its process title during server startup. On Darwin
+      // that can move/obscure the original environment block from `ps`, so the
+      // packaged frontend writes the same nonce into its stable process title.
+      if (!details.includes(`SPEECHCRAFT_OWNED_PROCESS_NONCE=${nonce}`)
+          && !details.includes(`SPEECHCRAFT-OWNED-${nonce}`)) return null;
       const processGroup = execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(pid)], {
         encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'],
       }).trim();

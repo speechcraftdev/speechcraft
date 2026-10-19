@@ -93,16 +93,9 @@ async function outerSnapshotBuild() {
   const snapshotRoot = path.join(work, 'source'); fs.mkdirSync(snapshotRoot, { mode: 0o700 });
   run('tar', ['-xf', archive, '-C', snapshotRoot]);
   fs.unlinkSync(archive);
-  const installedDependencies = path.join(repositoryRoot, 'frontend/node_modules');
-  if (!fs.existsSync(path.join(installedDependencies, 'next/package.json')) || !fs.existsSync(path.join(installedDependencies, 'typescript/package.json')))
-    throw new Error('Frontend build dependencies are missing. Install dependencies according to frontend/bun.lock before packaging.');
-  const expectedNext = JSON.parse(fs.readFileSync(path.join(snapshotRoot, 'frontend/package.json'), 'utf8')).dependencies?.next;
-  const actualNext = JSON.parse(fs.readFileSync(path.join(installedDependencies, 'next/package.json'), 'utf8')).version;
-  if (expectedNext !== actualNext) throw new Error(`Pinned build input mismatch: source requires Next.js ${expectedNext}, installed dependency tree has ${actualNext}.`);
-  // Turbopack refuses node_modules symlinks that escape its project root.
-  // Copy only the prepared build dependency tree into the exported source
-  // snapshot; all frontend/backend source still comes from the pinned commit.
-  run('cp', ['-a', installedDependencies, path.join(snapshotRoot, 'frontend/node_modules')], repositoryRoot);
+  // Resolve the frozen dependency lock inside the exported source tree; never
+  // mix this release with a developer's cached node_modules directory.
+  run('bun', ['install', '--frozen-lockfile'], path.join(snapshotRoot, 'frontend'));
   run(process.execPath, [path.join(snapshotRoot, 'launcher/scripts/package-linux.mjs'), '--snapshot-build', '--source-revision', revision, '--output', outputRoot], snapshotRoot, process.env);
 }
 
@@ -142,6 +135,7 @@ async function snapshotBuild() {
     ];
     for (const relative of copyPaths) copySafe(repositoryRoot, appRoot, relative);
     fs.cpSync(path.join(frontendStage, 'frontend'), path.join(appRoot, 'frontend'), { recursive: true, errorOnExist: true });
+    fs.copyFileSync(path.join(frontendStage, 'frontend-release-manifest.json'), path.join(appRoot, 'frontend-release-manifest.json'));
     fs.mkdirSync(path.join(appRoot, 'bin'), { recursive: true });
     copySafe(repositoryRoot, appRoot, 'bin/speechcraft');
     fs.chmodSync(path.join(appRoot, 'bin/speechcraft'), 0o755);
@@ -187,7 +181,7 @@ async function snapshotBuild() {
     fs.writeFileSync(path.join(appRoot, 'application-release-manifest.json'), `${JSON.stringify(release, null, 2)}\n`, { flag: 'wx', mode: 0o644 });
 
     const archive = path.join(work, `${appName}.tar.gz`);
-    run('tar', ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner', '-czf', archive, '-C', work, appName]);
+    run('python3', [path.join(repositoryRoot, 'launcher/scripts/package-archive.py'), work, appName, archive]);
     const archiveSha = hashFile(archive);
     fs.mkdirSync(outputRoot, { recursive: true });
     const archiveName = path.basename(archive);

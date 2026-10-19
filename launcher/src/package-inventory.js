@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 // These are the concrete entrypoints used by runtime manifests and backend
 // subprocess calls. Their parent package trees are included separately by the
@@ -25,6 +26,9 @@ export const REQUIRED_RUNTIME_FILES = Object.freeze([
   'workers/dataset/runtime-fixtures/community1-two-voice.wav',
   'workers/dataset/runtime-profiles/linux-cpu/pyproject.toml',
   'workers/dataset/runtime-profiles/linux-cpu/uv.lock',
+  'workers/dataset/runtime-profiles/macos-arm64/pyproject.toml',
+  'workers/dataset/runtime-profiles/macos-arm64/uv.lock',
+  'frontend-release-manifest.json',
   // Linux worker profiles resolve the model manager as a local path dependency
   // while building the worker environment. The standalone model-manager wheel
   // is also packaged for controller bootstrap, but does not replace this
@@ -64,6 +68,24 @@ export function validateRuntimeInventory(applicationRoot) {
     }
     try { if (!fs.statSync(path.join(applicationRoot, relative)).isFile()) missing.push(relative); }
     catch { missing.push(relative); }
+  }
+
+  try {
+    const frontend = JSON.parse(fs.readFileSync(path.join(applicationRoot, 'frontend-release-manifest.json'), 'utf8'));
+    if (frontend.schema_version !== 1 || typeof frontend.next_build_id !== 'string' || !Array.isArray(frontend.files)) throw new Error('invalid frontend identity');
+    const listed = new Set();
+    for (const record of frontend.files) {
+      if (!record || typeof record.path !== 'string' || !record.path.startsWith('frontend/') || path.isAbsolute(record.path)
+          || record.path.split('/').includes('..') || listed.has(record.path) || !/^[a-f0-9]{64}$/.test(record.sha256 || '')
+          || !Number.isSafeInteger(record.size_bytes)) throw new Error('invalid frontend file identity');
+      listed.add(record.path);
+      const filename = path.join(applicationRoot, record.path);
+      const info = fs.lstatSync(filename);
+      if (!info.isFile() || info.isSymbolicLink() || info.size !== record.size_bytes
+          || createHash('sha256').update(fs.readFileSync(filename)).digest('hex') !== record.sha256) throw new Error(`frontend file identity mismatch: ${record.path}`);
+    }
+  } catch (error) {
+    missing.push(`frontend-release-manifest-invalid:${error.message}`);
   }
 
   return { ok: missing.length === 0, missing: [...new Set(missing)], error: missing.length ? 'Required runtime resource inventory is incomplete.' : null };

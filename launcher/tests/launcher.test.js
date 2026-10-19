@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { assertLoopbackAddress, chooseDestination, formatFrontendReadyEvent, openDefaultBrowser, parseArgs, parseFrontendReadyEvent, readOrCreateFrontendIdentity, resolveLaunchContext, stopOwned, stopOwnedRecord, verifyFrontendOwnership, waitForRestoration } from '../src/launcher.js';
 import { classifyChildStreamLine, createLauncherLog, createLaunchLogSession, formatLaunchAccess, formatRemoteAccessGuidance, isRoutineChildStdout, launchOutputMode, redactLaunchText } from '../src/launch-log.js';
 import { PassThrough } from 'node:stream';
@@ -210,6 +211,12 @@ test('runtime package inventory requires the production preflight, runtime probe
       fs.mkdirSync(path.dirname(filename), { recursive: true });
       fs.writeFileSync(filename, 'fixture');
     }
+    fs.mkdirSync(path.join(root, 'frontend'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'frontend/server.js'), 'fixture frontend');
+    const frontendBytes = fs.readFileSync(path.join(root, 'frontend/server.js'));
+    fs.writeFileSync(path.join(root, 'frontend-release-manifest.json'), JSON.stringify({ schema_version: 1, next_build_id: 'fixture', files: [
+      { path: 'frontend/server.js', size_bytes: frontendBytes.length, sha256: createHash('sha256').update(frontendBytes).digest('hex') },
+    ] }));
     const runtimeManifest = {
       worker: { validation_helper: 'workers/dataset/scripts/preflight.py' },
       runtime_validation: {

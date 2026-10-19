@@ -40,8 +40,19 @@ class BootstrapTests(unittest.TestCase):
                     "platform": "linux-x86_64", "source_revision": source_revision,
                     "model_manager_wheel_sha256": "a" * 64}
         (self.assets / f"{archive_name}.release.json").write_text(json.dumps(manifest) + "\n")
+        mac_archive = b"test-only mac package bytes"
+        mac_name = "speechcraft-0.1.1-macos-arm64.tar.gz"
+        (self.assets / mac_name).write_bytes(mac_archive)
+        (self.assets / f"{mac_name}.sha256").write_text(f"{digest(mac_archive)}  {mac_name}\n")
+        mac_manifest = {"schema_version": 1, "archive": mac_name, "archive_size_bytes": len(mac_archive),
+                        "archive_sha256": digest(mac_archive), "application_version": "0.1.1",
+                        "platform": "macos-arm64", "source_revision": source_revision}
+        (self.assets / f"{mac_name}.release.json").write_text(json.dumps(mac_manifest) + "\n")
         (self.assets / "install-linux.py").write_text("# verified test fixture\n")
         (self.assets / "install-linux.sh").write_text("#!/bin/sh\nprintf installed > \"$INSTALL_MARKER\"\n")
+        (self.assets / "install-macos.sh").write_text("#!/bin/sh\nprintf mac-installed > \"$INSTALL_MARKER\"\n")
+        (self.mockbin / "plutil").write_text("#!/bin/sh\n[ \"$1\" = -extract ] || exit 2\npython3 - \"$2\" \"$6\" <<'PY'\nimport json,sys\nx=json.load(open(sys.argv[2]));\nfor k in sys.argv[1].split('.'): x=x[k]\nprint(str(x).lower() if isinstance(x,bool) else x)\nPY\n")
+        os.chmod(self.mockbin / "plutil", 0o755)
         self.curl_log = self.root / "curl.log"
         self.script = self.root / "install.sh"
         subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.1", "--source-revision", source_revision,
@@ -50,8 +61,6 @@ class BootstrapTests(unittest.TestCase):
         (self.mockbin / "curl").write_text("""#!/bin/sh
 set -eu
 if [ -n "${MOCK_CURL_LOG:-}" ]; then printf '%s\\n' "$*" >> "$MOCK_CURL_LOG"; fi
-if [ "${MOCK_CURL_FAIL:-}" = 1 ]; then printf partial > "$out"; exit 28; fi
-if [ "${MOCK_CURL_HTTP_STATUS:-}" = 404 ]; then exit 22; fi
 out=
 url=
 while [ "$#" -gt 0 ]; do
@@ -61,6 +70,8 @@ while [ "$#" -gt 0 ]; do
     *) url=$1; shift ;;
   esac
 done
+if [ "${MOCK_CURL_FAIL:-}" = 1 ]; then printf partial > "$out"; exit 28; fi
+if [ "${MOCK_CURL_HTTP_STATUS:-}" = 404 ]; then exit 22; fi
 name=${url##*/}
 cp "$TEST_ASSET_DIR/$name" "$out"
 case "${MOCK_EFFECTIVE_URL:-}" in
@@ -70,7 +81,7 @@ case "${MOCK_EFFECTIVE_URL:-}" in
 esac
 """)
         os.chmod(self.mockbin / "curl", 0o755)
-        (self.mockbin / "uname").write_text("#!/bin/sh\nif [ \"$1\" = -s ]; then printf '%s\\n' \"${UNAME_VALUE:-Linux}\"; else printf 'x86_64\\n'; fi\n")
+        (self.mockbin / "uname").write_text("#!/bin/sh\nif [ \"$1\" = -s ]; then printf '%s\\n' \"${UNAME_VALUE:-Linux}\"; else printf '%s\\n' \"${UNAME_MACHINE:-x86_64}\"; fi\n")
         os.chmod(self.mockbin / "uname", 0o755)
 
     def tearDown(self):
@@ -149,6 +160,62 @@ esac
                        cwd=ROOT, check=True, capture_output=True)
         self.assertIn("RELEASE_TAG='v0.1.1-internal.1'", (output / "install.sh").read_text())
         self.assertIn("APP_VERSION='0.1.1'", (output / "install.sh").read_text())
+
+    def test_generated_bootstrap_has_independent_release_pins_for_both_platforms(self):
+        text = self.script.read_text()
+        self.assertIn("LINUX_ARCHIVE='speechcraft-0.1.1-linux-x86_64.tar.gz'", text)
+        self.assertIn("MACOS_ARCHIVE='speechcraft-0.1.1-macos-arm64.tar.gz'", text)
+        self.assertRegex(text, r"LINUX_ARCHIVE_SHA256='[a-f0-9]{64}'")
+        self.assertRegex(text, r"MACOS_ARCHIVE_SHA256='[a-f0-9]{64}'")
+        self.assertIn("INSTALL_MACOS_SH_SHA256=", text)
+
+    def test_legacy_linux_release_generator_keeps_linux_working_and_rejects_mac(self):
+        output = self.root / "linux-only"
+        output.mkdir()
+        versioned = "speechcraft-0.1.1-linux-x86_64.tar.gz"
+        for name in (versioned, f"{versioned}.sha256", f"{versioned}.release.json", "install-linux.py", "install-linux.sh"):
+            shutil.copyfile(self.assets / name, output / name)
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.1", "--source-revision", revision,
+                        "--output", str(output), "--linux-only"], cwd=ROOT, check=True, capture_output=True)
+        script = output / "install.sh"
+        self.assertIn("MACOS_ARCHIVE=''", script.read_text())
+        shutil.copyfile(script, self.script)
+        rejected = self.run_bootstrap(UNAME_VALUE="Darwin", UNAME_MACHINE="arm64")
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("does not include a macOS ARM64 package", rejected.stderr)
+        self.assertFalse(self.curl_log.exists())
+
+    def test_darwin_arm64_selects_only_pinned_mac_assets(self):
+        result = self.run_bootstrap(UNAME_VALUE="Darwin", UNAME_MACHINE="arm64")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.marker.read_text(), "mac-installed")
+        lines = self.curl_log.read_text().splitlines()
+        requested = [line.split()[-1].rsplit('/', 1)[-1] for line in lines]
+        self.assertEqual(len(requested), 4)
+        self.assertIn("speechcraft-0.1.1-macos-arm64.tar.gz", requested)
+        self.assertIn("install-macos.sh", requested)
+        self.assertFalse(any("linux-x86_64" in name or "install-linux" in name for name in requested))
+        self.assertIn("Apple Silicon macOS", result.stderr)
+
+    def test_darwin_intel_and_unknown_architectures_fail_before_download(self):
+        result = self.run_bootstrap(UNAME_VALUE="Darwin", UNAME_MACHINE="x86_64")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Intel Mac is unsupported", result.stderr)
+        self.assertFalse(self.curl_log.exists())
+        result = self.run_bootstrap(UNAME_VALUE="Darwin", UNAME_MACHINE="armv7")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported platform Darwin/armv7", result.stderr)
+        self.assertFalse(self.curl_log.exists())
+
+    def test_corrupt_mac_archive_is_rejected_before_mac_installer(self):
+        archive = self.assets / "speechcraft-0.1.1-macos-arm64.tar.gz"
+        archive.write_bytes(b"changed Mac payload")
+        result = self.run_bootstrap(UNAME_VALUE="Darwin", UNAME_MACHINE="arm64")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("archive verification failed", result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assert_clean_tmp()
 
     def test_loopback_staging_bootstrap_downloads_exact_pinned_urls(self):
         output = self.root / "staged"
@@ -230,7 +297,7 @@ esac
         self.assert_clean_tmp()
 
     def test_metadata_bytes_are_pinned(self):
-        manifest = next(self.assets.glob("*.release.json"))
+        manifest = self.assets / "speechcraft-0.1.1-linux-x86_64.tar.gz.release.json"
         manifest.write_text(manifest.read_text() + " ")
         result = self.run_bootstrap()
         self.assertNotEqual(result.returncode, 0)
@@ -239,14 +306,14 @@ esac
         self.assert_clean_tmp()
 
     def test_manifest_identity_mismatch_is_rejected_even_with_matching_hash_pin(self):
-        manifest_path = next(self.assets.glob("*.release.json"))
+        manifest_path = self.assets / "speechcraft-0.1.1-linux-x86_64.tar.gz.release.json"
         manifest = json.loads(manifest_path.read_text())
         manifest["source_revision"] = "0" * 40
         manifest_path.write_text(json.dumps(manifest) + "\n")
         content_hash = digest(manifest_path.read_bytes())
         self.script.write_text(self.script.read_text().replace(
-            next(line for line in self.script.read_text().splitlines() if line.startswith("MANIFEST_SHA256=")),
-            f"MANIFEST_SHA256='{content_hash}'"))
+            next(line for line in self.script.read_text().splitlines() if line.startswith("LINUX_MANIFEST_SHA256=")),
+            f"LINUX_MANIFEST_SHA256='{content_hash}'"))
         result = self.run_bootstrap()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("release metadata mismatch", result.stderr)
@@ -256,14 +323,14 @@ esac
     def test_unsupported_os_and_architecture_fail_before_download(self):
         result = self.run_bootstrap(UNAME_VALUE="Darwin")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("supported platform: Linux x86-64 only", result.stderr)
+        self.assertIn("Intel Mac is unsupported", result.stderr)
         self.assertNotIn("Platform checks passed", result.stderr)
         self.assert_clean_tmp()
         (self.mockbin / "uname").write_text("#!/bin/sh\nif [ \"$1\" = -s ]; then printf 'Linux\\n'; else printf 'aarch64\\n'; fi\n")
         os.chmod(self.mockbin / "uname", 0o755)
         result = self.run_bootstrap()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("supported architecture: Linux x86-64 only", result.stderr)
+        self.assertIn("unsupported platform Linux/aarch64", result.stderr)
         self.assert_clean_tmp()
 
     def test_old_system_python_is_explained_before_download(self):

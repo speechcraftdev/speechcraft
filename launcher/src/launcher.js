@@ -12,6 +12,7 @@ import { assertCurrentWslGuest, assertExistingManagedFiles, freeBytes, hostEnvir
 import { selectRuntimeProfile } from '../../setup-controller/src/runtime-plan.js';
 import { createLaunchLogSession, formatLaunchAccess, launchOutputMode } from './launch-log.js';
 import { runLinuxUninstall } from './uninstall-linux.js';
+import { runMacUninstall } from './uninstall-macos.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const FRONTEND_PORT = 3002;
@@ -576,9 +577,17 @@ export async function waitForRestoration(session, timeoutMs = RESTORATION_TIMEOU
     warning: 'Managed service restoration is still pending. SpeechCraft has not confirmed processing readiness; open /setup to inspect status.' };
 }
 
+export function ownedChildEnvironment(env, nonce) {
+  // Keep the identity marker first. Darwin `ps eww` can truncate long
+  // environment listings after a child changes its process title.
+  const childEnv = { SPEECHCRAFT_OWNED_PROCESS_NONCE: nonce, ...env };
+  childEnv.SPEECHCRAFT_OWNED_PROCESS_NONCE = nonce;
+  return childEnv;
+}
+
 function launch(executable, args, { cwd, env, label, logSession }) {
   const nonce = crypto.randomBytes(24).toString('hex');
-  const childEnv = { ...env, SPEECHCRAFT_OWNED_PROCESS_NONCE: nonce };
+  const childEnv = ownedChildEnvironment(env, nonce);
   const child = spawn(executable, args, { cwd, env: childEnv, shell: false, detached: true,
     stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   child.stdout?.on('error', () => {});
@@ -689,13 +698,14 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
       '       speechcraft stop [--data-dir PATH]',
       '       speechcraft uninstall [--yes|--force] [--purge|--remove-data] [--data-dir PATH]',
       'SPEECHCRAFT_LOG_LEVEL=verbose prints service output. Services stay on 127.0.0.1.',
-      'uninstall removes the Linux per-user application (~/.local/share/speechcraft/app and ~/.local/bin/speechcraft) and keeps user data unless --purge is also confirmed.',
+      'uninstall removes the per-user SpeechCraft application and keeps user data unless --purge is also confirmed.',
     ].join('\n'));
     return { help: true };
   }
   if (options.command === 'uninstall') {
     const wsl = process.platform === 'linux' && hostEnvironment().wsl === true;
-    return runLinuxUninstall({
+    const uninstall = process.platform === 'darwin' ? runMacUninstall : runLinuxUninstall;
+    const result = await uninstall({
       home: os.homedir(),
       env,
       yes: options.yes,
@@ -711,6 +721,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
       wsl,
       stopServices: stopForUninstall,
     });
+    return { command: 'uninstall', ...result };
   }
   if (options.proveFrontend) {
     const host = hostEnvironment();

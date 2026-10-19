@@ -71,6 +71,40 @@ test('managed backend passes only the verified ECAPA model root and ONNX path to
   }
 });
 
+test('Apple Silicon backend selects MLX with no CUDA, MPS device override, or Linux library path', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-macos-backend-environment-'));
+  const originalStart = BackendService.prototype.start;
+  try {
+    let environmentVars;
+    BackendService.prototype.start = async function startForMacTest() { environmentVars = this.environmentVars; return { port: 8010 }; };
+    const tasks = new RuntimeTasks({ dataDirectory: root });
+    tasks.environment = { profile: 'macos-arm64', os: 'macos', architecture: 'arm64', wsl: false };
+    tasks.paths = { home: root, uvCache: root, pythonRoot: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
+    tasks.backendEnvironmentPath = () => path.join(root, 'environments', 'backend', 'bin', 'python');
+    const modelRoot = path.join(root, 'models');
+    const components = {
+      backend_environment: { state: 'verified' },
+      worker_environment: { state: 'verified', path: path.join(root, 'environments', 'worker'), library_paths: ['/linux/nvidia/lib'] },
+      ffmpeg: { state: 'runtime_ready', path: path.join(root, 'tools', 'ffmpeg') },
+      silero: { state: 'runtime_ready', path: path.join(modelRoot, 'silero') },
+      whisper: { state: 'runtime_ready', path: path.join(modelRoot, 'whisper') },
+      pyannote: { state: 'runtime_ready', path: path.join(modelRoot, 'community-1') },
+      ecapa: { state: 'runtime_ready', path: path.join(modelRoot, 'wespeaker-ecapa-tdnn512-lm') },
+    };
+    await tasks.startServices({ attemptId: 'macos-env-test', signal: new AbortController().signal,
+      componentStatus: { components, runtime_profile: { accelerator: 'cuda', pyannote_cuda_validated: true } } });
+    assert.equal(environmentVars.SPEECHCRAFT_MODEL_PLATFORM, 'macos-arm64');
+    assert.equal(environmentVars.SPEECHCRAFT_ASR_BACKEND, 'mlx');
+    assert.equal(environmentVars.SPEECHCRAFT_ASR_DEVICE, 'cpu');
+    assert.equal(environmentVars.SPEECHCRAFT_PYANNOTE_DEVICE, 'cpu');
+    assert.equal(environmentVars.SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED, '0');
+    assert.equal(environmentVars.LD_LIBRARY_PATH, '');
+  } finally {
+    BackendService.prototype.start = originalStart;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('platform selection keeps WSL storage host identity separate from model artifact selection', () => {
   assert.equal(selectRuntimeProfile({ os: 'linux', architecture: 'x86_64', profile: 'linux-x86_64', wsl: true }).modelPlatform, 'windows-wsl2');
   assert.equal(selectRuntimeProfile({ os: 'macos', architecture: 'arm64', profile: 'macos-arm64', wsl: false }).modelPlatform, 'macos-arm64');

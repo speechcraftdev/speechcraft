@@ -3,8 +3,10 @@ import { PRODUCTION_STAGES, evaluateRuntimeReadiness, hashMatches, runtimeRoots,
 import { BackendService, reconcileOwnedService } from './backend-service.js';
 import { inspectHost } from './platform.js';
 import fs from 'node:fs';
+import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 async function trustedFileHash(file) {
   const info = fs.lstatSync(file);
@@ -54,6 +56,7 @@ export class RuntimeTasks extends BootstrapTasks {
     this.restoreResult = null;
     this.restoreAbortController = null;
     this.stopping = false;
+    this.systemToolRunner = options.systemToolRunner || spawnSync;
     if (options.environment) this.environment = options.environment;
     if (options.hostInspector) this.hostInspector = options.hostInspector;
   }
@@ -280,6 +283,7 @@ export class RuntimeTasks extends BootstrapTasks {
         message: artifact?.reason || 'No pinned Apple Silicon FFmpeg source build is configured.' });
       return false;
     }
+    this.verifyMacFfmpegBuildTools();
     const target = path.join(this.dataDirectory, 'tools', 'ffmpeg', `${artifact.version}-${artifact.sha256.slice(0, 16)}`);
     if (fs.existsSync(target) && await this.verifyFfmpegDirectory(target, context, artifact)) {
       this.setComponent(context, 'ffmpeg', { state: 'files_verified', identity: `ffmpeg-source:${artifact.version}:${artifact.sha256}`,
@@ -326,6 +330,29 @@ export class RuntimeTasks extends BootstrapTasks {
     this.setComponent(context, 'ffmpeg', { state: 'files_verified', identity: `ffmpeg-source:${artifact.version}:${artifact.sha256}`,
       verification: 'source_archive_sha256_and_local_build', last_verified_at: new Date().toISOString(), path: target,
       runtime_ready: false, failure_code: null, message: 'FFmpeg was built from the pinned source on this Mac. Decode probe and redistribution review are still required.' });
+    return true;
+  }
+
+  verifyMacFfmpegBuildTools() {
+    const run = (tool, args) => this.systemToolRunner(tool, args, { encoding: 'utf8', shell: false });
+    const missing = [];
+    const developerDir = run('xcode-select', ['-p']);
+    if (developerDir.error || developerDir.status !== 0 || !developerDir.stdout?.trim()) missing.push('Apple Command Line Tools selection (xcode-select -p)');
+    const compiler = run('xcrun', ['--find', 'clang']);
+    if (compiler.error || compiler.status !== 0 || !compiler.stdout?.trim()) missing.push('Apple clang compiler (xcrun --find clang)');
+    const sdk = run('xcrun', ['--sdk', 'macosx', '--show-sdk-path']);
+    if (sdk.error || sdk.status !== 0 || !sdk.stdout?.trim() || !fs.existsSync(sdk.stdout.trim())) missing.push('macOS SDK (xcrun --sdk macosx --show-sdk-path)');
+    const makePath = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-make-check-'));
+    const makefile = path.join(makePath, 'Makefile');
+    try {
+      fs.writeFileSync(makefile, 'speechcraft-tool-check:\n\t@true\n');
+      const make = run('make', ['-f', makefile, 'speechcraft-tool-check']);
+      if (make.error) missing.push('make executable (make)');
+      else if (make.status !== 0) missing.push('usable make implementation (valid trivial target failed)');
+    } finally { fs.rmSync(makePath, { recursive: true, force: true }); }
+    if (missing.length) {
+      throw new BootstrapError('MACOS_COMMAND_LINE_TOOLS_REQUIRED', `Apple Command Line Tools are required to build the pinned local FFmpeg runtime. Missing or unusable: ${missing.join(', ')}. Install or select them with Apple’s xcode-select --install prompt, then retry SpeechCraft setup. SpeechCraft does not install Homebrew or system tools.`);
+    }
     return true;
   }
 
@@ -440,12 +467,15 @@ export class RuntimeTasks extends BootstrapTasks {
       SPEECHCRAFT_FFMPEG_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffmpeg') : '',
       SPEECHCRAFT_FFPROBE_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffprobe') : '',
       SPEECHCRAFT_FFMPEG_DIR: ffmpegDir || '',
-      SPEECHCRAFT_ASR_DEVICE: modelPlatform === 'macos-arm64' ? 'mps' : (context.componentStatus.runtime_profile?.accelerator === 'cuda' ? 'cuda' : 'cpu'),
+      // MLX selects Apple hardware internally. The legacy ASR device field is
+      // for CTranslate2 and accepts only cpu/cuda; never leak Linux CUDA or
+      // a PyTorch MPS setting into the MLX path.
+      SPEECHCRAFT_ASR_DEVICE: modelPlatform === 'macos-arm64' ? 'cpu' : (context.componentStatus.runtime_profile?.accelerator === 'cuda' ? 'cuda' : 'cpu'),
       SPEECHCRAFT_ASR_BACKEND: modelPlatform === 'macos-arm64' ? 'mlx' : 'ctranslate2',
       SPEECHCRAFT_MANAGED_RUNTIME: '1',
-      SPEECHCRAFT_PYANNOTE_DEVICE: context.componentStatus.runtime_profile?.pyannote_cuda_validated === true ? 'cuda' : 'cpu',
-      SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED: context.componentStatus.runtime_profile?.pyannote_cuda_validated === true ? '1' : '0',
-      LD_LIBRARY_PATH: worker?.library_paths?.join(path.delimiter) || '',
+      SPEECHCRAFT_PYANNOTE_DEVICE: modelPlatform !== 'macos-arm64' && context.componentStatus.runtime_profile?.pyannote_cuda_validated === true ? 'cuda' : 'cpu',
+      SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED: modelPlatform !== 'macos-arm64' && context.componentStatus.runtime_profile?.pyannote_cuda_validated === true ? '1' : '0',
+      LD_LIBRARY_PATH: modelPlatform === 'macos-arm64' ? '' : (worker?.library_paths?.join(path.delimiter) || ''),
     };
     this.service = new BackendService({ store: this.store, dataDirectory: this.dataDirectory,
       applicationRoot: this.applicationRoot, environment: this.environment,

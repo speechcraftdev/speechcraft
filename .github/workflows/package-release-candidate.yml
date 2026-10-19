@@ -1,0 +1,197 @@
+name: Build private multi-platform release candidate
+
+on:
+  push:
+    branches:
+      - feature/macos-arm64-v1-infrastructure
+    paths-ignore:
+      - launcher/MACOS.md
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact source commit to package
+        required: true
+        type: string
+      tag:
+        description: Release identity for the generated installer
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: speechcraft-candidate-${{ inputs.source_commit || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.12.19
+      - name: Verify exact source identity
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.1-internal.1' }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git rev-parse HEAD^{commit})" = "$SOURCE_COMMIT"
+          test "v$(node -p "require('./frontend/package.json').version")" = "${RELEASE_TAG%%-internal.*}"
+      - name: Install locked frontend inputs and build Linux package
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+      - name: Run Linux-side platform, installer, archive, and launcher regressions
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python3 launcher/scripts/verify-macos-locks.py
+          python3 -m unittest launcher.installer.tests.test_bootstrap launcher.installer.tests.test_install_linux launcher.installer.tests.test_install_macos launcher.scripts.tests.test_package_archive
+          node --test launcher/tests/*.test.*
+          (cd setup-controller && node --test)
+          (cd frontend && bun test)
+          uv run --project backend --locked --group dev --with pytest==8.4.2 -- pytest -q backend/tests/test_audio_ingestion_hardening.py backend/tests/test_wsl_managed_upload.py
+      - name: Build Linux package from pinned source
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: node launcher/scripts/package-linux.mjs --source-revision "$SOURCE_COMMIT" --output "$RUNNER_TEMP/linux-assets"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-assets
+          path: ${{ runner.temp }}/linux-assets/*
+          if-no-files-found: error
+
+  macos-arm64:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.0
+      - name: Verify native runner and exact source identity
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.1-internal.1' }}
+        run: |
+          set -eu
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git rev-parse HEAD^{commit})" = "$SOURCE_COMMIT"
+          test "v$(node -p "require('./frontend/package.json').version")" = "${RELEASE_TAG%%-internal.*}"
+      - name: Install locked frontend inputs
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+      - name: Build and inspect native Mac package
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: node launcher/scripts/package-macos.mjs --source-revision "$SOURCE_COMMIT" --output "$RUNNER_TEMP/macos-assets"
+      - name: Verify Darwin process identity remains observable
+        run: node --test launcher/tests/darwin-process-identity.test.js
+      - name: Execute real Apple Command Line Tools capability check
+        run: node --test setup-controller/tests/ffmpeg-runtime.test.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-assets
+          path: ${{ runner.temp }}/macos-assets/*
+          if-no-files-found: error
+
+  combine:
+    needs: [linux, macos-arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/speechcraft-candidate
+          merge-multiple: true
+      - name: Verify matching release pins and generate shared installer
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.1-internal.1' }}
+          ASSET_DIR: ${{ runner.temp }}/speechcraft-candidate
+        run: |
+          set -eu
+          node launcher/scripts/generate-bootstrap.mjs --tag "$RELEASE_TAG" --source-revision "$SOURCE_COMMIT" --output "$ASSET_DIR"
+          sh -n "$ASSET_DIR/install.sh"
+          sh -n "$ASSET_DIR/install-macos.sh"
+          (cd "$ASSET_DIR" && for f in *.tar.gz; do shasum -a 256 -c "$f.sha256"; done)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: speechcraft-private-candidate-${{ inputs.source_commit || github.sha }}
+          path: ${{ runner.temp }}/speechcraft-candidate/*
+          if-no-files-found: error
+          retention-days: 30
+
+  macos-install-smoke:
+    needs: [combine]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: speechcraft-private-candidate-${{ inputs.source_commit || github.sha }}
+          path: ${{ runner.temp }}/speechcraft-candidate
+      - name: Verify archive release pins
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+          CANDIDATE_DIR: ${{ runner.temp }}/speechcraft-candidate
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          (cd "$CANDIDATE_DIR" && shasum -a 256 -c speechcraft-*-macos-arm64.tar.gz.sha256 && shasum -a 256 -c speechcraft-*-linux-x86_64.tar.gz.sha256)
+          node --input-type=module - "$CANDIDATE_DIR" "$SOURCE_COMMIT" <<'NODE'
+          import fs from 'node:fs'; import path from 'node:path'; import crypto from 'node:crypto';
+          const [dir, revision] = process.argv.slice(2);
+          for (const platform of ['macos-arm64', 'linux-x86_64']) {
+            const archive = fs.readdirSync(dir).find((name) => name.endsWith(`-${platform}.tar.gz`));
+            if (!archive) throw new Error(`missing ${platform} archive`);
+            const filename = path.join(dir, archive); const bytes = fs.readFileSync(filename);
+            const manifest = JSON.parse(fs.readFileSync(`${filename}.release.json`, 'utf8'));
+            const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+            if (manifest.source_revision !== revision || manifest.platform !== platform || manifest.archive !== archive || manifest.archive_sha256 !== digest || manifest.archive_size_bytes !== bytes.length) throw new Error(`invalid ${platform} release identity`);
+          }
+          NODE
+      - name: Install actual Mac candidate, launch services, and uninstall safely
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.1-internal.1' }}
+          CANDIDATE_DIR: ${{ runner.temp }}/speechcraft-candidate
+        run: launcher/macos/smoke-install-macos.sh "$CANDIDATE_DIR" "$SOURCE_COMMIT" "$RELEASE_TAG"
