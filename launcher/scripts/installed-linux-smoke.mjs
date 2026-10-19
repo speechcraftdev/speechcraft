@@ -22,7 +22,10 @@ const home = path.join(base, 'User Home With Spaces'); fs.mkdirSync(home, { mode
 const data = path.join(base, 'Persistent Data With Spaces');
 const tools = path.join(base, 'tools'); fs.mkdirSync(tools);
 for (const name of ['dirname', 'readlink']) fs.symlinkSync(`/usr/bin/${name}`, path.join(tools, name));
-const env = { ...process.env, HOME: home, PATH: tools, SPEECHCRAFT_SETUP_DATA_DIR: undefined };
+const browserLog = path.join(base, 'browser-opened-url.txt');
+const browserOpener = path.join(tools, 'xdg-open');
+fs.writeFileSync(browserOpener, '#!/bin/sh\nprintf "%s\\n" "$1" >> "$SPEECHCRAFT_BROWSER_LOG"\n', { mode: 0o700 });
+const env = { ...process.env, HOME: home, PATH: tools, SPEECHCRAFT_BROWSER_LOG: browserLog, SPEECHCRAFT_SETUP_DATA_DIR: undefined };
 const run = (command, commandArgs, options = {}) => {
   const result = spawnSync(command, commandArgs, { env, cwd: base, encoding: 'utf8', shell: false, ...options });
   if (result.error || result.status !== 0) throw new Error(`${command} exited ${result.status}: ${result.stderr || result.error?.message}`);
@@ -37,7 +40,7 @@ const waitFor = async (url, test = (response) => response.ok) => {
   }
   throw new Error(`Timed out waiting for ${url}: ${lastError?.message || 'no response'}`);
 };
-const start = (dataDirectory, simulated = true) => spawn(path.join(home, '.local/bin/speechcraft'), [...(simulated ? ['--simulated'] : []), '--no-browser', '--data-dir', dataDirectory],
+const start = (dataDirectory, simulated = true, noBrowser = true) => spawn(path.join(home, '.local/bin/speechcraft'), [...(simulated ? ['--simulated'] : []), ...(noBrowser ? ['--no-browser'] : []), '--data-dir', dataDirectory],
   { cwd: base, env, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
 let app;
 let fakeBackend;
@@ -87,11 +90,15 @@ try {
   if (app.exitCode === null && app.signalCode === null) await runtimeExit;
   assert.doesNotMatch(output.join(''), /exited unexpectedly/, 'authenticated stop is not surfaced as an application crash');
   app = null;
-  app = start(data);
+  app = start(data, true, false);
   output = [];
   app.stdout.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
   app.stderr.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
   await waitFor('http://127.0.0.1:3002/setup');
+  const browserDeadline = Date.now() + 2_000;
+  while (!fs.existsSync(browserLog) && Date.now() < browserDeadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(fs.readFileSync(browserLog, 'utf8').trim(), 'http://127.0.0.1:3002/setup',
+    'a fresh installed launch opens the first-run setup page through the platform browser opener');
   for (const route of ['/login', '/lab']) assert.equal((await fetch(`http://127.0.0.1:3002${route}`)).status, 200);
   const sessionResponse = await fetch('http://127.0.0.1:3002/setup-api/session', { method: 'POST', headers: {
     origin: 'http://127.0.0.1:3002', 'content-type': 'application/json',
