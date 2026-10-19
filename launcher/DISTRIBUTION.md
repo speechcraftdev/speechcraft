@@ -83,6 +83,9 @@ The repository has an active `immutable version tags` ruleset for `refs/tags/v*`
 
 ## Licensing gate and publication
 
+The exact Linux archive and runtime dependency handoff is recorded in
+[RELEASE-LICENSING-HANDOFF.md](RELEASE-LICENSING-HANDOFF.md).
+
 Creating release infrastructure and uploading a draft are separate from publicly publishing an application. The current model catalog selects the WeSpeaker ECAPA-TDNN512-LM ONNX artifact at a pinned revision and records its publisher-declared CC BY 4.0 license, hash, provenance, and attribution in `packages/model_manager/PROVENANCE.md`. The superseded TitaNet candidate is historical and is not part of active setup or the current package. The Linux application archive contains neither model weights nor a prebuilt FFmpeg binary. Setup can acquire ECAPA weights and a pinned LGPL FFmpeg/FFprobe build at runtime. Public release still requires a documented review of the FFmpeg build's acquisition and redistribution implications and confirmation that the ECAPA license/attribution notices are correctly presented for the actual user download flow. Artifact hashes alone do not establish these permissions. A GitHub prerelease is public once published and does not satisfy this gate.
 
 Do not publish the draft until FFmpeg runtime acquisition and redistribution obligations have been reviewed and ECAPA's publisher-declared CC BY 4.0 terms and attribution have been checked against the in-product setup flow and included notices. The old TitaNet checkpoint/conversion blocker is superseded; its historical provenance record should remain for audit history. Keep the model manager's existing license and artifact-verification gates intact.
