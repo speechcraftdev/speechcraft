@@ -11,6 +11,16 @@ home="$root/home with spaces"
 mkdir -p "$home" "$root/tmp"
 server_pid=
 app_pid=
+failure_logs() {
+  code=$?
+  for log in "$root/launch.log" "$root/restart.log" "$root/stop.log"; do
+    if [[ -f "$log" ]]; then echo "--- $log ---" >&2; cat "$log" >&2; fi
+  done
+  if [[ -n "${base:-}" && -d "$base/setup-controller/logs" ]]; then
+    find "$base/setup-controller/logs" -type f -exec sh -c 'echo "--- $1 ---" >&2; tail -n 100 "$1" >&2' sh {} \; 2>/dev/null || true
+  fi
+  return "$code"
+}
 cleanup() {
   if [[ -x "$home/Library/Application Support/SpeechCraft/bin/speechcraft" ]]; then
     HOME="$home" "$home/Library/Application Support/SpeechCraft/bin/speechcraft" stop >/dev/null 2>&1 || true
@@ -20,6 +30,7 @@ cleanup() {
   rm -rf "$root"
 }
 trap cleanup EXIT
+trap failure_logs ERR
 
 node launcher/macos/serve-candidate.mjs "$assets" "$root/port" & server_pid=$!
 for _ in $(seq 1 100); do [[ -s "$root/port" ]] && break; sleep 0.1; done
