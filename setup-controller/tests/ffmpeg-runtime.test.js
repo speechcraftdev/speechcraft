@@ -16,7 +16,7 @@ function context(tasks, suffix = '00000000-0000-4000-8000-000000000001') {
 }
 
 test('managed FFmpeg installation verifies both pinned executables, reuses them, and repairs same-size corruption', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-ffmpeg-install-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-ffmpeg-install-')));
   const ffmpeg = Buffer.from('#!/bin/sh\n# fixture ffmpeg\n');
   const ffprobe = Buffer.from('#!/bin/sh\n# fixture ffprobe\n');
   const archiveBytes = Buffer.from('tiny trusted archive fixture');
@@ -71,7 +71,7 @@ test('managed FFmpeg installation verifies both pinned executables, reuses them,
 });
 
 test('macOS selects the pinned source-build FFmpeg recipe and rejects a GPL configuration', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-ffmpeg-mac-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-ffmpeg-mac-')));
   const archiveBytes = Buffer.from('source archive');
   const artifact = {
     available: true, acquisition: 'pinned_source_build', platform: 'macos-arm64',
