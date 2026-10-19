@@ -923,7 +923,7 @@ export class BootstrapTasks {
             verification: 'runtime_probe', last_verified_at: new Date().toISOString(), failure_code: null,
             message: null, path: python });
           try {
-            const manager = await this.findInstalledModelManager(context);
+            const manager = await this.findOrRepairInstalledModelManager(context);
             this.paths.environmentRoot = manager.environmentRoot;
             this.status(context, { model_manager_verified: true, manager_version: manager.version });
             this.setComponent(context, 'model_manager', { state: 'verified', verification: 'installed_wheel_identity_catalog_and_cli',
@@ -1447,6 +1447,20 @@ export class BootstrapTasks {
     }
     if (validationFailure) throw validationFailure;
     throw new BootstrapError('MODEL_MANAGER_ENVIRONMENT_UNAVAILABLE', 'No installed model-manager environment passed its pinned package, wheel, lock, and catalog identity checks. Trusted repair inputs are required to reinstall it.');
+  }
+
+  async findOrRepairInstalledModelManager(context) {
+    try {
+      return await this.findInstalledModelManager(context);
+    } catch (error) {
+      // An application update can ship a new trusted model-manager wheel
+      // while preserving the older versioned data directory. Rebuild only
+      // this owned environment from the packaged wheel, then revalidate it.
+      if (!['MODEL_MANAGER_WHEEL_HASH_MISMATCH', 'MODEL_MANAGER_ENVIRONMENT_UNAVAILABLE',
+        'MODEL_MANAGER_ENVIRONMENT_INVALID'].includes(error?.code)) throw error;
+      await this.ensureModelManager(context);
+      return this.findInstalledModelManager(context);
+    }
   }
 
   async ensureModelManager(context) {
