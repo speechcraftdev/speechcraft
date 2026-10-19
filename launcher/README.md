@@ -25,6 +25,7 @@ speechcraft --no-browser
 speechcraft status
 speechcraft status --json
 speechcraft stop
+speechcraft uninstall --help
 ```
 
 The first launch serves `/setup`. After the controller records verified onboarding completion, later launches serve `/login`. On a desktop, SpeechCraft asks the platform opener to show that page; a stub or failed opener is not a GUI window. `--no-browser` prints the URL and leaves services running in the terminal. On a headless or SSH server, use a tunnel from the computer where you want the browser. `cozytent` below is only an example SSH alias; use your own alias or `user@host`:
@@ -35,7 +36,9 @@ ssh -N -L 3002:127.0.0.1:3002 cozytent
 
 Then visit `http://127.0.0.1:3002/setup` in a browser on that computer. SpeechCraft did not open a browser on the server. Controller, frontend and backend bind only to loopback. `speechcraft stop` authenticates with the controller when available and independently reconciles launcher-owned child process identities, so a crashed frontend does not prevent shutdown. It reports incomplete or uncertain ownership instead of killing an unrelated process. Ctrl+C stops services owned by that terminal; closing the browser does not stop them.
 
-Persistent state, controller credentials, managed runtimes, models, caches, projects, recordings and exports remain under `~/.local/share/speechcraft/`. Installing an upgrade creates another versioned application directory and switches `current`; it does not remove user data or prior releases. To remove application binaries, remove `~/.local/bin/speechcraft` and `~/.local/share/speechcraft/app/`. Keep `~/.local/share/speechcraft/data/` to retain user data and models. The installer refuses to replace an unrelated `speechcraft` command and is safe to rerun for an identical release.
+Persistent state, controller credentials, managed runtimes, models, caches, projects, recordings and exports remain under `~/.local/share/speechcraft/`. The installer keeps that tree across upgrades. The controller's own default directory is `~/.local/share/speechcraft/setup-controller` unless `SPEECHCRAFT_SETUP_DATA_DIR`, `XDG_DATA_HOME`, or WSL selects another location. Model files may also live in `~/.local/share/speechcraft/models`. Installing an upgrade creates another versioned application directory and switches `current`; it does not remove user data or prior releases. The installer refuses to replace an unrelated `speechcraft` command and is safe to rerun for an identical release.
+
+`speechcraft uninstall` removes only a verified Linux per-user application: the exact `~/.local/bin/speechcraft` wrapper and `~/.local/share/speechcraft/app` (the `current` symlink and versioned releases). It does not install into the current directory, and it does not delete a source checkout or an unknown prefix. A terminal asks for confirmation. A non-interactive shell requires `--yes` or `--force`. If SpeechCraft is running, uninstall asks the existing authenticated `stop` path to shut the owned services down and aborts without deleting application files when that shutdown cannot be confirmed. `--purge` or `--remove-data` also deletes real `data`, `setup-controller`, and `models` directories directly inside `~/.local/share/speechcraft` after a second confirmation (`purge` at a terminal, or `--yes` together with `--purge`). It refuses to follow symlinks, custom data directories, or `XDG_DATA_HOME` locations outside that tree. macOS and Windows do not have this command yet.
 
 The packaged release includes the verified Node.js 24.22.0 Linux x86-64 executable, Next.js standalone server and traced runtime dependencies, setup controller, backend and dataset-worker resources (including the production `scripts/preflight.py` and `runtime_probe.py` entrypoints), probe fixtures, runtime manifests, and the model-manager wheel with its exact digest. The builder validates these required resources against the runtime manifest and fails before publication if one is missing. It does not include model weights, credentials, virtual environments, or caches. FFmpeg redistribution review remains a separate public-release item; WeSpeaker ECAPA-TDNN512-LM provenance and CC BY 4.0 attribution are documented; no real gated Community-1 account or model inference is implied by package smoke tests.
 
@@ -97,6 +100,7 @@ From another terminal, use:
 speechcraft status
 speechcraft status --json
 speechcraft stop
+speechcraft uninstall --yes
 speechcraft --no-browser
 ```
 

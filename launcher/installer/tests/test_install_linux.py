@@ -224,5 +224,30 @@ class InstallerTransactionTests(unittest.TestCase):
         self.assertFalse(self.current().exists())
 
 
+    def test_install_lock_is_exclusive_and_a_dead_owner_is_recovered(self):
+        archive = self.make_archive("0.1.0")
+        share = self.home / ".local/share/speechcraft"
+        share.mkdir(parents=True, mode=0o700)
+        lock = share / ".speechcraft-install.lock"
+        lock.mkdir(mode=0o700)
+        holder = subprocess.Popen(["sleep", "30"])
+        (lock / "pid").write_text(f"{holder.pid}\n", encoding="ascii")
+        previous = INSTALL.LOCK_WAIT_SECONDS
+        INSTALL.LOCK_WAIT_SECONDS = 0.3
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                self.install(archive)
+            self.assertIn("install lock", str(caught.exception))
+            self.assertFalse((self.home / ".local/bin/speechcraft").exists())
+            self.assertFalse(self.current().exists())
+        finally:
+            holder.kill()
+            holder.wait(timeout=5)
+            INSTALL.LOCK_WAIT_SECONDS = previous
+        self.install(archive)
+        self.assertEqual(self.current().resolve().name, "speechcraft-0.1.0-linux-x86_64")
+        self.assertFalse(lock.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

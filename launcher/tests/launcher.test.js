@@ -34,13 +34,16 @@ test('frontend readiness is a versioned loopback event and never carries secrets
 
 test('launcher arguments are explicit and reject unknown options', () => {
   assert.deepEqual(parseArgs(['--development', '--simulated', '--no-browser', '--data-dir', '/tmp/sc-data']), {
-    command: 'start', dataDirectory: '/tmp/sc-data', development: true, simulated: true, openBrowser: false, json: false, verbose: false,
+    command: 'start', dataDirectory: '/tmp/sc-data', development: true, simulated: true, openBrowser: false, json: false, verbose: false, yes: false, purge: false,
   });
   assert.deepEqual(parseArgs(['status', '--json', '--data-dir', '/tmp/sc-data']), {
-    command: 'status', dataDirectory: '/tmp/sc-data', development: false, simulated: false, openBrowser: true, json: true, verbose: false,
+    command: 'status', dataDirectory: '/tmp/sc-data', development: false, simulated: false, openBrowser: true, json: true, verbose: false, yes: false, purge: false,
   });
   assert.equal(parseArgs(['--verbose']).verbose, true);
   assert.equal(parseArgs(['stop']).command, 'stop');
+  assert.equal(parseArgs(['uninstall', '--force', '--remove-data']).purge, true);
+  assert.equal(parseArgs(['uninstall', '--yes']).yes, true);
+  assert.throws(() => parseArgs(['--yes']), /Unknown launcher option/);
   assert.throws(() => parseArgs(['--bind', '0.0.0.0']), /Unknown launcher option/);
   assert.throws(() => parseArgs(['status', '--verbose']), /Unknown launcher option/);
   assert.deepEqual(parseArgs(['--help']).help, true);
@@ -452,6 +455,7 @@ test('service logs stay in-process when the log file, pipe, or child fails', asy
     const [helpCode] = await onceExit(helper);
     assert.equal(helpCode, 0);
     assert.match(help, /Usage: speechcraft/);
+    assert.match(help, /speechcraft uninstall/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
