@@ -109,6 +109,8 @@ jobs:
           SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
           RUNNER_TEMP: ${{ runner.temp }}
         run: node launcher/scripts/package-macos.mjs --source-revision "$SOURCE_COMMIT" --output "$RUNNER_TEMP/macos-assets"
+      - name: Verify Darwin process identity remains observable
+        run: node --test launcher/tests/darwin-process-identity.test.js
       - name: Execute real Apple Command Line Tools capability check
         run: node --test setup-controller/tests/ffmpeg-runtime.test.js
       - uses: actions/upload-artifact@v4

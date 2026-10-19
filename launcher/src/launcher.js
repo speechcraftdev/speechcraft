@@ -577,9 +577,17 @@ export async function waitForRestoration(session, timeoutMs = RESTORATION_TIMEOU
     warning: 'Managed service restoration is still pending. SpeechCraft has not confirmed processing readiness; open /setup to inspect status.' };
 }
 
+export function ownedChildEnvironment(env, nonce) {
+  // Keep the identity marker first. Darwin `ps eww` can truncate long
+  // environment listings after a child changes its process title.
+  const childEnv = { SPEECHCRAFT_OWNED_PROCESS_NONCE: nonce, ...env };
+  childEnv.SPEECHCRAFT_OWNED_PROCESS_NONCE = nonce;
+  return childEnv;
+}
+
 function launch(executable, args, { cwd, env, label, logSession }) {
   const nonce = crypto.randomBytes(24).toString('hex');
-  const childEnv = { ...env, SPEECHCRAFT_OWNED_PROCESS_NONCE: nonce };
+  const childEnv = ownedChildEnvironment(env, nonce);
   const child = spawn(executable, args, { cwd, env: childEnv, shell: false, detached: true,
     stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   child.stdout?.on('error', () => {});
