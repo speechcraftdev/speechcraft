@@ -85,6 +85,7 @@ test('macOS selects the pinned source-build FFmpeg recipe and rejects a GPL conf
   let prefix;
   const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, environment: { profile: 'macos-arm64' },
     runtimeRecipe: { ffmpeg_profiles: { 'macos-arm64': artifact }, disk_space: { safety_margin_bytes: 0 } },
+    systemToolRunner: () => ({ status: 0, stdout: '/Library/Developer/CommandLineTools', stderr: '' }),
     fetchImpl: async () => new Response(archiveBytes, { status: 200, headers: { 'content-length': String(archiveBytes.length) } }),
     processRunner: async (executable, args) => {
       if (String(executable).endsWith('configure')) {
@@ -111,5 +112,10 @@ test('macOS selects the pinned source-build FFmpeg recipe and rejects a GPL conf
   const installed = first.componentStatus.components.ffmpeg.path;
   fs.writeFileSync(path.join(installed, 'ffmpeg'), Buffer.from('#!/bin/sh\nprintf "%s\\n" "ffmpeg version other"\n'));
   assert.equal(await tasks.verifyFfmpegDirectory(installed, first, artifact), false);
+  const missingTools = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, environment: { profile: 'macos-arm64' },
+    runtimeRecipe: { ffmpeg_profiles: { 'macos-arm64': artifact } },
+    systemToolRunner: () => ({ status: 1, stdout: '', stderr: 'missing' }) });
+  await assert.rejects(missingTools.installSourceFfmpeg(context(missingTools), artifact),
+    (error) => error.code === 'MACOS_COMMAND_LINE_TOOLS_REQUIRED' && /xcode-select --install/.test(error.message));
   fs.rmSync(root, { recursive: true, force: true });
 });

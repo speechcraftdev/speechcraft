@@ -5,6 +5,7 @@ import { inspectHost } from './platform.js';
 import fs from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 async function trustedFileHash(file) {
   const info = fs.lstatSync(file);
@@ -54,6 +55,7 @@ export class RuntimeTasks extends BootstrapTasks {
     this.restoreResult = null;
     this.restoreAbortController = null;
     this.stopping = false;
+    this.systemToolRunner = options.systemToolRunner || spawnSync;
     if (options.environment) this.environment = options.environment;
     if (options.hostInspector) this.hostInspector = options.hostInspector;
   }
@@ -280,6 +282,12 @@ export class RuntimeTasks extends BootstrapTasks {
         message: artifact?.reason || 'No pinned Apple Silicon FFmpeg source build is configured.' });
       return false;
     }
+    const selectedDeveloperDir = this.systemToolRunner('xcode-select', ['-p'], { encoding: 'utf8', shell: false });
+    const compiler = this.systemToolRunner('xcrun', ['--find', 'clang'], { encoding: 'utf8', shell: false });
+    const make = this.systemToolRunner('make', ['-f', '/dev/null'], { encoding: 'utf8', shell: false });
+    if (selectedDeveloperDir.error || selectedDeveloperDir.status !== 0 || compiler.error || compiler.status !== 0 || make.error || make.status !== 0) {
+      throw new BootstrapError('MACOS_COMMAND_LINE_TOOLS_REQUIRED', 'Apple Command Line Tools are required to build the pinned local FFmpeg runtime. Install them with Apple’s xcode-select --install prompt, then retry SpeechCraft setup. SpeechCraft does not install Homebrew or system tools.');
+    }
     const target = path.join(this.dataDirectory, 'tools', 'ffmpeg', `${artifact.version}-${artifact.sha256.slice(0, 16)}`);
     if (fs.existsSync(target) && await this.verifyFfmpegDirectory(target, context, artifact)) {
       this.setComponent(context, 'ffmpeg', { state: 'files_verified', identity: `ffmpeg-source:${artifact.version}:${artifact.sha256}`,
@@ -440,12 +448,15 @@ export class RuntimeTasks extends BootstrapTasks {
       SPEECHCRAFT_FFMPEG_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffmpeg') : '',
       SPEECHCRAFT_FFPROBE_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffprobe') : '',
       SPEECHCRAFT_FFMPEG_DIR: ffmpegDir || '',
-      SPEECHCRAFT_ASR_DEVICE: modelPlatform === 'macos-arm64' ? 'mps' : (context.componentStatus.runtime_profile?.accelerator === 'cuda' ? 'cuda' : 'cpu'),
+      // MLX selects Apple hardware internally. The legacy ASR device field is
+      // for CTranslate2 and accepts only cpu/cuda; never leak Linux CUDA or
+      // a PyTorch MPS setting into the MLX path.
+      SPEECHCRAFT_ASR_DEVICE: modelPlatform === 'macos-arm64' ? 'cpu' : (context.componentStatus.runtime_profile?.accelerator === 'cuda' ? 'cuda' : 'cpu'),
       SPEECHCRAFT_ASR_BACKEND: modelPlatform === 'macos-arm64' ? 'mlx' : 'ctranslate2',
       SPEECHCRAFT_MANAGED_RUNTIME: '1',
-      SPEECHCRAFT_PYANNOTE_DEVICE: context.componentStatus.runtime_profile?.pyannote_cuda_validated === true ? 'cuda' : 'cpu',
-      SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED: context.componentStatus.runtime_profile?.pyannote_cuda_validated === true ? '1' : '0',
-      LD_LIBRARY_PATH: worker?.library_paths?.join(path.delimiter) || '',
+      SPEECHCRAFT_PYANNOTE_DEVICE: modelPlatform !== 'macos-arm64' && context.componentStatus.runtime_profile?.pyannote_cuda_validated === true ? 'cuda' : 'cpu',
+      SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED: modelPlatform !== 'macos-arm64' && context.componentStatus.runtime_profile?.pyannote_cuda_validated === true ? '1' : '0',
+      LD_LIBRARY_PATH: modelPlatform === 'macos-arm64' ? '' : (worker?.library_paths?.join(path.delimiter) || ''),
     };
     this.service = new BackendService({ store: this.store, dataDirectory: this.dataDirectory,
       applicationRoot: this.applicationRoot, environment: this.environment,

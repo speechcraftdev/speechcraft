@@ -117,7 +117,7 @@ jobs:
         run: |
           set -euo pipefail
           node launcher/scripts/package-linux.mjs --source-revision "$SOURCE_COMMIT" --output "$RELEASE_DIR"
-          node launcher/scripts/generate-bootstrap.mjs --tag "$RELEASE_TAG" --source-revision "$SOURCE_COMMIT" --output "$RELEASE_DIR"
+          node launcher/scripts/generate-bootstrap.mjs --tag "$RELEASE_TAG" --source-revision "$SOURCE_COMMIT" --output "$RELEASE_DIR" --linux-only
           archive=$(find "$RELEASE_DIR" -maxdepth 1 -type f -name 'speechcraft-*-linux-x86_64.tar.gz' -print -quit)
           test -n "$archive"
           (cd "$RELEASE_DIR" && sha256sum -c "$(basename "$archive").sha256")

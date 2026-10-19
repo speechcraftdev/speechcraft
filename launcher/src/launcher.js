@@ -12,6 +12,7 @@ import { assertCurrentWslGuest, assertExistingManagedFiles, freeBytes, hostEnvir
 import { selectRuntimeProfile } from '../../setup-controller/src/runtime-plan.js';
 import { createLaunchLogSession, formatLaunchAccess, launchOutputMode } from './launch-log.js';
 import { runLinuxUninstall } from './uninstall-linux.js';
+import { runMacUninstall } from './uninstall-macos.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const FRONTEND_PORT = 3002;
@@ -689,13 +690,14 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
       '       speechcraft stop [--data-dir PATH]',
       '       speechcraft uninstall [--yes|--force] [--purge|--remove-data] [--data-dir PATH]',
       'SPEECHCRAFT_LOG_LEVEL=verbose prints service output. Services stay on 127.0.0.1.',
-      'uninstall removes the Linux per-user application (~/.local/share/speechcraft/app and ~/.local/bin/speechcraft) and keeps user data unless --purge is also confirmed.',
+      'uninstall removes the per-user SpeechCraft application and keeps user data unless --purge is also confirmed.',
     ].join('\n'));
     return { help: true };
   }
   if (options.command === 'uninstall') {
     const wsl = process.platform === 'linux' && hostEnvironment().wsl === true;
-    return runLinuxUninstall({
+    const uninstall = process.platform === 'darwin' ? runMacUninstall : runLinuxUninstall;
+    return uninstall({
       home: os.homedir(),
       env,
       yes: options.yes,
