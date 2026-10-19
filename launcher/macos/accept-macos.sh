@@ -13,7 +13,7 @@ echo "4. Open a new terminal and run speechcraft. Confirm /setup in the default 
 echo "5. Finish setup in the browser. Enter a Hugging Face token only in the masked field."
 echo "6. Confirm managed Python, the macOS worker, a local FFmpeg build, Silero, and MLX Whisper Large-v3."
 echo "7. Run real MLX transcription and Transcript Correctness."
-echo "8. Run authorized offline Community-1 diarization and permitted TitaNet inference."
+echo "8. Run authorized offline Community-1 diarization and WeSpeaker ECAPA Speaker Purity inference."
 echo "9. Process a multi-speaker recording, use Clip Lab, and export the canonical dataset."
 echo "10. speechcraft stop, then speechcraft. Confirm /login, no second model download, and no new token."
 echo "11. speechcraft status and speechcraft stop leave no owned services behind."

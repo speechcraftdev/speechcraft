@@ -39,6 +39,19 @@ cli.load_catalog=lambda:catalog
 hub=types.ModuleType('huggingface_hub')
 hub.constants=types.SimpleNamespace(HF_HOME=${JSON.stringify(cache)},HF_HUB_CACHE=${JSON.stringify(cache)},HF_XET_CACHE=${JSON.stringify(cache)})
 sys.modules['huggingface_hub']=hub
+# This child is intentionally isolated with Python -I. Model transfer is a
+# fake-Hub fixture here, so provide only Hugging Face's documented tqdm hook
+# instead of relying on the developer machine's globally installed packages.
+tqdm=types.ModuleType('tqdm')
+tqdm_auto=types.ModuleType('tqdm.auto')
+class FixtureTqdm:
+ @classmethod
+ def get_lock(cls): return object()
+ def __init__(self, *args, **kwargs): self.n=0; self.total=kwargs.get('total')
+ def update(self, n=1): self.n += n
+tqdm_auto.tqdm=FixtureTqdm
+sys.modules['tqdm']=tqdm
+sys.modules['tqdm.auto']=tqdm_auto
 class Api:
  def whoami(self, *, token):
   assert token == 'hf_SECRET_MARKER_fake_hub_123456'
@@ -76,6 +89,7 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
   }));
   const helper = pythonShim(catalog, payloads, cache);
   const hubProgress = [];
+  let hubStdout = '';
   const actualPython = spawnSync(python, ['--version'], { encoding: 'utf8' });
   assert.equal(actualPython.status, 0, `Python is required for this boundary test: ${actualPython.stderr}`);
   const runtime = new RuntimeTasks({ dataDirectory: directory, applicationRoot: repositoryRoot,
@@ -85,7 +99,11 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
         integrity_verified: true, root: path.join(directory, 'models', role), role }), stderr: '' };
       const output = options.onOutput;
       const launched = await runOwnedProcess(executable, ['-c', helper, ...args.slice(3)], { ...options,
-        onOutput: (stream, chunk) => { hubProgress.push(chunk.toString('utf8')); output?.(stream, chunk); } });
+        onOutput: (stream, chunk) => {
+          if (stream === 'stdout') hubStdout += chunk.toString('utf8');
+          else hubProgress.push(chunk.toString('utf8'));
+          output?.(stream, chunk);
+        } });
       return launched;
     } });
   runtime.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
@@ -118,7 +136,8 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
     assert.equal(JSON.stringify(await authorized.json()).includes(secret), false);
     await app.controller.waitForIdle();
     const component = app.store.snapshot().job.bootstrap_status.components.pyannote;
-    assert.equal(app.store.snapshot().job.state, 'completed');
+    assert.equal(app.store.snapshot().job.state, 'completed', JSON.stringify({ error: app.store.snapshot().job.error,
+      stdout: hubStdout.slice(-4000), progress: hubProgress.join('').slice(-4000) }));
     assert.equal(component.state, 'files_verified');
     assert.equal(component.report.inventory_exact, true);
     assert.equal(component.report.integrity_verified, true);

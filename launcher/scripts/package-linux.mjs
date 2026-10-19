@@ -134,8 +134,10 @@ async function snapshotBuild() {
       'workers/dataset/speechcraft_dataset', 'workers/dataset/scripts/preflight.py', 'workers/dataset/scripts/runtime_probe.py',
       'workers/dataset/runtime-fixtures', 'workers/dataset/runtime-profiles', 'workers/dataset/pyproject.toml',
       'workers/dataset/uv.lock', 'workers/dataset/model-catalog.json', 'workers/dataset/model-manifest.schema.json',
+      'packages/model_manager/pyproject.toml', 'packages/model_manager/README.md',
+      'packages/model_manager/speechcraft_models',
       'LICENSE', 'launcher/README.md',
-      'workers/dataset/TITANET-ONNX-PROVENANCE.md', 'workers/dataset/RUNTIME_PROFILES.md',
+      'workers/dataset/RUNTIME_PROFILES.md',
       'workers/dataset/MODEL_STORAGE.md', 'packages/model_manager/PROVENANCE.md',
     ];
     for (const relative of copyPaths) copySafe(repositoryRoot, appRoot, relative);
@@ -181,7 +183,7 @@ async function snapshotBuild() {
       build_tools: { uv: pinnedUv }, trusted_inputs: { model_manager_wheel: { path: `resources/wheels/${wheelName}`, sha256: wheelSha } },
       runtime_inventory: { status: 'complete', required_files: REQUIRED_RUNTIME_FILES }, package_files: fileRecords,
       validation: { strict_typecheck: 'passed', next_production_build: 'passed', frontend_staging: 'passed', runtime_inventory: 'passed', target_model_hardware: 'not_run' },
-      notices: ['See LICENSE and included component provenance/license notices.', 'Public redistribution remains subject to FFmpeg and TitaNet review.'] };
+      notices: ['See LICENSE and included component provenance/license notices.', 'Public redistribution remains subject to FFmpeg review.'] };
     fs.writeFileSync(path.join(appRoot, 'application-release-manifest.json'), `${JSON.stringify(release, null, 2)}\n`, { flag: 'wx', mode: 0o644 });
 
     const archive = path.join(work, `${appName}.tar.gz`);

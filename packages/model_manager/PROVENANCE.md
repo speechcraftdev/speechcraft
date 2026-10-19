@@ -46,7 +46,7 @@ arm64; CPU runtime availability and actual inference are separately deferred.
 The downloader uses only the pinned catalog, not mutable tags, aliases or PyPI
 resolution at install time. Other model entries remain unresolved as before.
 
-## TitaNet-Large Hugging Face artifact (2026-10-14)
+## Historical, superseded: TitaNet-Large Hugging Face artifact (2026-10-14)
 
 The public repository API independently resolved
 `csukuangfj/speaker-embedding-models` to immutable commit
@@ -147,3 +147,27 @@ Neither artifact establishes inference readiness. Linux/WSL2 runtime testing is
 deferred to the setup/runtime integration milestone. The separate MLX artifact
 does not provide a CPU fallback; whether to provision another large CTranslate2
 artifact for Mac CPU use remains a runtime-integration decision.
+
+
+## WeSpeaker ECAPA-TDNN512-LM artifact (selected 2026-10-18)
+
+SpeechCraft replaces the unresolved TitaNet candidate with the publisher's
+WeSpeaker ECAPA-TDNN512-LM ONNX artifact. The old TitaNet record above is
+historical and does not describe the model shipped in current releases.
+
+- Repository: [Wespeaker/wespeaker-ecapa-tdnn512-LM](https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM)
+- Immutable revision: `a2f3dcb1c8702caccc7a55ceb57f5e8d1842112b`
+- Artifact: `voxceleb_ECAPA512_LM.onnx`
+- Size: 24,861,931 bytes
+- SHA-256: `d71b85d9b48058ef68004f04f1b78acebefb9dfcf542e19b976a12a5ad1f10b0`
+- Publisher-declared license: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+- Attribution: WeSpeaker ECAPA-TDNN512-LM, published by WeSpeaker. Preserve this attribution and the CC BY 4.0 notice in distributions.
+- Runtime: ONNX Runtime with the WeSpeaker Kaldi fbank frontend (80 bins, 25 ms frame, 10 ms shift, Hamming window, zero dither, HTK-compatible, per-utterance mean subtraction). Expected embeddings are 192-dimensional.
+
+The installed app uses only the verified ONNX file and existing pinned runtime
+dependencies; it does not install WeSpeaker's training framework. Linux and
+WSL2 use the Linux ONNX artifact; macOS acquisition resolves the same bytes
+where the catalog supports it. Native macOS inference is not claimed without a
+separate Apple Silicon runtime test. Similarity remains a continuous, uncalibrated
+review measurement; this model comparison does not approve application-wide
+Speaker Purity thresholds.

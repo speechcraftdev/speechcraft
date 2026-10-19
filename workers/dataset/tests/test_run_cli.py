@@ -393,14 +393,15 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             artifacts.mkdir(parents=True)
             (artifacts / 'audio_variants_manifest.json').write_text(json.dumps({'variants': [{'source_audio_id': 'source_audio_0000', 'path': 'audio/analysis/source_audio_0000.mono16000.wav', 'analysis_sample_rate': 16000}]}), encoding='utf-8')
             (artifacts / 'vad_segments.jsonl').write_text('\n'.join([json.dumps({'source_audio_id': 'source_audio_0000', 'analysis_start_sample': 1000, 'analysis_end_sample': 6000, 'analysis_start_sec': 0.0625, 'analysis_end_sec': 0.375}), json.dumps({'source_audio_id': 'source_audio_0000', 'analysis_start_sample': 9000, 'analysis_end_sample': 14000, 'analysis_start_sec': 0.5625, 'analysis_end_sec': 0.875})]) + '\n', encoding='utf-8')
-            (artifacts / 'speaker_regions.jsonl').write_text('\n'.join([json.dumps({'id': 'speaker_0-a', 'source_audio_id': 'source_audio_0000', 'speaker_id': 'speaker_0', 'start_sample': 1000, 'end_sample': 6000}), json.dumps({'id': 'speaker_1-a', 'source_audio_id': 'source_audio_0000', 'speaker_id': 'speaker_1', 'start_sample': 9000, 'end_sample': 14000})]) + '\n', encoding='utf-8')
+            (artifacts / 'speaker_regions.jsonl').write_text('\n'.join([json.dumps({'id': 'speaker_0-a', 'source_audio_id': 'source_audio_0000', 'speaker_id': 'speaker_0', 'start_sample': 1000, 'end_sample': 6000}), json.dumps({'id': 'speaker_1-a', 'source_audio_id': 'source_audio_0000', 'speaker_id': 'speaker_1', 'start_sample': 9000, 'end_sample': 40000})]) + '\n', encoding='utf-8')
             (artifacts / 'speaker_selection.json').write_text(json.dumps({'mode': 'diarization', 'selected': True, 'target_speaker_id': 'speaker_1', 'source': 'user', 'available_speaker_ids': ['speaker_0', 'speaker_1']}), encoding='utf-8')
             summary = run_processing_buffers(run_root, {'analysis_sample_rate': 16000, 'mode': 'diarization'})
             buffers = read_json(artifacts / 'processing_buffers.json')
             self.assertEqual(summary['buffer_count'], 1)
             self.assertEqual(buffers[0]['target_speaker_id'], 'speaker_1')
             self.assertEqual(buffers[0]['trusted_start_sample'], 9000)
-            self.assertEqual(buffers[0]['trusted_end_sample'], 14000)
+            self.assertEqual(buffers[0]['trusted_end_sample'], 32000)
+            self.assertEqual(summary['trusted_region_summary']['regions_clipped_to_audio_bounds'], 1)
 
     def test_asr_model_check_reports_missing_local_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_raw:
@@ -603,7 +604,6 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             self.assertNotIn(obsolete, WORKER_STAGE_ORDER)
         for module_name in (
             'speechcraft_dataset.mfa',
-            'speechcraft_dataset.asr',
             'speechcraft_dataset.safecut',
             'speechcraft_dataset.alignment_qc',
         ):
@@ -949,7 +949,6 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             self.assertFalse((run_root / 'artifacts' / 'aligned_words.jsonl').exists())
             self.assertFalse((run_root / 'artifacts' / 'safe_cutpoints.jsonl').exists())
             self.assertNotIn('speechcraft_dataset.mfa', sys.modules)
-            self.assertNotIn('speechcraft_dataset.asr', sys.modules)
             self.assertNotIn('faster_whisper', sys.modules)
 if __name__ == '__main__':
     unittest.main()

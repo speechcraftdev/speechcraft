@@ -6,7 +6,7 @@ SpeechCraft used the publicly accessible MP3 preview (SHA-256 `4baed36074c705c65
 
 | File | SHA-256 | Size | Duration | Rate | Channels | Use |
 |---|---|---:|---:|---:|---:|---|
-| `speech.wav` | `ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd` | 576078 | 18 s | 16000 Hz | 1 | Whisper, TitaNet and CUDA inference |
+| `speech.wav` | `ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd` | 576078 | 18 s | 16000 Hz | 1 | Whisper, WeSpeaker ECAPA and CUDA inference |
 | `speech-silence.wav` | `65afa781f190dd7e6ee3b719e0b200b1224d057d4ae4c5077cd1b125685cda06` | 640078 | 20 s | 16000 Hz | 1 | Positive speech plus silence for Silero |
 | `speech-compressed.mp3` | `e61a459dfc841b060aa2db5119ddd527346177ab965f290986a46c965302c33a` | 144908 | 18 s | 16000 Hz | 1 | Compressed audio probe for FFmpeg |
 

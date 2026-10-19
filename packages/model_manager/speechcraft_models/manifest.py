@@ -278,10 +278,20 @@ def _strict_tree_matches(root_fd: int, artifact: dict) -> bool:
                 return False
         return True
 
+    # os.listdir(fd) advances the directory position associated with that
+    # open file description. Verification can run repeatedly against the same
+    # secured descriptor while a Hub snapshot is acquired, so open a fresh
+    # descriptor for each inventory walk instead of reusing its cursor.
     try:
-        return walk(root_fd) and found_files == expected_files
+        scan_root = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
     except OSError:
         return False
+    try:
+        return walk(scan_root) and found_files == expected_files
+    except OSError:
+        return False
+    finally:
+        os.close(scan_root)
 
 
 def _report(details: list, artifact: dict, root: str | Path, root_error: str | None,

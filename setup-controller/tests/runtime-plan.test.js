@@ -4,10 +4,70 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { BackendService } from '../src/backend-service.js';
 import { assertTrustedBackendRecipe, cudaProfileReady, evaluateRuntimeReadiness, initialComponents, runtimeManifest, selectRuntimeProfile } from '../src/runtime-plan.js';
 import { RuntimeTasks } from '../src/runtime-tasks.js';
 
 const sha = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+test('runtime status keeps the startup restoration snapshot current for the next bootstrap stage', () => {
+  const tasks = new RuntimeTasks({ dataDirectory: os.tmpdir() });
+  const context = {
+    componentStatus: { components: { worker_environment: { state: 'pending' } } },
+  };
+  context.bootstrapStatus = context.componentStatus;
+
+  tasks.status(context, { components: { worker_environment: { state: 'verified', path: '/managed/worker' } } });
+
+  assert.equal(context.bootstrapStatus, context.componentStatus);
+  assert.equal(context.bootstrapStatus.components.worker_environment.state, 'verified');
+  assert.equal(context.bootstrapStatus.components.worker_environment.path, '/managed/worker');
+});
+
+test('managed backend passes only the verified ECAPA model root and ONNX path to dataset workers', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-ecapa-worker-environment-'));
+  const originalStart = BackendService.prototype.start;
+  try {
+    let environmentVars;
+    let startCalls = 0;
+    BackendService.prototype.start = async function startForTest() {
+      startCalls += 1;
+      environmentVars = this.environmentVars;
+      return { port: 8010 };
+    };
+    const tasks = new RuntimeTasks({ dataDirectory: root });
+    tasks.environment = { profile: 'linux-x86_64', os: 'linux', architecture: 'x86_64', wsl: false };
+    tasks.paths = { home: root, uvCache: root, pythonRoot: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
+    tasks.backendEnvironmentPath = () => path.join(root, 'environments', 'backend', 'bin', 'python');
+    const modelRoot = path.join(root, 'models');
+    const components = {
+      backend_environment: { state: 'verified' },
+      worker_environment: { state: 'verified', path: path.join(root, 'environments', 'worker'), library_paths: [] },
+      ffmpeg: { state: 'runtime_ready', path: path.join(root, 'tools', 'ffmpeg') },
+      silero: { state: 'runtime_ready', path: path.join(modelRoot, 'silero') },
+      whisper: { state: 'runtime_ready', path: path.join(modelRoot, 'whisper') },
+      pyannote: { state: 'runtime_ready', path: path.join(modelRoot, 'community-1') },
+      ecapa: { state: 'runtime_ready', path: path.join(modelRoot, 'wespeaker-ecapa-tdnn512-lm') },
+    };
+    await tasks.startServices({ attemptId: 'ecapa-env-test', signal: new AbortController().signal,
+      componentStatus: { components, runtime_profile: { accelerator: 'cuda' } } });
+    assert.equal(environmentVars.SPEECHCRAFT_ECAPA_MODEL_PATH, components.ecapa.path);
+    assert.equal(environmentVars.SPEECHCRAFT_ECAPA_ONNX_PATH,
+      path.join(components.ecapa.path, 'voxceleb_ECAPA512_LM.onnx'));
+
+    // A stale or unverified component must not provide a worker model path.
+    components.ecapa.state = 'files_verified';
+    tasks.service = null;
+    const unverifiedStatus = { components, runtime_profile: { accelerator: 'cuda' } };
+    await tasks.startServices({ attemptId: 'ecapa-env-unverified-test', signal: new AbortController().signal,
+      componentStatus: unverifiedStatus });
+    assert.equal(startCalls, 1, 'the backend cannot start without verified ECAPA inference');
+    assert.equal(unverifiedStatus.components.backend_service.failure_code, 'runtime_prerequisite_unavailable');
+  } finally {
+    BackendService.prototype.start = originalStart;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('platform selection keeps WSL storage host identity separate from model artifact selection', () => {
   assert.equal(selectRuntimeProfile({ os: 'linux', architecture: 'x86_64', profile: 'linux-x86_64', wsl: true }).modelPlatform, 'windows-wsl2');
@@ -41,13 +101,18 @@ test('CUDA remains a candidate until its recipe and independent Torch/CTranslate
 test('readiness derives technical processing and release approval from current component evidence', () => {
   const components = Object.fromEntries(['managed_python', 'backend_environment', 'worker_environment', 'backend_service']
     .map((name) => [name, { state: 'verified', verification: name === 'backend_service' ? 'internal_health_identity' : 'trusted_recipe' }]));
-  for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+  for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa']) {
     components[name] = { state: 'runtime_ready', runtime_ready: true };
   }
   components.ffmpeg.redistribution_approved = true;
-  components.titanet.release_approved = true;
   let readiness = evaluateRuntimeReadiness(components);
   assert.deepEqual(readiness, { technical_ready: true, production_ready: true, blockers: [], release_blockers: [] });
+  components.ffmpeg.redistribution_approved = false;
+  readiness = evaluateRuntimeReadiness(components);
+  assert.equal(readiness.technical_ready, true, 'FFmpeg redistribution approval is not an inference prerequisite');
+  assert.equal(readiness.production_ready, false);
+  assert.equal(readiness.release_blockers[0].code, 'FFMPEG_RELEASE_REVIEW_REQUIRED');
+  components.ffmpeg.redistribution_approved = true;
   components.pyannote = { state: 'waiting_for_token', failure_code: 'HF_MODEL_ACCESS_REQUIRED', message: 'Accept access.' };
   readiness = evaluateRuntimeReadiness(components);
   assert.equal(readiness.technical_ready, false);
@@ -56,24 +121,25 @@ test('readiness derives technical processing and release approval from current c
   readiness = evaluateRuntimeReadiness(components);
   assert.equal(readiness.blockers[0].code, 'PYANNOTE_RUNTIME_VALIDATION_FAILED');
   components.pyannote = { state: 'runtime_ready', runtime_ready: true };
-  components.titanet.release_approved = false;
+  components.ffmpeg.redistribution_approved = false;
   components.backend_service = { state: 'failed', failure_code: 'BACKEND_EXITED', message: 'Backend exited.' };
   readiness = evaluateRuntimeReadiness(components);
   assert.equal(readiness.technical_ready, false);
   assert.equal(readiness.blockers.find((item) => item.component === 'backend_service').code, 'BACKEND_EXITED');
-  assert.equal(readiness.release_blockers.find((item) => item.component === 'titanet').code, 'TITANET_PROVENANCE_UNRESOLVED');
+  assert.equal(readiness.release_blockers.find((item) => item.component === 'ffmpeg').code, 'FFMPEG_RELEASE_REVIEW_REQUIRED');
+  assert.equal(readiness.technical_ready, false, 'backend failure is technical; FFmpeg compliance remains separately reported');
 });
 
 test('each technical prerequisite independently blocks readiness and repaired evidence clears stale errors', () => {
   const components = Object.fromEntries(['managed_python', 'backend_environment', 'worker_environment']
     .map((name) => [name, { state: 'verified', verification: 'trusted_recipe' }]));
-  for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+  for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa']) {
     components[name] = { state: 'runtime_ready', runtime_ready: true };
   }
   components.backend_service = { state: 'verified', verification: 'internal_health_identity' };
   const restore = structuredClone(components);
   for (const name of ['managed_python', 'backend_environment', 'worker_environment', 'backend_service',
-    'ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+    'ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa']) {
     const expected = structuredClone(restore);
     expected[name] = { state: 'failed', failure_code: `${name.toUpperCase()}_FAILED`, message: `${name} repair required.` };
     const failed = evaluateRuntimeReadiness(expected);
@@ -101,7 +167,7 @@ test('checked-in backend recipe identity is verified and unsupported components 
   assert.equal(runtimeManifest.worker.profiles['macos-arm64'].lock_verified, true);
   assert.equal(runtimeManifest.worker.profiles['macos-arm64'].inference_validated, false);
   assert.equal(initialComponents().pyannote.state, 'waiting_for_token');
-  assert.equal(initialComponents().titanet.state, 'blocked');
+  assert.equal(initialComponents().ecapa.state, 'pending');
   assert.equal(initialComponents().runtime_probes.state, 'pending');
   assert.equal(runtimeManifest.runtime_validation.available, true);
   for (const probe of runtimeManifest.runtime_validation.probes) {
@@ -128,10 +194,10 @@ test('runtime executor reports an explicitly unavailable worker recipe without p
 
 test('worker installer consumes only a complete trusted profile recipe and validates its isolated environment', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-worker-recipe-'));
-  const project = path.join(root, 'worker_fixture');
-  fs.mkdirSync(project);
   const sourceProject = path.join(root, 'workers', 'dataset');
-  fs.mkdirSync(sourceProject, { recursive: true });
+  const project = path.join(sourceProject, 'runtime-profiles', 'linux-cpu-test');
+  fs.mkdirSync(project, { recursive: true });
+  fs.mkdirSync(path.join(root, 'packages', 'model_manager'), { recursive: true });
   fs.writeFileSync(path.join(sourceProject, 'pyproject.toml'), '[project]\nname="source-fixture"\n');
   const lock = path.join(project, 'uv.lock'); const manifestFile = path.join(project, 'pyproject.toml');
   fs.writeFileSync(lock, 'fixture lock'); fs.writeFileSync(manifestFile, '[project]\nname="worker-fixture"\n');
@@ -140,7 +206,7 @@ test('worker installer consumes only a complete trusted profile recipe and valid
   runtimeRecipe.ffmpeg.available = false;
   runtimeRecipe.worker.source_manifest_sha256 = sha(path.join(sourceProject, 'pyproject.toml'));
   runtimeRecipe.worker.profiles['linux-x86_64-cpu'] = { available: true, validated: true,
-    project: 'worker_fixture', lockfile: 'uv.lock', lock_sha256: sha(lock), project_manifest_sha256: sha(manifestFile),
+    project: 'workers/dataset/runtime-profiles/linux-cpu-test', lockfile: 'uv.lock', lock_sha256: sha(lock), project_manifest_sha256: sha(manifestFile),
     environment_version: 1, python_version: '3.12.15', estimated_bytes: 1, validation_modules: ['json'] };
   runtimeRecipe.disk_space.safety_margin_bytes = 1;
   const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, runtimeRecipe,
@@ -154,7 +220,8 @@ test('worker installer consumes only a complete trusted profile recipe and valid
       return { code: 0, stdout: JSON.stringify({ kind: 'SPEECHCRAFT_WORKER_ENV_PROBE', profile: 'linux-x86_64-cpu', missing: [], python: args[0] }), stderr: '' };
     } });
   tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
-  tasks.paths = { uvExecutable: '/trusted/uv', pythonRoot: root, home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
+  tasks.paths = { uvExecutable: '/trusted/uv', pythonRoot: root, home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root,
+    stagingRoot: path.join(root, 'staging', 'bootstrap'), quarantineRoot: path.join(root, 'quarantine') };
   const context = { attemptId: '00000000-0000-4000-8000-000000000099', managedPython: '/managed/python',
     signal: new AbortController().signal, componentStatus: tasks.initialBootstrapStatus(),
     onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };
@@ -167,13 +234,32 @@ test('worker installer consumes only a complete trusted profile recipe and valid
 
 test('an interrupted CUDA candidate environment is quarantined and reinstalled from its pinned lock', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-cuda-candidate-repair-'));
-  const applicationRoot = path.resolve('..');
+  const applicationRoot = path.join(root, 'application');
+  fs.mkdirSync(path.join(applicationRoot, 'workers'), { recursive: true });
+  fs.cpSync(path.resolve('..', 'workers/dataset'), path.join(applicationRoot, 'workers/dataset'), {
+    recursive: true, dereference: true,
+    filter: (source) => !source.split(path.sep).includes('.venv'),
+  });
+  fs.mkdirSync(path.join(applicationRoot, 'packages'), { recursive: true });
+  fs.cpSync(path.resolve('..', 'packages/model_manager'), path.join(applicationRoot, 'packages/model_manager'), {
+    recursive: true, dereference: true,
+    filter: (source) => !source.split(path.sep).includes('.venv'),
+  });
+  for (const name of ['model-catalog.json', 'model-manifest.schema.json']) {
+    const target = path.join(applicationRoot, 'workers/dataset', name);
+    if (fs.lstatSync(target).isSymbolicLink()) {
+      const source = fs.realpathSync(target);
+      fs.unlinkSync(target);
+      fs.copyFileSync(source, target);
+    }
+  }
   const recipe = runtimeManifest.worker.profiles['linux-x86_64-cuda'];
   const target = path.join(root, 'environments', 'worker',
     `v${recipe.environment_version}-${recipe.lock_sha256.slice(0, 16)}-linux-x86_64-cuda`);
   fs.mkdirSync(target, { recursive: true }); // crash left a directory, but no usable interpreter
   const libraries = path.join(target, 'lib/python3.12/site-packages/nvidia');
   let installs = 0;
+  let processFailure = null;
   const calls = [];
   const report = { kind: 'SPEECHCRAFT_CUDA_ENV_PROBE', torch: '2.8.0', torchaudio: '2.8.0', cuda: '12.8',
     gpu: 'NVIDIA RTX fixture', ctranslate2: '4.7.2', ctranslate2_devices: 1,
@@ -181,10 +267,18 @@ test('an interrupted CUDA candidate environment is quarantined and reinstalled f
     torch_cuda_success: true };
   const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot, availableBytes: 32 * 1024 ** 3,
     processRunner: async (_executable, args, options) => {
+      try {
       calls.push(args[0]);
       const code = args[2] || '';
       if (args[0] === 'sync') {
         installs += 1;
+        const stagedProject = args[args.indexOf('--project') + 1];
+        assert.equal(options.cwd, stagedProject);
+        assert.notEqual(stagedProject, path.join(applicationRoot, recipe.project));
+        assert.match(stagedProject, /staging\/bootstrap\/attempt-[^/]+\/cuda-candidate\/worker-source\/workers\/dataset\/runtime-profiles\/linux-cuda$/);
+        assert.equal(fs.existsSync(path.join(stagedProject, 'pyproject.toml')), true);
+        assert.equal(createHash('sha256').update(fs.readFileSync(path.join(stagedProject, 'pyproject.toml'))).digest('hex'), recipe.project_manifest_sha256);
+        assert.equal(createHash('sha256').update(fs.readFileSync(path.join(stagedProject, recipe.lockfile))).digest('hex'), recipe.lock_sha256);
         fs.mkdirSync(path.join(target, 'bin'), { recursive: true });
         fs.writeFileSync(path.join(target, 'bin/python'), 'fixture python');
         for (const [pkg, filename] of [['cublas', 'libcublas.so.12'], ['cudnn', 'libcudnn.so.9'], ['cuda_runtime', 'libcudart.so.12']]) {
@@ -199,10 +293,12 @@ test('an interrupted CUDA candidate environment is quarantined and reinstalled f
         return { code: 0, stdout: JSON.stringify(report), stderr: '' };
       }
       throw new Error('unexpected CUDA candidate process');
+      } catch (error) { processFailure = error.message; throw error; }
     } });
   tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
   tasks.paths = { home: root, uvExecutable: '/trusted/uv', uvCache: root, pythonRoot: root,
     hfHome: root, hfHub: root, hfXet: root, temporary: root,
+    stagingRoot: path.join(root, 'staging', 'bootstrap'),
     quarantineRoot: path.join(root, 'quarantine') };
   fs.mkdirSync(tasks.paths.quarantineRoot, { recursive: true });
   const context = { attemptId: '00000000-0000-4000-8000-000000000142', managedPython: '/managed/python',
@@ -210,7 +306,8 @@ test('an interrupted CUDA candidate environment is quarantined and reinstalled f
   context.componentStatus.host_details = { cuda_candidate: true };
   await tasks.installCudaCandidate(context);
   assert.equal(installs, 1, JSON.stringify({ component: context.componentStatus.components.worker_cuda_candidate, calls }));
-  assert.equal(context.componentStatus.components.worker_cuda_candidate.state, 'verified');
+  assert.equal(context.componentStatus.components.worker_cuda_candidate.state, 'verified',
+    `${processFailure || 'no mocked process assertion failed'}: ${JSON.stringify(context.componentStatus.components.worker_cuda_candidate)}`);
   assert.equal(fs.existsSync(target), true);
   assert.equal(fs.readdirSync(path.join(root, 'quarantine')).some((name) => name.includes('invalid-cuda-env')), true);
   fs.rmSync(root, { recursive: true, force: true });
@@ -278,7 +375,7 @@ test('backend failure transitions invalidate stale instance health and readiness
   const state = { service_process: { pid: 44, nonce: 'owned' }, job: { bootstrap_status: { components: {
     managed_python: { state: 'verified' }, backend_environment: { state: 'verified' }, worker_environment: { state: 'verified' },
     ffmpeg: { state: 'runtime_ready' }, silero: { state: 'runtime_ready' }, whisper: { state: 'runtime_ready' },
-    pyannote: { state: 'runtime_ready' }, titanet: { state: 'runtime_ready' },
+    pyannote: { state: 'runtime_ready' }, ecapa: { state: 'runtime_ready' },
     backend_service: { state: 'verified', verification: 'internal_health_identity', health_instance_id: 'old-instance' },
   } } } };
   const store = { snapshot: () => structuredClone(state), commit(mutator) { mutator(state); } };
@@ -395,6 +492,8 @@ test('a passing CUDA Whisper probe updates the selected runtime device and worke
   await tasks.validateRuntime(context);
   assert.equal(context.componentStatus.runtime_profile.accelerator, 'cuda');
   assert.equal(context.componentStatus.components.worker_environment.effective_profile, 'linux-x86_64-cuda');
+  assert.equal(context.componentStatus.components.worker_environment.message, null,
+    'a successful CUDA Whisper inference must not retain the preflight candidate message');
   assert.equal(context.componentStatus.components.whisper.device, 'NVIDIA RTX 4060');
   assert.equal(context.componentStatus.components.whisper.verification, 'trusted_cpu_and_cuda_inference_probes');
   assert.equal(context.componentStatus.production_ready, false);
@@ -486,7 +585,7 @@ test('model stage invokes the existing model-manager contract for platform-selec
     componentStatus: tasks.initialBootstrapStatus(), onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };
   await tasks.run('install_models', context);
   assert.deepEqual(calls.map((args) => args[args.findIndex((value) => value === 'install' || value === 'status') + 1]),
-    ['speech_detection', 'asr', 'diarization']);
+    ['speech_detection', 'asr', 'speaker_purity', 'diarization']);
   assert.ok(calls.every((args) => args.includes('--platform') && args[args.indexOf('--platform') + 1] === 'windows-wsl2'));
   assert.equal(context.componentStatus.components.silero.state, 'files_verified');
   assert.equal(context.componentStatus.components.whisper.state, 'files_verified');

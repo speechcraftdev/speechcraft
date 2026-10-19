@@ -55,7 +55,7 @@ Then confirm, in order:
 4. The setup page, controller, and backend are reached only through that loopback origin. No public bind and no direct browser call to port 4317.
 5. Complete setup in the browser. Enter a Hugging Face token only in the masked setup field, never as a command argument or environment variable.
 6. Confirm managed Linux Python, FFmpeg, Silero, Whisper Large-v3 CPU, and authorized pyannote Community-1.
-7. Run a real offline diarization and a multi-speaker dataset workflow, including permitted TitaNet inference.
+7. Run a real offline diarization and a multi-speaker dataset workflow, including WeSpeaker ECAPA Speaker Purity inference.
 8. If -IncludeCuda was requested, run the existing CUDA probes. A Windows GPU without a passing WSL probe is a CPU fallback, not CUDA success.
 9. speechcraft stop shuts the application down. speechcraft again opens /login without setup, without a second model download, and without asking for the Hugging Face token again.
 10. speechcraft status and speechcraft stop work from a second terminal.

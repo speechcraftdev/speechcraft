@@ -35,7 +35,6 @@ class RfcArtifactSpineTests(TestCase):
             "candidateclip",
             "targetspeakerprofile",
             "speakerpuritymetrics",
-            "qcdecision",
             "exportmanifest",
         }
         high_cardinality_tables = {

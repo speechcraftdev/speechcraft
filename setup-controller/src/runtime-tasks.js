@@ -1,4 +1,4 @@
-import { BootstrapError, BootstrapTasks, ensureManagedDirectory, fetchArtifact } from './bootstrap.js';
+import { BootstrapError, BootstrapTasks, ensureManagedDirectory, fetchArtifact, stageWorkerBuildSources } from './bootstrap.js';
 import { PRODUCTION_STAGES, evaluateRuntimeReadiness, hashMatches, runtimeRoots, selectManagedFfmpeg, selectRuntimeProfile } from './runtime-plan.js';
 import { BackendService, reconcileOwnedService } from './backend-service.js';
 import { inspectHost } from './platform.js';
@@ -63,6 +63,11 @@ export class RuntimeTasks extends BootstrapTasks {
     super.status(context, { ...patch, components: derived.components,
       technical_processing_ready: derived.readiness.technical_ready,
       release_blockers: derived.readiness.release_blockers, production_ready: derived.readiness.production_ready });
+    // Startup restoration keeps this alias so BootstrapTasks.run can continue
+    // from the most recently revalidated snapshot. super.status replaces
+    // componentStatus with a new object, so leaving the alias untouched causes
+    // validate_runtime to rewind to the stale pre-revalidation state.
+    if (Object.hasOwn(context, 'bootstrapStatus')) context.bootstrapStatus = context.componentStatus;
   }
 
   setComponent(context, name, patch) {
@@ -94,6 +99,11 @@ export class RuntimeTasks extends BootstrapTasks {
         message: 'The pinned CUDA worker lock or project manifest did not match the trusted runtime catalog.' });
       return;
     }
+    const workerSourceManifest = path.join(this.applicationRoot, this.runtimeRecipe.worker.project, 'pyproject.toml');
+    if (this.runtimeRecipe.worker.source_manifest_sha256
+        && !hashMatches(workerSourceManifest, this.runtimeRecipe.worker.source_manifest_sha256)) {
+      throw new BootstrapError('WORKER_SOURCE_INTEGRITY_FAILED', 'The worker source package manifest differs from its trusted runtime recipe.');
+    }
     const target = path.join(this.dataDirectory, 'environments', 'worker',
       `v${recipe.environment_version}-${recipe.lock_sha256.slice(0, 16)}-linux-x86_64-cuda`);
     const python = path.join(target, 'bin', 'python');
@@ -118,9 +128,19 @@ export class RuntimeTasks extends BootstrapTasks {
         const env = { ...this.makeEnvironment(this.paths), UV_PROJECT_ENVIRONMENT: target };
         this.emit(context, { phase: 'installing', current: null, total: null, percent: null,
           message: 'Installing the pinned CUDA worker candidate; CPU environment remains available.' });
+        // Local CUDA dependencies are built from the release worker sources.
+        // Keep uv/setuptools writes in managed staging because the installed
+        // release is immutable, just as for the ordinary CPU worker profile.
+        const stagedProject = stageWorkerBuildSources(this.applicationRoot, this.dataDirectory,
+          path.join(this.attemptDirectory(context), 'cuda-candidate'), recipe.project);
+        const stagedLock = path.join(stagedProject, path.relative(project, lock));
+        if (!hashMatches(stagedLock, recipe.lock_sha256)
+            || !hashMatches(path.join(stagedProject, 'pyproject.toml'), recipe.project_manifest_sha256)) {
+          throw new BootstrapError('WORKER_SOURCE_STAGING_FAILED', 'The staged CUDA worker recipe does not match its trusted identities.');
+        }
         await this.runProcess(this.paths.uvExecutable,
-          ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', project],
-          context, { cwd: project, env });
+          ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', stagedProject],
+          context, { cwd: stagedProject, env });
       }
       const libraryResult = await this.runProcess(python, ['-I', '-c', libraryQuery], context, { cwd: project });
       const libraryPaths = libraryResult.stdout.trim().split(':').filter((entry) => entry && path.resolve(entry).startsWith(`${path.resolve(target)}${path.sep}`));
@@ -368,7 +388,7 @@ export class RuntimeTasks extends BootstrapTasks {
       return;
     }
     const components = context.componentStatus.components || {};
-    const prerequisites = ['worker_environment', 'ffmpeg', 'silero', 'whisper', 'pyannote'];
+    const prerequisites = ['worker_environment', 'ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa'];
     const missing = prerequisites.filter((name) => {
       const item = components[name];
       return name === 'worker_environment' ? item?.state !== 'verified' : item?.state !== 'runtime_ready';
@@ -394,6 +414,12 @@ export class RuntimeTasks extends BootstrapTasks {
     const asr = components.whisper?.state === 'runtime_ready' ? components.whisper.path : null;
     const silero = components.silero?.state === 'runtime_ready' ? components.silero.path : null;
     const pyannote = components.pyannote?.state === 'runtime_ready' ? components.pyannote.path : null;
+    const ecapaCandidate = components.ecapa?.state === 'runtime_ready' && typeof components.ecapa.path === 'string'
+      ? path.resolve(components.ecapa.path) : null;
+    const modelRootResolved = path.resolve(modelRoot);
+    const ecapaRelative = ecapaCandidate ? path.relative(modelRootResolved, ecapaCandidate) : '';
+    const ecapa = ecapaCandidate && ecapaRelative && ecapaRelative !== '..'
+      && !ecapaRelative.startsWith(`..${path.sep}`) && !path.isAbsolute(ecapaRelative) ? ecapaCandidate : null;
     const modelPlatform = selectRuntimeProfile(this.environment).modelPlatform;
     const ffmpegDir = components.ffmpeg?.state === 'runtime_ready' ? components.ffmpeg.path : null;
     const workerPython = worker?.state === 'verified' ? path.join(worker.path, 'bin', 'python') : null;
@@ -409,6 +435,8 @@ export class RuntimeTasks extends BootstrapTasks {
       SPEECHCRAFT_SILERO_MODEL_DIR: silero || '',
       SPEECHCRAFT_SILERO_ONNX_PATH: silero ? path.join(silero, 'silero_vad.onnx') : '',
       SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH: pyannote || '',
+      SPEECHCRAFT_ECAPA_MODEL_PATH: ecapa || '',
+      SPEECHCRAFT_ECAPA_ONNX_PATH: ecapa ? path.join(ecapa, 'voxceleb_ECAPA512_LM.onnx') : '',
       SPEECHCRAFT_FFMPEG_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffmpeg') : '',
       SPEECHCRAFT_FFPROBE_BIN: ffmpegDir ? path.join(ffmpegDir, 'ffprobe') : '',
       SPEECHCRAFT_FFMPEG_DIR: ffmpegDir || '',
@@ -447,7 +475,7 @@ export class RuntimeTasks extends BootstrapTasks {
     const components = context.componentStatus.components;
     const bootstrapVerified = ['uv', 'managed_python', 'backend_environment', 'worker_environment', 'backend_service']
       .every((name) => components?.[name]?.state === 'verified');
-    const inferenceVerified = ['ffmpeg', 'silero', 'whisper']
+    const inferenceVerified = ['ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa']
       .every((name) => components?.[name]?.state === 'runtime_ready');
     this.status(context, { bootstrap_ready: Boolean(context.componentStatus.uv_verified && context.componentStatus.python_verified && context.componentStatus.model_manager_verified),
       partial_ready: bootstrapVerified && inferenceVerified, production_ready: false });

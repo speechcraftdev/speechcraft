@@ -100,9 +100,7 @@ they require neither network access nor an ML environment.
   model and the frozen VR slicer requests its ONNX variant. Standalone model
   bytes are now pinned and independently downloadable by Stage 2; production
   loading continues to use the existing package resource.
-- Speaker purity: production still uses NeMo TitaNet. The sherpa-onnx TitaNet
-  export exists in an experiment only; source identity and redistribution status
-  remain release blockers. The frozen VR slicer is not changed by this catalog.
+- Speaker Purity uses the manifest-pinned WeSpeaker ECAPA-TDNN512-LM ONNX artifact with the publisher-compatible Kaldi fbank frontend and offline ONNX Runtime inference. Raw cosine similarities are continuous, uncalibrated review measurements; they are not probabilities or automatic pass/fail decisions.
 - ASR: faster-whisper is present (`1.2.1` worker lock; backend declares
   `>=1.1,<2`) and can use Hugging Face cache/downloads or a configured local
   path. There is no MLX ASR implementation or verified macOS artifact in this
