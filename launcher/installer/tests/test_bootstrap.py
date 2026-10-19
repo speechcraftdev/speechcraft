@@ -42,12 +42,14 @@ class BootstrapTests(unittest.TestCase):
         (self.assets / f"{archive_name}.release.json").write_text(json.dumps(manifest) + "\n")
         (self.assets / "install-linux.py").write_text("# verified test fixture\n")
         (self.assets / "install-linux.sh").write_text("#!/bin/sh\nprintf installed > \"$INSTALL_MARKER\"\n")
+        self.curl_log = self.root / "curl.log"
         self.script = self.root / "install.sh"
         subprocess.run(["node", str(GENERATOR), "--tag", "v0.1.1", "--source-revision", source_revision,
                         "--output", str(self.assets)], cwd=ROOT, check=True, capture_output=True)
         shutil.copyfile(self.assets / "install.sh", self.script)
         (self.mockbin / "curl").write_text("""#!/bin/sh
 set -eu
+if [ -n "${MOCK_CURL_LOG:-}" ]; then printf '%s\\n' "$*" >> "$MOCK_CURL_LOG"; fi
 if [ "${MOCK_CURL_FAIL:-}" = 1 ]; then printf partial > "$out"; exit 28; fi
 if [ "${MOCK_CURL_HTTP_STATUS:-}" = 404 ]; then exit 22; fi
 out=
@@ -77,6 +79,7 @@ esac
     def run_bootstrap(self, **extra):
         env = {**os.environ, "HOME": str(self.home), "TMPDIR": str(self.tmpdir),
                "TEST_ASSET_DIR": str(self.assets), "INSTALL_MARKER": str(self.marker),
+               "MOCK_CURL_LOG": str(self.curl_log),
                "PATH": f"{self.mockbin}:{os.environ['PATH']}", **extra}
         return subprocess.run(["sh", str(self.script)], env=env, text=True, capture_output=True, timeout=30)
 
@@ -88,6 +91,48 @@ esac
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.marker.read_text(), "installed")
         self.assertIn("SpeechCraft 0.1.1 is installed", result.stdout)
+        self.assert_clean_tmp()
+
+    def test_noninteractive_install_prints_stages_without_progress_spam_or_urls(self):
+        result = self.run_bootstrap()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = result.stdout
+        archive = "speechcraft-0.1.1-linux-x86_64.tar.gz"
+        self.assertLess(text.index("Checking platform and prerequisites"), text.index(f"Fetching {archive}"))
+        self.assertLess(text.index(f"Fetching {archive}"), text.index(f"Verified SHA-256 for {archive}"))
+        self.assertLess(text.index(f"Verified SHA-256 for {archive}"), text.index("Verified release manifest"))
+        self.assertLess(text.index("Verified release manifest"), text.index("SpeechCraft 0.1.1 is installed"))
+        self.assertIn("Platform checks passed: Linux x86-64", text)
+        self.assertIn("[ -t 2 ]", self.script.read_text())
+        self.assertIn(f"Fetching {archive} (", text)
+        self.assertIn("bytes expected)", text)
+        for name in (archive, f"{archive}.sha256", f"{archive}.release.json", "install-linux.py", "install-linux.sh"):
+            self.assertIn(f"Fetching {name}", text)
+            self.assertIn(f"Fetched {name} (", text)
+        self.assertNotIn("%", text)
+        self.assertNotIn("github.com", text + result.stderr)
+        self.assertNotIn("token", (text + result.stderr).lower())
+        lines = self.curl_log.read_text().splitlines()
+        self.assertEqual(len(lines), 5)
+        self.assertTrue(all("--silent" in line and "--progress-bar" not in line for line in lines))
+        self.assert_clean_tmp()
+
+    def test_verbose_archive_fetch_requests_progress_for_the_archive_only(self):
+        result = self.run_bootstrap(SPEECHCRAFT_INSTALL_VERBOSE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.curl_log.read_text().splitlines()
+
+        def url_of(line):
+            return line.split()[-1]
+
+        archive_lines = [line for line in lines if url_of(line).endswith("-linux-x86_64.tar.gz")]
+        other_lines = [line for line in lines if line not in archive_lines]
+        self.assertEqual(len(archive_lines), 1)
+        self.assertIn("--progress-bar", archive_lines[0])
+        self.assertNotIn("--silent", archive_lines[0])
+        self.assertEqual(len(other_lines), 4)
+        self.assertTrue(all("--silent" in line and "--progress-bar" not in line for line in other_lines))
+        self.assertNotIn("github.com", result.stdout + result.stderr)
         self.assert_clean_tmp()
 
     def test_numbered_internal_release_tag_is_bound_to_application_version(self):
@@ -119,6 +164,7 @@ esac
         result = self.run_bootstrap(MOCK_EFFECTIVE_URL="__REQUEST_URL__")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.marker.read_text(), "installed")
+        self.assertNotIn("18765", result.stdout + result.stderr)
         self.assert_clean_tmp()
 
     def test_generator_rejects_non_loopback_http_staging(self):
@@ -166,6 +212,9 @@ esac
         result = self.run_bootstrap()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("archive verification failed", result.stderr)
+        self.assertIn("failed at SHA-256 check", result.stderr)
+        self.assertIn("run the installer again", result.stderr)
+        self.assertNotIn("Verified SHA-256", result.stdout)
         self.assertFalse(self.marker.exists())
         self.assert_clean_tmp()
 
@@ -205,6 +254,7 @@ esac
         result = self.run_bootstrap(UNAME_VALUE="Darwin")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("supported platform: Linux x86-64 only", result.stderr)
+        self.assertNotIn("Platform checks passed", result.stdout)
         self.assert_clean_tmp()
         (self.mockbin / "uname").write_text("#!/bin/sh\nif [ \"$1\" = -s ]; then printf 'Linux\\n'; else printf 'aarch64\\n'; fi\n")
         os.chmod(self.mockbin / "uname", 0o755)
@@ -242,6 +292,11 @@ esac
         result = self.run_bootstrap(MOCK_CURL_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("download failed", result.stderr)
+        self.assertIn("failed at fetching", result.stderr)
+        self.assertIn("speechcraft-0.1.1-linux-x86_64.tar.gz", result.stderr)
+        self.assertIn("run the installer again", result.stderr)
+        self.assertNotIn("http://", result.stderr)
+        self.assertNotIn("https://", result.stderr)
         self.assertFalse(self.marker.exists())
         self.assert_clean_tmp()
 

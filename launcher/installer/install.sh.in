@@ -2,6 +2,8 @@
 set -eu
 
 # Generated for one immutable SpeechCraft release by scripts/generate-bootstrap.mjs.
+# The installer accepts no arguments, including when started from a pipe.
+# Set SPEECHCRAFT_INSTALL_VERBOSE=1 to show archive transfer progress when stderr is not a terminal.
 RELEASE_TAG='@@RELEASE_TAG@@'
 APP_VERSION='@@APP_VERSION@@'
 SOURCE_REVISION='@@SOURCE_REVISION@@'
@@ -14,41 +16,44 @@ INSTALLER_SHA256='@@INSTALLER_SHA256@@'
 INSTALLER_SH_SHA256='@@INSTALLER_SH_SHA256@@'
 ASSET_BASE_URL='@@ASSET_BASE_URL@@'
 
-fail() { printf 'SpeechCraft installer: %s\n' "$*" >&2; exit 1; }
+step=startup
+stderr_is_tty=0
+install_verbose=0
 
-if [ "$#" -ne 0 ]; then
-  fail 'this release-pinned installer takes no arguments; download the matching release script for another version.'
-fi
+fail() {
+  printf 'SpeechCraft installer: failed at %s: %s\n' "$step" "$*" >&2
+  printf 'SpeechCraft installer: no files were activated. Correct the problem and run the installer again.\n' >&2
+  exit 1
+}
 
-if [ "$(uname -s 2>/dev/null || true)" != Linux ]; then
-  fail 'supported platform: Linux x86-64 only. See platform instructions for macOS and Windows.'
-fi
-case "$(uname -m 2>/dev/null || true)" in x86_64|amd64) ;; *) fail 'supported architecture: Linux x86-64 only.' ;; esac
-command -v python3 >/dev/null 2>&1 || fail 'system Python 3.9 or newer is required for installation.'
-python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
-  || fail 'system Python 3.9 or newer is required; install it using your OS package manager and retry.'
-command -v curl >/dev/null 2>&1 || fail 'curl is required to download the release.'
-command -v mktemp >/dev/null 2>&1 || fail 'mktemp is required to create a private download directory.'
-command -v rm >/dev/null 2>&1 || fail 'rm is required to clean up the private download directory.'
-
-tmp_root=${TMPDIR:-/tmp}
-tmp_dir=$(mktemp -d "$tmp_root/speechcraft-install.XXXXXXXX") || fail 'could not create a temporary download directory.'
-cleanup() { rm -rf "$tmp_dir"; }
-trap cleanup 0
-trap 'exit 1' HUP INT TERM
-base_url=$ASSET_BASE_URL
-case "$base_url" in
-  https://*) curl_proto='=https' ;;
-  http://127.0.0.1:*|http://localhost:*) curl_proto='=http' ;;
-  *) fail 'release asset base URL must use HTTPS (HTTP is allowed only for loopback staging).' ;;
-esac
+file_bytes() {
+  python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$1"
+}
 
 download() {
-  name=$1; target=$2; url="$base_url/$name"
-  effective_url=$(curl --fail --silent --show-error --location --max-redirs 3 \
+  name=$1
+  target=$2
+  url="$base_url/$name"
+  step="fetching $name"
+  show_progress=0
+  if [ "$name" = "$ARCHIVE" ]; then
+    printf 'Fetching %s (%s bytes expected)\n' "$name" "$ARCHIVE_SIZE"
+    if [ "$stderr_is_tty" -eq 1 ] || [ "$install_verbose" -eq 1 ]; then
+      show_progress=1
+    fi
+  else
+    printf 'Fetching %s\n' "$name"
+  fi
+  set -- --fail --show-error --location --max-redirs 3 \
     --proto "$curl_proto" --proto-redir "$curl_proto" --retry 3 --retry-delay 1 \
-    --connect-timeout 15 --max-time 600 --output "$target" --write-out '%{url_effective}' "$url") \
-    || fail "download failed for $name; check your connection and retry."
+    --connect-timeout 15 --max-time 600
+  if [ "$show_progress" -eq 1 ]; then
+    set -- "$@" --progress-bar
+  else
+    set -- "$@" --silent
+  fi
+  set -- "$@" --output "$target" --write-out '%{url_effective}' "$url"
+  effective_url=$(curl "$@") || fail "download failed for $name; check your connection and retry."
   case "$base_url" in
     https://github.com/speechcraftdev/speechcraft/releases/download/*)
       case "$effective_url" in
@@ -60,30 +65,84 @@ download() {
       [ "$effective_url" = "$url" ] || fail "staged download for $name left its pinned URL."
       ;;
   esac
+  printf 'Fetched %s (%s bytes)\n' "$name" "$(file_bytes "$target")"
 }
 
 verify_file() {
   python3 -c 'import hashlib,os,sys; p,h,n=sys.argv[1:]; f=open(p,"rb"); d=hashlib.sha256(); [d.update(b) for b in iter(lambda:f.read(1048576),b"")]; raise SystemExit(0 if str(os.path.getsize(p))==n and d.hexdigest()==h else 1)' "$1" "$2" "$3"
 }
 
+verify_pinned() {
+  name=$1
+  file=$2
+  hash=$3
+  size=$4
+  failure=$5
+  step="SHA-256 check for $name"
+  printf '%s\n' "Checking pinned SHA-256 for $name"
+  verify_file "$file" "$hash" "$size" || fail "$failure"
+  printf '%s\n' "Verified SHA-256 for $name ($size bytes)"
+}
+
+step=arguments
+if [ "$#" -ne 0 ]; then
+  fail 'this release-pinned installer takes no arguments; download the matching release script for another version.'
+fi
+
+step='platform check'
+printf '%s\n' "Checking platform and prerequisites for SpeechCraft $APP_VERSION"
+if [ "$(uname -s 2>/dev/null || true)" != Linux ]; then
+  fail 'supported platform: Linux x86-64 only. See platform instructions for macOS and Windows.'
+fi
+case "$(uname -m 2>/dev/null || true)" in x86_64|amd64) ;; *) fail 'supported architecture: Linux x86-64 only.' ;; esac
+step='prerequisite check'
+command -v python3 >/dev/null 2>&1 || fail 'system Python 3.9 or newer is required for installation.'
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
+  || fail 'system Python 3.9 or newer is required; install it using your OS package manager and retry.'
+command -v curl >/dev/null 2>&1 || fail 'curl is required to download the release.'
+command -v mktemp >/dev/null 2>&1 || fail 'mktemp is required to create a private download directory.'
+command -v rm >/dev/null 2>&1 || fail 'rm is required to clean up the private download directory.'
+printf '%s\n' 'Platform checks passed: Linux x86-64'
+
+if [ -t 2 ]; then
+  stderr_is_tty=1
+fi
+case ${SPEECHCRAFT_INSTALL_VERBOSE:-} in
+  1|true|TRUE|yes|YES|verbose|VERBOSE) install_verbose=1 ;;
+esac
+
+tmp_root=${TMPDIR:-/tmp}
+step='temporary directory'
+tmp_dir=$(mktemp -d "$tmp_root/speechcraft-install.XXXXXXXX") || fail 'could not create a temporary download directory.'
+cleanup() { rm -rf "$tmp_dir"; }
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+base_url=$ASSET_BASE_URL
+case "$base_url" in
+  https://*) curl_proto='=https' ;;
+  http://127.0.0.1:*|http://localhost:*) curl_proto='=http' ;;
+  *) fail 'release asset base URL must use HTTPS (HTTP is allowed only for loopback staging).' ;;
+esac
+
 archive_path="$tmp_dir/$ARCHIVE"
 checksum_path="$archive_path.sha256"
 manifest_path="$archive_path.release.json"
 installer_path="$tmp_dir/install-linux.py"
 installer_sh_path="$tmp_dir/install-linux.sh"
-printf 'Downloading SpeechCraft %s for Linux x86-64...\n' "$APP_VERSION"
 download "$ARCHIVE" "$archive_path"
 download "$ARCHIVE.sha256" "$checksum_path"
 download "$ARCHIVE.release.json" "$manifest_path"
 download install-linux.py "$installer_path"
 download install-linux.sh "$installer_sh_path"
 
-verify_file "$archive_path" "$ARCHIVE_SHA256" "$ARCHIVE_SIZE" || fail 'archive verification failed; nothing was installed.'
-verify_file "$checksum_path" "$CHECKSUM_SHA256" "$(python3 -c 'import os,sys;print(os.path.getsize(sys.argv[1]))' "$checksum_path")" || fail 'release checksum verification failed.'
-verify_file "$manifest_path" "$MANIFEST_SHA256" "$(python3 -c 'import os,sys;print(os.path.getsize(sys.argv[1]))' "$manifest_path")" || fail 'release manifest verification failed.'
-verify_file "$installer_path" "$INSTALLER_SHA256" "$(python3 -c 'import os,sys;print(os.path.getsize(sys.argv[1]))' "$installer_path")" || fail 'official installer verification failed.'
-verify_file "$installer_sh_path" "$INSTALLER_SH_SHA256" "$(python3 -c 'import os,sys;print(os.path.getsize(sys.argv[1]))' "$installer_sh_path")" || fail 'official installer wrapper verification failed.'
+verify_pinned "$ARCHIVE" "$archive_path" "$ARCHIVE_SHA256" "$ARCHIVE_SIZE" 'archive verification failed; nothing was installed.'
+verify_pinned "$ARCHIVE.sha256" "$checksum_path" "$CHECKSUM_SHA256" "$(file_bytes "$checksum_path")" 'release checksum verification failed.'
+verify_pinned "$ARCHIVE.release.json" "$manifest_path" "$MANIFEST_SHA256" "$(file_bytes "$manifest_path")" 'release manifest verification failed.'
+verify_pinned install-linux.py "$installer_path" "$INSTALLER_SHA256" "$(file_bytes "$installer_path")" 'official installer verification failed.'
+verify_pinned install-linux.sh "$installer_sh_path" "$INSTALLER_SH_SHA256" "$(file_bytes "$installer_sh_path")" 'official installer wrapper verification failed.'
 
+step='release manifest check'
+printf '%s\n' "Checking release manifest for SpeechCraft $APP_VERSION"
 python3 - "$checksum_path" "$manifest_path" "$ARCHIVE" "$ARCHIVE_SHA256" "$ARCHIVE_SIZE" "$APP_VERSION" "$SOURCE_REVISION" <<'PY' || fail 'release metadata mismatch; nothing was installed.'
 import json, pathlib, re, sys
 checksum_path, manifest_path, archive, digest, size, version, revision = sys.argv[1:]
@@ -95,9 +154,13 @@ expected = {"schema_version": 1, "archive": archive, "archive_sha256": digest, "
 if not isinstance(manifest, dict) or any(manifest.get(key) != value for key, value in expected.items()): raise SystemExit("manifest does not match pinned release identity")
 if not re.fullmatch(r"[a-f0-9]{64}", str(manifest.get("model_manager_wheel_sha256", ""))): raise SystemExit("manifest has no valid model-manager wheel identity")
 PY
+printf '%s\n' "Verified release manifest for SpeechCraft $APP_VERSION"
 
+step='package installation'
+printf '%s\n' "Installing verified SpeechCraft $APP_VERSION package"
 if ! (cd "$tmp_dir" && sh "$installer_sh_path" "$archive_path"); then
   fail 'the verified package could not be installed. No application files were activated.'
 fi
-printf '\nSpeechCraft %s is installed. Run `speechcraft` to open /setup.\n' "$APP_VERSION"
-printf 'Model and runtime preparation happens in the local /setup page.\n'
+printf '\nSpeechCraft %s is installed.\n' "$APP_VERSION"
+printf 'Next: run speechcraft. It serves the local setup page at http://127.0.0.1:3002/setup.\n'
+printf 'Model and runtime preparation happens in that local setup page.\n'

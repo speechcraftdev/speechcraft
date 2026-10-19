@@ -2,6 +2,15 @@
 'use strict';
 
 (async () => {
+  if (process.env.SPEECHCRAFT_LAUNCHER_LOG_HELPER === '1') {
+    const { runLauncherLogHelper } = await import('./launch-log.js');
+    try { await runLauncherLogHelper(); }
+    catch (error) {
+      console.error(`speechcraft: ${error.message}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
   const { runLauncher } = await import('./launcher.js');
   let app;
   let stopping = false;

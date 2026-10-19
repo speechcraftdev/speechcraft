@@ -4,9 +4,13 @@ import io
 import json
 import os
 import pathlib
+import re
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 
@@ -162,6 +166,51 @@ class InstallerTransactionTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.install(missing)
         self.assertEqual(os.readlink(self.current()), pointer)
+
+
+    def test_progress_checkpoints_are_exact_counts(self):
+        self.assertEqual(INSTALL.progress_checkpoints(0), ())
+        self.assertEqual(INSTALL.progress_checkpoints(1), (1,))
+        self.assertEqual(INSTALL.progress_checkpoints(4), (2, 4))
+
+    def test_extraction_and_verification_milestones_are_not_per_file(self):
+        archive = self.make_archive("0.1.0")
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            self.install(archive)
+        text = buffer.getvalue()
+        extracted = re.findall(r"extracted (\d+) of (\d+) files", text)
+        verified = re.findall(r"verified (\d+) of (\d+) packaged files", text)
+        self.assertEqual(extracted[-1][0], extracted[-1][1])
+        self.assertEqual(verified[-1][0], verified[-1][1])
+        total = int(extracted[-1][1])
+        self.assertGreater(total, 2)
+        self.assertEqual(len(extracted), 2)
+        self.assertEqual(int(extracted[0][0]), total // 2)
+        self.assertEqual(len(verified), 2)
+        self.assertNotIn("%", text)
+        self.assertIn("archive SHA-256 verified", text)
+        self.assertIn("activating the launcher command", text)
+        self.assertIn("Installed SpeechCraft 0.1.0", text)
+        self.assertIn("Persistent data remains", text)
+        for line in text.splitlines():
+            if line.startswith("SpeechCraft installer:"):
+                self.assertNotIn("backend/app/main.py", line)
+        self.assertLess(text.index("extracted "), text.index("verifying "))
+        self.assertLess(text.index("verifying "), text.index("verified "))
+        self.assertLess(text.index("verified "), text.index("activating the launcher command"))
+
+    def test_failed_archive_check_uses_stderr_and_does_not_claim_success(self):
+        archive = self.make_archive("0.1.0")
+        archive.write_bytes(archive.read_bytes() + b"tamper")
+        result = subprocess.run([sys.executable, str(INSTALLER), str(archive)],
+                                env={**os.environ, "HOME": str(self.home)},
+                                text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("archive SHA-256 verification failed", result.stderr)
+        self.assertNotIn("verified", result.stdout.lower())
+        self.assertNotIn("Installed", result.stdout)
+        self.assertFalse(self.current().exists())
 
 
 if __name__ == "__main__":

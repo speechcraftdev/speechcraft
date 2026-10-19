@@ -27,13 +27,13 @@ speechcraft status --json
 speechcraft stop
 ```
 
-The first launch opens `/setup`. After the controller records verified onboarding completion, later launches open `/login`. `--no-browser` prints the URL and leaves services running in the terminal. On a headless server, use an SSH tunnel from your workstation:
+The first launch opens `/setup`. After the controller records verified onboarding completion, later launches open `/login`. `--no-browser` prints the URL and leaves services running in the terminal. On a headless server, use an SSH tunnel from the computer where you want the browser. `cozytent` below is only an example SSH alias; use your own alias or `user@host`:
 
 ```bash
-ssh -N -L 3002:127.0.0.1:3002 user@cozytent-host
+ssh -N -L 3002:127.0.0.1:3002 cozytent
 ```
 
-Then visit `http://127.0.0.1:3002/setup` locally. Controller, frontend and backend bind only to loopback. `speechcraft stop` authenticates with the controller when available and independently reconciles launcher-owned child process identities, so a crashed frontend does not prevent shutdown. It reports incomplete or uncertain ownership instead of killing an unrelated process. Ctrl+C stops services owned by that terminal; closing the browser does not stop them.
+Then visit `http://127.0.0.1:3002/setup` in a browser on that computer. SpeechCraft did not open a browser on the server. Controller, frontend and backend bind only to loopback. `speechcraft stop` authenticates with the controller when available and independently reconciles launcher-owned child process identities, so a crashed frontend does not prevent shutdown. It reports incomplete or uncertain ownership instead of killing an unrelated process. Ctrl+C stops services owned by that terminal; closing the browser does not stop them.
 
 Persistent state, controller credentials, managed runtimes, models, caches, projects, recordings and exports remain under `~/.local/share/speechcraft/`. Installing an upgrade creates another versioned application directory and switches `current`; it does not remove user data or prior releases. To remove application binaries, remove `~/.local/bin/speechcraft` and `~/.local/share/speechcraft/app/`. Keep `~/.local/share/speechcraft/data/` to retain user data and models. The installer refuses to replace an unrelated `speechcraft` command and is safe to rerun for an identical release.
 
@@ -73,13 +73,13 @@ mkdir -p "$HOME/.local/bin"
 ln -s "$(pwd)/bin/speechcraft" "$HOME/.local/bin/speechcraft"
 ```
 
-On desktop Linux it opens the browser after Next.js responds. On a headless server it prints the local URL. From a laptop, use an SSH tunnel, replacing the placeholders:
+On desktop Linux it opens the browser after Next.js responds. On a headless server it prints the local URL and does not claim that a browser opened. From your own computer, use an SSH tunnel. `cozytent` is an example alias:
 
 ```bash
-ssh -N -L 3002:127.0.0.1:3002 user@cozytent-host
+ssh -N -L 3002:127.0.0.1:3002 cozytent
 ```
 
-Then open `http://127.0.0.1:3002/setup`. No controller or backend port needs public exposure. Press Ctrl+C or send SIGTERM to the launcher to stop the service processes it started. Closing a browser tab leaves services running.
+Then open `http://127.0.0.1:3002/setup` in a browser on that computer. No controller or backend port needs to leave loopback. Press Ctrl+C or send SIGTERM to the launcher to stop the service processes it started. Closing a browser tab leaves services running.
 
 ## First launch and later launches
 
