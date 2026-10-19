@@ -222,9 +222,15 @@ test('an interrupted CUDA candidate environment is quarantined and reinstalled f
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-cuda-candidate-repair-'));
   const applicationRoot = path.join(root, 'application');
   fs.mkdirSync(path.join(applicationRoot, 'workers'), { recursive: true });
-  fs.cpSync(path.resolve('..', 'workers/dataset'), path.join(applicationRoot, 'workers/dataset'), { recursive: true, dereference: true });
+  fs.cpSync(path.resolve('..', 'workers/dataset'), path.join(applicationRoot, 'workers/dataset'), {
+    recursive: true, dereference: true,
+    filter: (source) => !source.split(path.sep).includes('.venv'),
+  });
   fs.mkdirSync(path.join(applicationRoot, 'packages'), { recursive: true });
-  fs.cpSync(path.resolve('..', 'packages/model_manager'), path.join(applicationRoot, 'packages/model_manager'), { recursive: true, dereference: true });
+  fs.cpSync(path.resolve('..', 'packages/model_manager'), path.join(applicationRoot, 'packages/model_manager'), {
+    recursive: true, dereference: true,
+    filter: (source) => !source.split(path.sep).includes('.venv'),
+  });
   for (const name of ['model-catalog.json', 'model-manifest.schema.json']) {
     const target = path.join(applicationRoot, 'workers/dataset', name);
     if (fs.lstatSync(target).isSymbolicLink()) {

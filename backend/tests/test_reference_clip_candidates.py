@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.reference_clip_candidates import (
@@ -32,15 +33,19 @@ class ReferenceClipCandidateHelpersTests(unittest.TestCase):
 
 class ReferenceClipCandidatePromotionTests(unittest.TestCase):
     @patch("app.reference_clip_candidates._get_dataset_run_for_project")
-    @patch("app.reference_clip_candidates.get_candidate_review_media_bytes")
+    @patch("app.clip_lab_state.get_dataset_clip_lab_audio_bytes")
+    @patch("app.clip_lab_state.get_dataset_clip_lab")
     def test_mark_dataset_clip_copies_audio_into_project_folder(
         self,
+        get_clip_lab,
         get_media_bytes,
         validate_run,
     ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             media_root = Path(temp_dir)
             get_media_bytes.return_value = b"RIFF"
+            get_clip_lab.return_value = SimpleNamespace(clips=[SimpleNamespace(
+                clip_id="candidate_review_clip_000001", effective_audio_revision_key="revision-1")])
 
             class FakeRepository:
                 def __init__(self) -> None:
@@ -56,6 +61,8 @@ class ReferenceClipCandidatePromotionTests(unittest.TestCase):
                 clip_id="candidate_review_clip_000001",
                 transcript_text="Listen carefully",
             )
+            get_media_bytes.assert_called_once_with(
+                unittest.mock.ANY, "dataset-run-1", "candidate_review_clip_000001", "revision-1")
 
             destination = reference_clip_candidates_root(media_root, "project-1") / "Listen carefully.wav"
             validate_run.assert_called_once()

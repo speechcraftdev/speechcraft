@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 from speechcraft_models.manifest import (
     ManifestError, SCHEMA_PATH, parse_manifest, select_artifact, validate_manifest,
-    verify_artifact,
+    verify_artifact, verify_directory_fd,
 )
 
 
@@ -142,6 +143,19 @@ class ModelManifestTests(unittest.TestCase):
                 self.artifact["required_files"][0]["path"] = path
                 with self.assertRaises(ManifestError):
                     self.check()
+
+    def test_strict_inventory_can_be_rechecked_with_the_same_directory_descriptor(self):
+        self.write_files()
+        self.artifact['strict_tree'] = True
+        root_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            first = verify_directory_fd(root_fd, self.artifact, str(self.root))
+            second = verify_directory_fd(root_fd, self.artifact, str(self.root))
+        finally:
+            os.close(root_fd)
+        self.assertTrue(first['inventory_exact'])
+        self.assertTrue(second['inventory_exact'])
+        self.assertTrue(second['install_ready'])
 
     def test_missing_partial_corrupt_verified(self):
         self.assertEqual(self.check()["status"], "missing")

@@ -39,6 +39,19 @@ cli.load_catalog=lambda:catalog
 hub=types.ModuleType('huggingface_hub')
 hub.constants=types.SimpleNamespace(HF_HOME=${JSON.stringify(cache)},HF_HUB_CACHE=${JSON.stringify(cache)},HF_XET_CACHE=${JSON.stringify(cache)})
 sys.modules['huggingface_hub']=hub
+# This child is intentionally isolated with Python -I. Model transfer is a
+# fake-Hub fixture here, so provide only Hugging Face's documented tqdm hook
+# instead of relying on the developer machine's globally installed packages.
+tqdm=types.ModuleType('tqdm')
+tqdm_auto=types.ModuleType('tqdm.auto')
+class FixtureTqdm:
+ @classmethod
+ def get_lock(cls): return object()
+ def __init__(self, *args, **kwargs): self.n=0; self.total=kwargs.get('total')
+ def update(self, n=1): self.n += n
+tqdm_auto.tqdm=FixtureTqdm
+sys.modules['tqdm']=tqdm
+sys.modules['tqdm.auto']=tqdm_auto
 class Api:
  def whoami(self, *, token):
   assert token == 'hf_SECRET_MARKER_fake_hub_123456'
