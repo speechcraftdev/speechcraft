@@ -19,6 +19,7 @@ const CONTROLLER_PORT = 4317;
 const BACKEND_PORT = 8010;
 const LOOPBACK = '127.0.0.1';
 const STARTUP_TIMEOUT_MS = 45_000;
+const RESTORATION_TIMEOUT_MS = 10 * 60_000;
 const STOP_TIMEOUT_MS = 8_000;
 
 function bounded(promise, timeoutMs, onTimeout) {
@@ -557,7 +558,7 @@ export async function verifyFrontendOwnership(origin, identity, processHandle = 
   return true;
 }
 
-async function waitForRestoration(session, timeoutMs = STARTUP_TIMEOUT_MS, signal = null) {
+export async function waitForRestoration(session, timeoutMs = RESTORATION_TIMEOUT_MS, signal = null, pollMs = 200) {
   const deadline = Date.now() + timeoutMs;
   let latest;
   while (Date.now() < deadline) {
@@ -565,9 +566,11 @@ async function waitForRestoration(session, timeoutMs = STARTUP_TIMEOUT_MS, signa
     latest = await getAuthenticatedStatus(session);
     const backend = latest.components?.backend_service;
     if (backend?.state === 'verified' && backend?.verification === 'internal_health_identity') return { status: latest, ready: true, warning: null };
-    if (['failed', 'blocked'].includes(backend?.state)) return { status: latest, ready: false,
+    const expectedRestorePending = backend?.state === 'blocked'
+      && ['service_start_pending', 'BACKEND_RESTART_PENDING'].includes(backend.failure_code);
+    if (['failed', 'blocked'].includes(backend?.state) && !expectedRestorePending) return { status: latest, ready: false,
       warning: backend.message || 'Managed backend restoration is blocked; use /setup to inspect and repair this installation.' };
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
   return { status: latest, ready: false,
     warning: 'Managed service restoration is still pending. SpeechCraft has not confirmed processing readiness; open /setup to inspect status.' };
@@ -895,8 +898,11 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   if (status.onboarding?.completed) {
     // A user-invoked launch is an explicit restoration retry. RuntimeTasks
     // keeps concurrent requests single-flight and reuses a healthy service.
+    if (status.components?.backend_service?.state !== 'verified') {
+      console.log('SpeechCraft: revalidating managed models and restoring the local backend');
+    }
     await requestServiceRestore(controllerSession, { retry: true });
-    const restoration = await waitForRestoration(controllerSession, STARTUP_TIMEOUT_MS, signal);
+    const restoration = await waitForRestoration(controllerSession, RESTORATION_TIMEOUT_MS, signal);
     controllerSession.status = restoration.status || status;
     if (!restoration.ready) console.error(`SpeechCraft repair required: ${restoration.warning}`);
   }
