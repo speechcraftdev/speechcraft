@@ -85,7 +85,7 @@ test('macOS selects the pinned source-build FFmpeg recipe and rejects a GPL conf
   let prefix;
   const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot: root, environment: { profile: 'macos-arm64' },
     runtimeRecipe: { ffmpeg_profiles: { 'macos-arm64': artifact }, disk_space: { safety_margin_bytes: 0 } },
-    systemToolRunner: () => ({ status: 0, stdout: '/Library/Developer/CommandLineTools', stderr: '' }),
+    systemToolRunner: (tool, args) => ({ status: 0, stdout: tool === 'xcrun' && args.includes('--show-sdk-path') ? os.tmpdir() : '/Library/Developer/CommandLineTools', stderr: '' }),
     fetchImpl: async () => new Response(archiveBytes, { status: 200, headers: { 'content-length': String(archiveBytes.length) } }),
     processRunner: async (executable, args) => {
       if (String(executable).endsWith('configure')) {
@@ -117,5 +117,19 @@ test('macOS selects the pinned source-build FFmpeg recipe and rejects a GPL conf
     systemToolRunner: () => ({ status: 1, stdout: '', stderr: 'missing' }) });
   await assert.rejects(missingTools.installSourceFfmpeg(context(missingTools), artifact),
     (error) => error.code === 'MACOS_COMMAND_LINE_TOOLS_REQUIRED' && /xcode-select --install/.test(error.message));
+  const unavailable = new RuntimeTasks({ dataDirectory: root, applicationRoot: root,
+    systemToolRunner: (tool) => tool === 'make' ? { error: new Error('ENOENT'), status: null } : { status: 0, stdout: os.tmpdir() } });
+  assert.throws(() => unavailable.verifyMacFfmpegBuildTools(), /make executable/);
+  const unusable = new RuntimeTasks({ dataDirectory: root, applicationRoot: root,
+    systemToolRunner: (tool) => tool === 'make' ? { status: 2, stdout: '', stderr: 'bad makefile' } : { status: 0, stdout: os.tmpdir() } });
+  assert.throws(() => unusable.verifyMacFfmpegBuildTools(), /usable make implementation/);
+  const valid = new RuntimeTasks({ dataDirectory: root, applicationRoot: root,
+    systemToolRunner: (tool, args) => ({ status: 0, stdout: tool === 'xcrun' && args.includes('--show-sdk-path') ? os.tmpdir() : '/usr/bin/tool' }) });
+  assert.equal(valid.verifyMacFfmpegBuildTools(), true);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('Apple Silicon runner has a usable real FFmpeg build toolchain', { skip: process.platform !== 'darwin' }, () => {
+  const tasks = new RuntimeTasks({ dataDirectory: os.tmpdir(), applicationRoot: process.cwd() });
+  assert.equal(tasks.verifyMacFfmpegBuildTools(), true);
 });

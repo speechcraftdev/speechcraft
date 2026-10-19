@@ -70,6 +70,19 @@ test('Mac uninstall refuses unsafe command wrappers and refuses removal when own
   } finally { fs.rmSync(g.root, { recursive: true, force: true }); }
 });
 
+test('Mac uninstall refuses removal when shutdown returns an unconfirmed status', async () => {
+  for (const result of [undefined, { stopped: false, status: 'ownership_uncertain' }]) {
+    const f = fixture();
+    try {
+      await assert.rejects(runMacUninstall({ home: f.home, env: { SPEECHCRAFT_INSTALL_PLATFORM_TEST: 'darwin' }, yes: true,
+        stopServices: async () => result }), /Could not confirm SpeechCraft services stopped/);
+      assert.equal(fs.existsSync(f.release), true);
+      assert.equal(fs.existsSync(f.command), true);
+      assert.equal(fs.readFileSync(f.model, 'utf8'), 'model');
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  }
+});
+
 test('Mac purge rejects arbitrary data paths before stopping or deleting anything', async () => {
   const f = fixture(); let stopped = 0;
   try {

@@ -109,6 +109,8 @@ jobs:
           SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
           RUNNER_TEMP: ${{ runner.temp }}
         run: node launcher/scripts/package-macos.mjs --source-revision "$SOURCE_COMMIT" --output "$RUNNER_TEMP/macos-assets"
+      - name: Execute real Apple Command Line Tools capability check
+        run: node --test setup-controller/tests/ffmpeg-runtime.test.js
       - uses: actions/upload-artifact@v4
         with:
           name: macos-arm64-assets
@@ -148,3 +150,46 @@ jobs:
           path: ${{ runner.temp }}/speechcraft-candidate/*
           if-no-files-found: error
           retention-days: 30
+
+  macos-install-smoke:
+    needs: [combine]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: speechcraft-private-candidate-${{ inputs.source_commit || github.sha }}
+          path: ${{ runner.temp }}/speechcraft-candidate
+      - name: Verify archive release pins
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+          CANDIDATE_DIR: ${{ runner.temp }}/speechcraft-candidate
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          (cd "$CANDIDATE_DIR" && shasum -a 256 -c speechcraft-*-macos-arm64.tar.gz.sha256 && shasum -a 256 -c speechcraft-*-linux-x86_64.tar.gz.sha256)
+          node --input-type=module - "$CANDIDATE_DIR" "$SOURCE_COMMIT" <<'NODE'
+          import fs from 'node:fs'; import path from 'node:path'; import crypto from 'node:crypto';
+          const [dir, revision] = process.argv.slice(2);
+          for (const platform of ['macos-arm64', 'linux-x86_64']) {
+            const archive = fs.readdirSync(dir).find((name) => name.endsWith(`-${platform}.tar.gz`));
+            if (!archive) throw new Error(`missing ${platform} archive`);
+            const filename = path.join(dir, archive); const bytes = fs.readFileSync(filename);
+            const manifest = JSON.parse(fs.readFileSync(`${filename}.release.json`, 'utf8'));
+            const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+            if (manifest.source_revision !== revision || manifest.platform !== platform || manifest.archive !== archive || manifest.archive_sha256 !== digest || manifest.archive_size_bytes !== bytes.length) throw new Error(`invalid ${platform} release identity`);
+          }
+          NODE
+      - name: Install actual Mac candidate, launch services, and uninstall safely
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.1.1-internal.1' }}
+          CANDIDATE_DIR: ${{ runner.temp }}/speechcraft-candidate
+        run: launcher/macos/smoke-install-macos.sh "$CANDIDATE_DIR" "$SOURCE_COMMIT" "$RELEASE_TAG"

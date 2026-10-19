@@ -71,7 +71,15 @@ export async function runMacUninstall({ home = os.homedir(), env = process.env, 
   }
   const appExists = realOwnedDirectory(app, uid);
   const managedExists = purge && realOwnedDirectory(knownManaged, uid);
-  if (appExists || managedExists) await stopServices(managed);
+  if (appExists || managedExists) {
+    let stopped;
+    try { stopped = await stopServices(managed); }
+    catch (error) { throw new Error(`Could not confirm SpeechCraft services stopped (${error.message}); uninstall aborted before removing application files.`); }
+    if (!stopped || stopped.stopped !== true) {
+      const detail = stopped?.status ? ` (${stopped.status})` : '';
+      throw new Error(`Could not confirm SpeechCraft services stopped${detail}; uninstall aborted before removing application files.`);
+    }
+  }
   if (appExists) {
     const binExists = realOwnedDirectory(path.join(base, 'bin'), uid);
     const commandExists = binExists && safeCommand(command, uid);

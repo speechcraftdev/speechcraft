@@ -48,8 +48,9 @@ tar -tvzf "$archive" > "$details" || fail 'could not inspect archive entry types
 if awk 'substr($0,1,1)!="d" && substr($0,1,1)!="-" {bad=1} END {exit bad?0:1}' "$details"; then fail 'archive contains a symlink, hard link, or special file.'; fi
 root=
 while IFS= read -r member; do
-  case "$member" in /*|*../*|../*|*/..|..|*\\*) fail "unsafe archive path: $member" ;; esac
-  case "$member" in *[!A-Za-z0-9._/-]*) fail "unsupported archive path: $member" ;; esac
+  # Validate path structure, not a filename alphabet. Next.js includes valid
+  # names such as (setup), spaces, brackets, and scoped packages (@next).
+  case "$member" in /*|*../*|../*|*/..|..|*//*|*\\*) fail "unsafe archive path: $member" ;; esac
   top=${member%%/*}
   [ -n "$top" ] || fail 'archive has an empty root.'
   if [ -z "$root" ]; then root=$top; else [ "$root" = "$top" ] || fail 'archive must have one top-level application directory.'; fi

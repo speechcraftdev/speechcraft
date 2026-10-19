@@ -43,7 +43,7 @@ class MacInstallerSimulationTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def archive(self, version="0.1.1", unsafe=None, symlink=False):
+    def archive(self, version="0.1.1", unsafe=None, symlink=False, unsafe_type=None):
         app = self.assets / f"speechcraft-{version}-macos-arm64"
         (app / "bin").mkdir(parents=True)
         (app / "runtime").mkdir()
@@ -51,6 +51,11 @@ class MacInstallerSimulationTests(unittest.TestCase):
         (app / "bin/speechcraft").chmod(0o755)
         (app / "runtime/node").write_text("fixture Mach-O placeholder\n")
         (app / "runtime/node").chmod(0o755)
+        for member in ("frontend/(setup)/page.js", "frontend/node_modules/@next/swc-darwin-arm64/binding.node",
+                       "frontend/[account]/page.js", "frontend/a name/app.js"):
+            target = app / member
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("safe filename\n")
         manifest = {"schema_version": 1, "application": "SpeechCraft", "version": version,
                     "platform": "macos-arm64", "source_revision": "a" * 40,
                     "signing": {"status": "unsigned_development_build", "notarized": False}}
@@ -61,13 +66,23 @@ class MacInstallerSimulationTests(unittest.TestCase):
             (app / unsafe).write_text("unsafe")
         if symlink:
             (app / "escape").symlink_to("/tmp")
-        if unsafe:
+        if unsafe or unsafe_type:
             with tarfile.open(archive, "w:gz") as bundle:
                 bundle.add(app, arcname=app.name)
-                info = tarfile.TarInfo(app.name + "/../escape")
-                data = b"unsafe"
-                info.size = len(data)
-                bundle.addfile(info, io.BytesIO(data))
+                if unsafe:
+                    info = tarfile.TarInfo(unsafe)
+                    data = b"unsafe"
+                    info.size = len(data)
+                    bundle.addfile(info, io.BytesIO(data))
+                if unsafe_type == "hardlink":
+                    info = tarfile.TarInfo(app.name + "/hardlink")
+                    info.type = tarfile.LNKTYPE
+                    info.linkname = app.name + "/bin/speechcraft"
+                    bundle.addfile(info)
+                elif unsafe_type == "fifo":
+                    info = tarfile.TarInfo(app.name + "/pipe")
+                    info.type = tarfile.FIFOTYPE
+                    bundle.addfile(info)
         else:
             subprocess.run(["tar", "-czf", str(archive), "-C", str(self.assets), app.name], check=True)
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -110,6 +125,15 @@ class MacInstallerSimulationTests(unittest.TestCase):
         self.assertIn("SHA-256", corrupt.stderr)
         base = self.home / "Library/Application Support/SpeechCraft"
         self.assertFalse((base / "app/current").exists())
+        absolute, absolute_digest, absolute_size = self.archive("0.4.0", unsafe="/tmp/speechcraft-escape")
+        result = self.run_install(absolute, absolute_digest, absolute_size)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsafe archive path", result.stderr)
+        for version, entry_type in (("0.5.0", "hardlink"), ("0.6.0", "fifo")):
+            unsafe_entry, unsafe_digest, unsafe_size = self.archive(version, unsafe_type=entry_type)
+            result = self.run_install(unsafe_entry, unsafe_digest, unsafe_size)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("symlink, hard link, or special file", result.stderr)
         unsafe, unsafe_digest, unsafe_size = self.archive("0.2.0", unsafe="../escape")
         result = self.run_install(unsafe, unsafe_digest, unsafe_size)
         self.assertNotEqual(result.returncode, 0)
