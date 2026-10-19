@@ -25,6 +25,8 @@ export type SourceRecording = {
   channels?: number | null;
 };
 
+const UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
+
 async function parseError(res: Response): Promise<SpeechcraftApiError> {
   let detail = `${res.status} ${res.statusText}`;
   try {
@@ -64,7 +66,22 @@ export async function uploadRecording(
   onProgress: (pct: number) => void,
 ): Promise<SourceRecording> {
   const root = `${BASE}/api/projects/${encodeURIComponent(projectId)}/source-recordings/upload-sessions`;
-  const key = `speechcraft-upload:${projectId}:${file.name}:${file.size}:${file.lastModified}`;
+  const chunkHashes: string[] = [];
+  for (let offset = 0; offset < file.size; offset += UPLOAD_CHUNK_SIZE) {
+    const chunk = file.slice(offset, Math.min(file.size, offset + UPLOAD_CHUNK_SIZE));
+    const digest = await crypto.subtle.digest("SHA-256", await chunk.arrayBuffer());
+    chunkHashes.push(Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""));
+  }
+  const identityManifest = new Uint8Array(8 + chunkHashes.length * 32);
+  new DataView(identityManifest.buffer).setBigUint64(0, BigInt(file.size));
+  chunkHashes.forEach((hex, index) => {
+    for (let byte = 0; byte < 32; byte++) {
+      identityManifest[8 + index * 32 + byte] = Number.parseInt(hex.slice(byte * 2, byte * 2 + 2), 16);
+    }
+  });
+  const identityDigest = await crypto.subtle.digest("SHA-256", identityManifest);
+  const fileIdentity = Array.from(new Uint8Array(identityDigest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const key = `speechcraft-upload:${projectId}:${file.name}:${file.size}:${file.lastModified}:${fileIdentity}`;
   const clientKey = `${key}:client`;
   const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
     const response = await fetch(url, { ...init, headers: { Accept: "application/json", ...init?.headers } });
@@ -83,7 +100,7 @@ export async function uploadRecording(
     }
     throw last;
   };
-  type UploadStatus = { upload_id: string; chunk_size: number; chunk_count: number; committed_bytes: number; completed_chunks: number[]; completed?: boolean; recording_id?: string | null };
+  type UploadStatus = { upload_id: string; chunk_size: number; chunk_count: number; committed_bytes: number; completed_chunks: number[]; completed?: boolean; recording_id?: string | null; file_identity_sha256: string };
   let uploadId = "";
   let clientUploadId = "";
   try { uploadId = localStorage.getItem(key) || ""; } catch { /* private browsing can disable storage */ }
@@ -94,13 +111,23 @@ export async function uploadRecording(
   }
   let status: UploadStatus | null = null;
   if (uploadId) {
-    try { status = await request<UploadStatus>(`${root}/${encodeURIComponent(uploadId)}`); }
-    catch { uploadId = ""; }
+    try {
+      status = await request<UploadStatus>(`${root}/${encodeURIComponent(uploadId)}?file_identity_sha256=${fileIdentity}`);
+    } catch (error) {
+      uploadId = "";
+      if (error instanceof SpeechcraftApiError && error.status === 409) {
+        clientUploadId = crypto.randomUUID().replaceAll("-", "");
+        try { localStorage.setItem(clientKey, clientUploadId); } catch { /* request retries still reuse this id */ }
+      }
+    }
   }
   if (!uploadId) {
     status = await retry(() => request<UploadStatus>(root, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name, size: file.size, client_upload_id: clientUploadId }),
+      body: JSON.stringify({
+        filename: file.name, size: file.size, client_upload_id: clientUploadId,
+        file_identity_sha256: fileIdentity, chunk_hashes: chunkHashes,
+      }),
     }));
     uploadId = status.upload_id;
     try { localStorage.setItem(key, uploadId); } catch { /* resume remains available for this page */ }
@@ -118,15 +145,10 @@ export async function uploadRecording(
   const completed = new Set(status!.completed_chunks);
   onProgress(Math.min(99, Math.floor((status!.committed_bytes / file.size) * 99)));
   const url = `${root}/${encodeURIComponent(uploadId)}`;
-  const hash = async (blob: Blob) => {
-    const bytes = await blob.arrayBuffer();
-    const digest = await crypto.subtle.digest("SHA-256", bytes);
-    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  };
   for (let index = 0; index < status!.chunk_count; index++) {
     if (completed.has(index)) continue;
     const chunk = file.slice(index * chunkSize, Math.min(file.size, (index + 1) * chunkSize));
-    const digest = await hash(chunk);
+    const digest = chunkHashes[index]!;
     await retry(() => request<UploadStatus>(`${url}/chunks/${index}`, {
       method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Chunk-SHA256": digest }, body: chunk,
     }));

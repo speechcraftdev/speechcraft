@@ -7,6 +7,20 @@ from pathlib import Path
 
 from tests.http_support import LiveServerTestCase
 
+UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+
+
+def upload_identity(content: bytes) -> dict[str, object]:
+    chunk_hashes = [
+        hashlib.sha256(content[start : start + UPLOAD_CHUNK_SIZE]).hexdigest()
+        for start in range(0, len(content), UPLOAD_CHUNK_SIZE)
+    ]
+    manifest = len(content).to_bytes(8, "big") + b"".join(bytes.fromhex(item) for item in chunk_hashes)
+    return {
+        "chunk_hashes": chunk_hashes,
+        "file_identity_sha256": hashlib.sha256(manifest).hexdigest(),
+    }
+
 
 def make_wav_bytes() -> bytes:
     buffer = io.BytesIO()
@@ -32,7 +46,7 @@ class ApiIntegrationTests(LiveServerTestCase):
     def upload_file(self, project_id: str, filename: str, content: bytes) -> dict[str, object]:
         session_response = self.client.post(
             f"/api/projects/{project_id}/source-recordings/upload-sessions",
-            json={"filename": filename, "size": len(content)},
+            json={"filename": filename, "size": len(content), **upload_identity(content)},
         )
         self.assertEqual(session_response.status_code, 200, session_response.text)
         session = session_response.json()
@@ -134,7 +148,7 @@ class ApiIntegrationTests(LiveServerTestCase):
 
         upload_response = self.client.post(
             "/api/projects/upload-invalid/source-recordings/upload-sessions",
-            json={"filename": "sample.exe", "size": 9},
+            json={"filename": "sample.exe", "size": 9, **upload_identity(b"not audio")},
         )
 
         self.assertEqual(upload_response.status_code, 400)
@@ -145,18 +159,27 @@ class ApiIntegrationTests(LiveServerTestCase):
         payload = {
             "filename": "retry.wav", "size": len(make_wav_bytes()),
             "client_upload_id": "a" * 32,
+            **upload_identity(make_wav_bytes()),
         }
         first = self.client.post("/api/projects/upload-retry/source-recordings/upload-sessions", json=payload)
         second = self.client.post("/api/projects/upload-retry/source-recordings/upload-sessions", json=payload)
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
         self.assertEqual(first.json()["upload_id"], second.json()["upload_id"])
+        mismatch = {
+            **payload,
+            **upload_identity(b"X" * payload["size"]),
+        }
+        self.assertEqual(
+            self.client.post("/api/projects/upload-retry/source-recordings/upload-sessions", json=mismatch).status_code,
+            400,
+        )
 
     def test_upload_resume_discards_corrupted_committed_chunks(self) -> None:
         self.client.post("/api/import-batches", json={"id": "upload-recheck", "name": "Upload Recheck"})
         session = self.client.post(
             "/api/projects/upload-recheck/source-recordings/upload-sessions",
-            json={"filename": "resume.wav", "size": 4},
+            json={"filename": "resume.wav", "size": 4, **upload_identity(b"test")},
         ).json()
         chunk = b"test"
         upload_path = f"/api/projects/upload-recheck/source-recordings/upload-sessions/{session['upload_id']}"
@@ -167,16 +190,37 @@ class ApiIntegrationTests(LiveServerTestCase):
         self.assertEqual(committed.status_code, 200)
         chunk_path = Path(self._tempdir.name, "data", "media", ".uploads", session["upload_id"], "00000000.chunk")
         chunk_path.write_bytes(b"bad!")
-        status = self.client.get(upload_path)
+        status = self.client.get(
+            upload_path, params={"file_identity_sha256": session["file_identity_sha256"]}
+        )
         self.assertEqual(status.status_code, 200)
         self.assertEqual(status.json()["completed_chunks"], [])
         self.assertEqual(status.json()["committed_bytes"], 0)
+
+    def test_upload_session_identity_rejects_a_different_same_size_file(self) -> None:
+        self.client.post("/api/import-batches", json={"id": "upload-identity", "name": "Upload Identity"})
+        first_file, second_file = b"AAAA", b"BBBB"
+        first = self.client.post(
+            "/api/projects/upload-identity/source-recordings/upload-sessions",
+            json={"filename": "same.wav", "size": 4, **upload_identity(first_file)},
+        ).json()
+        status = self.client.get(
+            f"/api/projects/upload-identity/source-recordings/upload-sessions/{first['upload_id']}",
+            params={"file_identity_sha256": upload_identity(second_file)["file_identity_sha256"]},
+        )
+        self.assertEqual(status.status_code, 409)
+        rejected_chunk = self.client.put(
+            f"/api/projects/upload-identity/source-recordings/upload-sessions/{first['upload_id']}/chunks/0",
+            content=second_file,
+            headers={"X-Chunk-SHA256": hashlib.sha256(second_file).hexdigest()},
+        )
+        self.assertEqual(rejected_chunk.status_code, 400)
 
     def test_project_upload_validates_media_before_registering(self) -> None:
         self.client.post("/api/import-batches", json={"id": "upload-corrupt", "name": "Upload Corrupt"})
         session = self.client.post(
             "/api/projects/upload-corrupt/source-recordings/upload-sessions",
-            json={"filename": "sample.mp3", "size": 10},
+            json={"filename": "sample.mp3", "size": 10, **upload_identity(b"not audio!")},
         ).json()
         chunk = b"not audio!"
         self.client.put(

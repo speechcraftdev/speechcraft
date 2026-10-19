@@ -208,29 +208,59 @@ class SQLiteRepository:
     def close(self) -> None:
         self.engine.dispose()
 
-    def cleanup_orphan_source_files(self) -> int:
-        """Remove promoted upload files left behind if the process crashed before DB commit."""
+    def cleanup_orphan_source_files(self, recovery_root: Path, upload_id: str | None = None) -> int:
+        """Recover only files listed by an ingestion-owned promotion marker."""
         source_root = (self.media_root / "sources").resolve()
-        if not source_root.exists():
+        if not source_root.exists() or not recovery_root.exists():
             return 0
         with self._session() as session:
-            referenced = {
+            referenced_paths = {
                 Path(recording.file_path).expanduser().resolve(strict=False)
                 for recording in session.exec(select(SourceRecording)).all()
             }
             artifacts = session.exec(select(SourceRecordingArtifact)).all()
+            committed_uploads = {
+                str(dict(artifact.artifact_metadata or {}).get("upload_session_id"))
+                for artifact in artifacts
+                if dict(artifact.artifact_metadata or {}).get("upload_session_id")
+            }
             for artifact in artifacts:
-                original = dict(artifact.artifact_metadata or {}).get("original_path")
-                if isinstance(original, str):
-                    referenced.add(Path(original).expanduser().resolve(strict=False))
+                original_path = dict(artifact.artifact_metadata or {}).get("original_path")
+                if isinstance(original_path, str):
+                    referenced_paths.add(Path(original_path).expanduser().resolve(strict=False))
         removed = 0
-        for candidate in source_root.iterdir():
+        markers = [recovery_root / f"{upload_id}.json"] if upload_id else recovery_root.glob("*.json")
+        for marker in markers:
             try:
-                resolved = candidate.resolve(strict=False)
-                if resolved.parent == source_root and resolved not in referenced and candidate.is_file():
-                    candidate.unlink()
-                    removed += 1
-            except (OSError, RuntimeError):
+                payload = json.loads(marker.read_text(encoding="utf-8"))
+                upload_id = str(payload["upload_id"])
+                recording_id = str(payload["recording_id"])
+                filenames = payload["filenames"]
+                if not re.fullmatch(r"[0-9a-f]{32}", upload_id) or not re.fullmatch(r"source-[0-9a-f]{32}", recording_id):
+                    continue
+                if not isinstance(filenames, list) or not filenames:
+                    continue
+                if upload_id in committed_uploads:
+                    marker.unlink(missing_ok=True)
+                    continue
+                safe_files = all(
+                    isinstance(name, str)
+                    and Path(name).name == name
+                    and (name == f"{recording_id}.wav" or re.fullmatch(rf"{re.escape(recording_id)}\.original\.(wav|mp3|flac|m4a|aac|ogg|opus|aiff|aif)", name))
+                    for name in filenames
+                )
+                if not safe_files:
+                    continue
+                for name in filenames:
+                    candidate = source_root / name
+                    resolved = candidate.resolve(strict=False)
+                    if candidate.is_symlink() or resolved.parent != source_root or resolved in referenced_paths:
+                        continue
+                    if candidate.is_file():
+                        candidate.unlink()
+                        removed += 1
+                marker.unlink(missing_ok=True)
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError):
                 continue
         return removed
 

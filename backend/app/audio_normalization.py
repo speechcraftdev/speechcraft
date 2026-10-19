@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -60,8 +61,7 @@ def inspect_and_normalize(source: Path, working_wav: Path) -> dict[str, Any]:
     try:
         result = subprocess.run(
             [_tool("ffmpeg"), "-nostdin", "-v", "error", "-threads", "2", "-i", str(source),
-             "-map", "0:a:0", "-vn", "-c:a", "pcm_s16le", "-fs", str(MAX_WAV_BYTES),
-             "-f", "wav", str(working_wav)],
+             "-map", "0:a:0", "-vn", "-c:a", "pcm_s16le", "-f", "wav", str(working_wav)],
             capture_output=True, text=True, timeout=max(300, min(7200, int(duration * 3))), check=False,
         )
     except subprocess.TimeoutExpired as exc:
@@ -69,9 +69,22 @@ def inspect_and_normalize(source: Path, working_wav: Path) -> dict[str, Any]:
         raise UploadError("Audio conversion timed out") from exc
     if result.returncode:
         working_wav.unlink(missing_ok=True)
-        raise UploadError("Audio conversion failed: " + (result.stderr[-500:] or "FFmpeg error"))
+        error = result.stderr[-500:] or "FFmpeg error"
+        if any(phrase in error.lower() for phrase in ("no space left", "disk full", "not enough space")):
+            raise OSError("Insufficient disk space while writing the normalized WAV")
+        raise UploadError("Audio conversion failed: " + error)
     if working_wav.stat().st_size > MAX_WAV_BYTES:
         working_wav.unlink(missing_ok=True)
         raise UploadError("Decoded audio exceeds the supported WAV size limit (4 GiB)")
     return {"codec": stream["codec_name"], "sample_rate": sample_rate, "channels": channels,
             "duration_seconds": duration, "converted": True}
+
+
+def validate_decoded_sample_count(actual_frames: int, sample_rate: int, expected_duration: float) -> None:
+    expected_frames = round(expected_duration * sample_rate)
+    tolerance_frames = max(
+        round(sample_rate * 0.25),
+        math.ceil(expected_frames * 0.0001),
+    )
+    if abs(actual_frames - expected_frames) > tolerance_frames:
+        raise UploadError("Decoded WAV sample count does not match the inspected audio stream")
