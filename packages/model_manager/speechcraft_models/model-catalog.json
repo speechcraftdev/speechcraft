@@ -216,19 +216,19 @@
       }
     },
     {
-      "id": "titanet-large-speaker-purity",
+      "id": "wespeaker-ecapa-tdnn512-lm",
       "role": "speaker_purity",
-      "name": "NVIDIA TitaNet-Large ONNX export (sherpa-onnx candidate)",
+      "name": "WeSpeaker ECAPA-TDNN512-LM ONNX speaker embedding model",
       "license": {
-        "identifier": "CC-BY-4.0 (upstream NVIDIA checkpoint; exported ONNX terms unconfirmed)",
-        "status": "unresolved",
-        "source": "https://huggingface.co/nvidia/speakerverification_en_titanet_large"
+        "identifier": "CC-BY-4.0",
+        "status": "verified",
+        "source": "https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM (publisher model card)"
       },
       "access": {
         "requirements": [
           "Public Hugging Face model repository; no account or token required"
         ],
-        "source": "https://huggingface.co/csukuangfj/speaker-embedding-models"
+        "source": "https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM"
       },
       "artifacts": [
         {
@@ -237,43 +237,45 @@
             "linux-x86_64",
             "macos-arm64"
           ],
-          "format": "ONNX export of NVIDIA NeMo TitaNet-Large for sherpa-onnx",
-          "revision": "0743f301363dec56491a490f6d6cbc9d67f9a3bf",
+          "format": "WeSpeaker ECAPA-TDNN512-LM ONNX; ONNX Runtime with WeSpeaker Kaldi fbank frontend",
+          "revision": "a2f3dcb1c8702caccc7a55ceb57f5e8d1842112b",
           "availability": "verified",
           "inventory_complete": true,
           "source": {
             "type": "huggingface",
-            "repo_id": "csukuangfj/speaker-embedding-models"
+            "repo_id": "Wespeaker/wespeaker-ecapa-tdnn512-LM"
           },
           "required_files": [
             {
-              "path": "nemo_en_titanet_large.onnx",
-              "size_bytes": 101405493,
-              "sha256": "d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77"
+              "path": "voxceleb_ECAPA512_LM.onnx",
+              "size_bytes": 24861931,
+              "sha256": "d71b85d9b48058ef68004f04f1b78acebefb9dfcf542e19b976a12a5ad1f10b0"
             }
           ],
-          "release_blockers": [
-            "The Hugging Face repository has no model card or license declaration. Confirm that the exported ONNX can be redistributed under the upstream checkpoint CC-BY-4.0 terms and add required attribution.",
-            "Confirm the exact NVIDIA NeMo source checkpoint and sherpa-onnx export provenance for this ONNX file.",
-            "Validate macOS ARM64 file acquisition and runtime compatibility on Apple Silicon; Linux tests do not establish macOS readiness."
-          ]
+          "release_blockers": []
         }
       ],
       "runtime_validation": {
         "status": "deferred",
         "contract": [
-          "Load ONNX with pinned sherpa-onnx runtime",
-          "Validate finite 192-dimensional embeddings for fixed audio and repeatability",
-          "Product-level parity and threshold migration must be approved separately"
+          "Verify the pinned model byte size and SHA-256 before loading.",
+          "Run the ONNX model offline with the WeSpeaker Kaldi fbank 80-bin, 25 ms, 10 ms, Hamming, zero-dither, HTK-compatible frontend with per-utterance mean subtraction.",
+          "Validate finite, nonzero, normalized 192-dimensional embeddings on known speech and valid speaker comparisons.",
+          "Keep similarity outputs uncalibrated and review-required; do not represent cosine similarity as a probability."
         ]
       },
       "provenance": {
-        "status": "unresolved",
-        "upstream_checkpoint": "nvidia/speakerverification_en_titanet_large",
-        "upstream_license": "CC-BY-4.0",
-        "upstream_license_source": "https://huggingface.co/nvidia/speakerverification_en_titanet_large",
-        "onnx_export_source": "https://github.com/k2-fsa/sherpa-onnx/tree/master/scripts/nemo/speaker-verification",
-        "note": "The public csukuangfj repository has no model card. Its ONNX file is associated with sherpa-onnx NeMo export tooling, but the exact source checkpoint/export provenance and applicable redistribution terms are not established by the file repository."
+        "repository": "Wespeaker/wespeaker-ecapa-tdnn512-LM",
+        "revision": "a2f3dcb1c8702caccc7a55ceb57f5e8d1842112b",
+        "artifact": "voxceleb_ECAPA512_LM.onnx",
+        "sha256": "d71b85d9b48058ef68004f04f1b78acebefb9dfcf542e19b976a12a5ad1f10b0",
+        "size_bytes": 24861931,
+        "license": "CC-BY-4.0",
+        "license_source": "https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM",
+        "attribution": "WeSpeaker ECAPA-TDNN512-LM, published by WeSpeaker under CC BY 4.0. Preserve publisher attribution and license notice.",
+        "embedding_dimension": 192,
+        "inference_frontend": "wespeaker-kaldi-fbank80-25ms-10ms-hamming-dither0-htk-cmn-v1",
+        "runtime": "onnxruntime"
       }
     }
   ]

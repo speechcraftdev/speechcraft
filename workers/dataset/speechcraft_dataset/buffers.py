@@ -109,6 +109,25 @@ def merge_target_regions(
     }
 
 
+def clamp_regions_to_audio(
+    regions: list[dict[str, Any]],
+    audio_len: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Keep diarization-derived scopes inside the analyzed waveform."""
+    bounded: list[dict[str, Any]] = []
+    clipped_count = 0
+    for region in regions:
+        raw_start = int(region["start_sample"])
+        raw_end = int(region["end_sample"])
+        start = max(0, min(int(audio_len), raw_start))
+        end = max(start, min(int(audio_len), raw_end))
+        if start != raw_start or end != raw_end:
+            clipped_count += 1
+        if end > start:
+            bounded.append({**region, "start_sample": start, "end_sample": end})
+    return bounded, clipped_count
+
+
 def trusted_regions_for_single_speaker(
     speech_intervals: list[tuple[int, int]],
     audio_len: int,
@@ -168,6 +187,8 @@ def run_processing_buffers(run_root: Path, config: dict[str, Any]) -> dict[str, 
             source_audio_id=source_audio_id,
             target_speaker_id=target_speaker_id,
         )
+        trusted_regions, clipped_regions = clamp_regions_to_audio(trusted_regions, len(samples))
+        trusted_summary["regions_clipped_to_audio_bounds"] = clipped_regions
         trusted_region_totals.update(trusted_summary)
         if not trusted_regions and mode == "single_speaker":
             trusted_regions = trusted_regions_for_single_speaker(

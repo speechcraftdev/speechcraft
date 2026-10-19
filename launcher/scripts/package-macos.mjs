@@ -98,6 +98,7 @@ if (!isMain) {
     'workers/dataset/speechcraft_dataset', 'workers/dataset/scripts/preflight.py', 'workers/dataset/scripts/runtime_probe.py',
     'workers/dataset/pyproject.toml', 'workers/dataset/uv.lock', 'workers/dataset/model-catalog.json', 'workers/dataset/model-manifest.schema.json',
     'workers/dataset/runtime-profiles/macos-arm64', 'workers/dataset/runtime-profiles/linux-cpu', 'workers/dataset/runtime-fixtures',
+    'packages/model_manager/pyproject.toml', 'packages/model_manager/README.md', 'packages/model_manager/speechcraft_models',
   ]) {
     const from = path.join(source, relative);
     const to = path.join(appRoot, relative);
@@ -117,7 +118,7 @@ if (!isMain) {
   const release = { schema_version: 1, application: 'SpeechCraft', version, platform: 'macos-arm64', source_revision: sourceRevisionArg,
     node: { version: JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'launcher/resources/node-runtime.json'), 'utf8')).version, executable: 'runtime/node' },
     signing: { status: 'unsigned_development_build', notarized: false },
-    notices: ['No macOS code signing or notarization was performed.', 'FFmpeg is built from pinned source on the Mac and is not a redistributed binary.', 'TitaNet provenance remains unresolved.'] };
+    notices: ['No macOS code signing or notarization was performed.', 'FFmpeg is built from pinned source on the Mac and is not a redistributed binary.', 'WeSpeaker ECAPA model provenance and CC BY 4.0 attribution are documented in the release.'] };
   fs.writeFileSync(path.join(appRoot, 'application-release-manifest.json'), `${JSON.stringify(release, null, 2)}\n`);
   const checked = validateMacRelease(appRoot);
   if (!checked.ok) throw new Error(`Mac package validation failed: ${(checked.problems || []).concat(checked.missing).join(', ')}`);

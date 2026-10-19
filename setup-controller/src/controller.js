@@ -37,7 +37,7 @@ export function assertTransition(from, to) {
 const PUBLIC_JOB_FIELDS = Object.freeze(['schema_version', 'id', 'plan_id', 'state', 'stage', 'task_id', 'mode',
   'created_at', 'updated_at', 'started_at', 'completed_at', 'attempt_count', 'attempt_id', 'revision', 'progress', 'error']);
 const PUBLIC_COMPONENT_NAMES = new Set(['uv', 'managed_python', 'model_manager', 'backend_environment', 'worker_environment',
-  'worker_cuda_candidate', 'ffmpeg', 'silero', 'whisper', 'titanet', 'pyannote', 'runtime_probes', 'backend_service', 'dataset_processing']);
+  'worker_cuda_candidate', 'ffmpeg', 'silero', 'whisper', 'ecapa', 'pyannote', 'runtime_probes', 'backend_service', 'dataset_processing']);
 const PUBLIC_COMPONENT_FIELDS = Object.freeze(['identity', 'state', 'verification', 'last_verified_at', 'failure_code',
   'message', 'runtime_ready', 'progress', 'progress_indeterminate', 'device', 'effective_profile', 'release_blockers',
   'action_required', 'components', 'blocked_components', 'optional_blocked_components', 'inference_completed', 'blockers']);
@@ -443,7 +443,7 @@ export class SetupController {
               installation_identity: state.installation_identity,
               completed_at: state.job.completed_at, setup_plan: state.job.plan_id,
               profile: String(profile), required_checks: ['managed_python', 'backend_environment',
-                'worker_environment', 'ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet', 'backend_service'] };
+                'worker_environment', 'ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa', 'backend_service'] };
           }
         }, 'job_completed');
       }

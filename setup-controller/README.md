@@ -60,7 +60,7 @@ selected only after its trusted candidate environment and separate PyTorch,
 CTranslate2, library, and Whisper inference checks pass; this host-specific
 validation is recorded in `workers/dataset/RUNTIME_PROFILES.md`. macOS
 validation remains pending Kavin's Apple Silicon test. Trusted worker inference
-probes are manifest-pinned for FFmpeg, Silero, Whisper, experimental TitaNet,
+probes are manifest-pinned for FFmpeg, Silero, Whisper, WeSpeaker ECAPA,
 Community-1, and CUDA. The controller checks their digests, runs them through
 the appropriate managed interpreter with bounded output/timeouts and process
 ownership, and accepts runtime readiness only from structured completed
@@ -69,8 +69,7 @@ the production speaker-region converter and requires two speakers in the
 pinned CC0 fixture; it does not establish quality on human conversation. A
 verified FFmpeg pair is installed from its pinned managed archive, with product
 redistribution/legal review still open. Missing Community-1 authorization and
-TitaNet provenance remain visible blockers, so production readiness remains
-false.
+Speaker Purity is ready only after ECAPA model integrity and offline inference pass. FFmpeg redistribution compliance remains a separate release blocker; technical readiness is shown independently.
 
 Backend service launch uses a durable ownership gate. The child blocks on
 stdin before importing Uvicorn or serving requests; the controller releases
@@ -409,5 +408,4 @@ decode evidence are recorded in `workers/dataset/RUNTIME_PROFILES.md`. The
 live authenticated Community-1 download and diarization were not tested here:
 no authorized token or snapshot was available. The complete production dataset
 job remains blocked pending that real offline diarization plus remaining
-release gates. TitaNet provenance and FFmpeg product redistribution review
-remain open. Native WSL2 and macOS were not tested.
+release gates. FFmpeg product redistribution review remains open; ECAPA provenance is recorded in `packages/model_manager/PROVENANCE.md`. Native WSL2 and macOS were not tested.

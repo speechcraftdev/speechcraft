@@ -15,12 +15,12 @@ import numpy as np
 from .audio import map_analysis_sample_to_source, read_mono_source_span
 from .buffers import read_analysis_audio, sec_to_sample, write_pcm16_mono
 from .io import read_json, read_json_value, read_jsonl, resolve_under_root, sha256_file, write_json
+from .wespeaker_ecapa_runtime import FRONTEND_ID, LICENSE, MODEL_ID, MODEL_REPO, MODEL_REVISION, MODEL_SHA256, load_ecapa_model
 
-DEFAULT_MODEL = "titanet-large-speaker-purity"
+DEFAULT_MODEL = MODEL_ID
 TARGET_SAMPLE_RATE = 16000
 SPEAKER_PURITY_SCHEMA_VERSION = 1
 SPEAKER_SCORE_METHOD = "min_valid_window_similarity"
-SUSPICIOUS_SPAN_SIMILARITY_MAX = 0.85
 
 
 @dataclass(frozen=True)
@@ -97,8 +97,8 @@ def _score_0_100(value: Any) -> float | None:
 def _speaker_bucket_hint(score: float | None) -> str:
     if score is None:
         return "unscored"
-    # These cutoffs were associated with NeMo scores and are not calibrated for
-    # the sherpa-onnx TitaNet export. Preserve continuous scores for review.
+    # Cosine values are not calibrated probabilities. Keep every scored clip
+    # in the review bucket until an end-to-end held-out calibration exists.
     return "review"
 
 
@@ -114,49 +114,10 @@ def resolve_device(device_arg: str) -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-class SherpaTitanet:
-    """Local-only CPU adapter for the catalogued TitaNet ONNX artifact."""
-
-    backend = "sherpa-onnx"
-    calibration_status = "uncalibrated"
-
-    def __init__(self, model_path: Path, extractor: Any):
-        self.model_path = model_path
-        self.extractor = extractor
-        self.dimension = int(extractor.dim)
-
-    def infer_segment(self, samples: np.ndarray) -> tuple[np.ndarray, None]:
-        audio = np.asarray(samples, dtype=np.float32).reshape(-1)
-        if audio.size < TARGET_SAMPLE_RATE // 2:
-            raise ValueError("TitaNet requires at least 0.5 seconds of audio at 16 kHz.")
-        stream = self.extractor.create_stream()
-        stream.accept_waveform(sample_rate=TARGET_SAMPLE_RATE, waveform=audio)
-        stream.input_finished()
-        if not self.extractor.is_ready(stream):
-            raise RuntimeError("sherpa-onnx did not produce enough frames for a speaker embedding.")
-        embedding = np.asarray(self.extractor.compute(stream), dtype=np.float64).reshape(-1)
-        if embedding.size != self.dimension or not np.all(np.isfinite(embedding)):
-            raise RuntimeError("sherpa-onnx returned an invalid TitaNet embedding shape or non-finite values.")
-        if float(np.linalg.norm(embedding)) <= 1e-12:
-            raise RuntimeError("sherpa-onnx returned an empty TitaNet embedding.")
-        return embedding, None
-
-
-def load_titanet_model(model_name: str, device_arg: str, model_path: str | Path | None = None) -> Any:
-    if device_arg not in {"auto", "cpu"}:
-        raise RuntimeError("The local sherpa-onnx TitaNet adapter is CPU-only.")
-    if os.environ.get("SPEECHCRAFT_EXPERIMENTAL_TITANET") != "1":
-        raise RuntimeError("TitaNet is blocked from production use pending checkpoint provenance and licensing approval.")
-    raw_path = model_path or os.environ.get("SPEECHCRAFT_TITANET_ONNX_PATH")
-    if not raw_path:
-        raise RuntimeError("A locally acquired TitaNet ONNX file is required; network model loading is disabled.")
-    path = Path(raw_path).expanduser()
-    if not path.is_file() or path.is_symlink() or path.name != "nemo_en_titanet_large.onnx":
-        raise FileNotFoundError(f"Expected the approved local TitaNet-Large ONNX filename, found no safe file at {path}.")
-    from .titanet_runtime import create_sherpa_titanet
-
-    log(f"loading local experimental TitaNet ONNX {path.resolve()} on cpu ({model_name})")
-    return SherpaTitanet(path.resolve(), create_sherpa_titanet(path.resolve()))
+def load_speaker_purity_model(model_name: str, device_arg: str, model_path: str | Path | None = None) -> Any:
+    model = load_ecapa_model(model_name, device_arg, model_path)
+    log(f"loading verified WeSpeaker ECAPA model {MODEL_REPO}@{MODEL_REVISION} on CPU ({model_name})")
+    return model
 
 
 def embedding_vector(raw: Any) -> np.ndarray:
@@ -193,6 +154,8 @@ def window_is_scorable(
     """Skip windows that are mostly silence/breath so they do not fake intruder hits."""
     if samples.size == 0:
         return False, 0.0, 1.0
+    if not np.isfinite(samples).all():
+        raise ValueError("Audio contains non-finite samples.")
     frame_rms = frame_rms_values(samples, sample_rate, frame_ms=config.silence_frame_ms)
     if frame_rms.size == 0:
         return False, 0.0, 1.0
@@ -408,6 +371,13 @@ def build_sanitized_target_voiceprint(
     centroid = embedding_vector(np.mean(np.stack(surviving_embeddings, axis=0), axis=0))
     voiceprint = {
         "model": DEFAULT_MODEL,
+        "model_repo": MODEL_REPO,
+        "model_revision": MODEL_REVISION,
+        "model_sha256": MODEL_SHA256,
+        "model_license": LICENSE,
+        "embedding_backend": "onnxruntime-cpu",
+        "frontend": FRONTEND_ID,
+        "score_calibration": "uncalibrated_review_required",
         "speaker_id": target_speaker_id,
         "embedding_dim": int(centroid.size),
         "centroid": [round(float(value), 8) for value in centroid.tolist()],
@@ -438,6 +408,9 @@ def score_candidate_clip(
     scored: list[dict[str, Any]] = []
     skipped = 0
     for start, end, start_sec in windows:
+        if end - start < int(sample_rate * 0.5):
+            skipped += 1
+            continue
         window_samples = prepare_window_samples(samples[start:end], sample_rate, config.window_sec)
         scorable, window_rms, silent_fraction = window_is_scorable(window_samples, sample_rate, config)
         if not scorable:
@@ -462,7 +435,7 @@ def score_candidate_clip(
             "mean_window_similarity": None,
             "scored_window_count": 0,
             "skipped_window_count": skipped,
-            "intruder_window_count": 0,
+            "intruder_window_count": None,
             "worst_window_start_sec": None,
             "bucket": "failed",
             "reason_codes": ["no_scorable_windows"],
@@ -585,7 +558,7 @@ def evaluate_speaker_purity(
             "channel_mode": str(recipe.get("channel_mode") or "downmix"),
         }
 
-    model = load_titanet_model(model_name, device, model_path)
+    model = load_speaker_purity_model(model_name, device, model_path)
     voiceprint, chunk_rows = build_sanitized_target_voiceprint(
         model,
         speaker_regions,
@@ -646,6 +619,7 @@ def evaluate_speaker_purity(
         "clean": sum(row.get("bucket") == "clean" for row in clip_rows),
         "suspicious": sum(row.get("bucket") == "suspicious" for row in clip_rows),
         "contaminated": sum(row.get("bucket") == "contaminated" for row in clip_rows),
+        "review_required_uncalibrated": sum(row.get("bucket") == "review_pending_calibration" for row in clip_rows),
         "failed": len(failed_rows),
     }
 
@@ -744,37 +718,14 @@ def evaluate_speaker_purity(
 
 
 def _phase3_reason_codes(row: dict[str, Any]) -> list[str]:
-    score = row.get("speaker_check_score")
     reason_codes = [str(code) for code in (row.get("reason_codes") or []) if isinstance(code, str)]
-    if score is None:
-        return sorted(set(reason_codes or ["missing_speaker_qc"]))
-    if isinstance(score, (int, float)) and score < 70:
-        reason_codes.append("low_speaker_similarity_window")
-    if isinstance(score, (int, float)) and score < 55:
-        reason_codes.append("possible_other_speaker_or_voice_shift")
-    return sorted(set(reason_codes))
+    return sorted(set(reason_codes or (["missing_speaker_qc"] if row.get("speaker_check_score") is None else [])))
 
 
 def _phase3_suspicious_spans(row: dict[str, Any]) -> list[dict[str, Any]]:
-    spans: list[dict[str, Any]] = []
-    for window in row.get("windows") or []:
-        if not isinstance(window, dict):
-            continue
-        similarity = window.get("similarity")
-        start_sec = window.get("start_sec")
-        end_sec = window.get("end_sec")
-        if not isinstance(similarity, (int, float)) or not isinstance(start_sec, (int, float)) or not isinstance(end_sec, (int, float)):
-            continue
-        if float(similarity) >= SUSPICIOUS_SPAN_SIMILARITY_MAX:
-            continue
-        spans.append(
-            {
-                "start_sec": round(float(start_sec), 6),
-                "end_sec": round(float(end_sec), 6),
-                "similarity": round(float(similarity), 6),
-            }
-        )
-    return spans
+    # Keep window measurements continuous; no uncalibrated fixed cutoff marks
+    # a time span as suspicious.
+    return []
 
 
 def _build_phase3_clip_row(candidate: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
@@ -788,8 +739,15 @@ def _build_phase3_clip_row(candidate: dict[str, Any], metrics: dict[str, Any]) -
         "duration_sec": candidate.get("duration_sec"),
         "speaker_check_score": speaker_check_score,
         "speaker_score_method": SPEAKER_SCORE_METHOD,
-        "speaker_embedding_backend": "sherpa-onnx",
-        "speaker_score_calibration": "pending_evaluation",
+        "speaker_embedding_backend": "onnxruntime-cpu",
+        "speaker_model_id": MODEL_ID,
+        "speaker_model_repo": MODEL_REPO,
+        "speaker_model_revision": MODEL_REVISION,
+        "speaker_model_sha256": MODEL_SHA256,
+        "speaker_model_license": LICENSE,
+        "speaker_frontend": FRONTEND_ID,
+        "speaker_score_units": "cosine_similarity_scaled_for_display_only",
+        "speaker_score_calibration": "uncalibrated_review_required",
         "speaker_score_calibrated": False,
         "min_window_similarity": metrics.get("min_window_similarity"),
         "mean_window_similarity": metrics.get("mean_window_similarity"),
@@ -841,6 +799,8 @@ def run_speaker_purity(
         export_best=int(config.get("speaker_purity_export_best") or 20),
         device=str(config.get("speaker_purity_device") or device),
     )
+    if summary.get("clip_count", 0) <= 0 or summary.get("scored_count", 0) <= 0:
+        raise RuntimeError("Speaker Purity produced no valid scored candidate clips; refusing to publish empty quality results.")
 
     raw_rows = read_json_value(stage_dir / "speaker_purity_qc.json")
     if not isinstance(raw_rows, list):
@@ -874,7 +834,7 @@ def run_speaker_purity(
                     "p10_window_similarity": None,
                     "scored_window_count": 0,
                     "skipped_window_count": 0,
-                    "intruder_window_count": 0,
+                    "intruder_window_count": None,
                     "worst_window_start_sec": None,
                     "bucket_hint": "unscored",
                     "suspicious_spans": [],
@@ -901,9 +861,15 @@ def run_speaker_purity(
         "schema_version": SPEAKER_PURITY_SCHEMA_VERSION,
         "stage": "speaker_purity",
         "model": model,
+        "model_repo": MODEL_REPO,
+        "model_revision": MODEL_REVISION,
+        "model_sha256": MODEL_SHA256,
+        "model_license": LICENSE,
         "score_method": SPEAKER_SCORE_METHOD,
-        "embedding_backend": "sherpa-onnx",
-        "score_calibration": "pending_evaluation",
+        "embedding_backend": "onnxruntime-cpu",
+        "frontend": FRONTEND_ID,
+        "score_units": "cosine_similarity_scaled_for_display_only",
+        "score_calibration": "uncalibrated_review_required",
         "clips": clips,
     }
     artifact_path = resolve_under_root(run_root, "artifacts/speaker_purity.json")
@@ -917,7 +883,13 @@ def run_speaker_purity(
         "schema_version": SPEAKER_PURITY_SCHEMA_VERSION,
         "stage": "speaker_purity",
         "model": model,
+        "model_repo": MODEL_REPO,
+        "model_revision": MODEL_REVISION,
+        "model_sha256": MODEL_SHA256,
+        "model_license": LICENSE,
         "score_method": SPEAKER_SCORE_METHOD,
+        "embedding_backend": "onnxruntime-cpu",
+        "score_calibration": "uncalibrated_review_required",
         "target_speaker_id": summary.get("target_speaker_id"),
         "clip_count": len(clips),
         "scored_count": len(scored_rows),
@@ -952,7 +924,7 @@ def run_speaker_purity(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Offline TitaNet speaker purity enrollment + candidate QC eval.")
+    parser = argparse.ArgumentParser(description="Offline WeSpeaker ECAPA speaker purity enrollment + candidate QC eval.")
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--target-speaker-id", default=None)

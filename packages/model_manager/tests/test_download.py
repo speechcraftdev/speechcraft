@@ -214,7 +214,7 @@ class DownloadTests(unittest.TestCase):
 
     def make_hf_installer(self, files, *, revision='a' * 40, missing_from_repo=(),
                           extra_repo_files=None, role='speaker_purity', platform='linux-x86_64',
-                          repo='csukuangfj/speaker-embedding-models'):
+                          repo='Wespeaker/wespeaker-ecapa-tdnn512-LM'):
         try:
             from huggingface_hub import constants
             from speechcraft_models import huggingface_source
@@ -519,14 +519,14 @@ class DownloadTests(unittest.TestCase):
             os.close(model_fd)
 
     def test_huggingface_install_uses_pinned_allowlist_and_reuses_verified_files(self):
-        filename = 'nemo_en_titanet_large.onnx'
-        data = b'fabricated-titanet-model'
+        filename = 'voxceleb_ECAPA512_LM.onnx'
+        data = b'fixture-ecapa-model'
         installer, _, _, server, _, events = self.make_hf_installer(
             {filename: data}, extra_repo_files={'unlisted/other-model.onnx': b'not requested'})
         with patch.dict(os.environ, {'HF_TOKEN': 'must-not-be-used'}):
             result = installer.install('speaker_purity', 'linux-x86_64', experimental=True)
         self.assertTrue(result['integrity_verified'])
-        self.assertFalse(result['install_ready'])
+        self.assertTrue(result['install_ready'])
         self.assertIsNone(result['runtime_ready'])
         self.assertEqual((Path(result['root']) / filename).read_bytes(), data)
         self.assertEqual(set(path.name for path in Path(result['root']).iterdir()), {filename})
@@ -542,7 +542,7 @@ class DownloadTests(unittest.TestCase):
         self.assertNotIn('http://', json.dumps(events))
 
     def test_huggingface_requires_full_revision_and_exact_repository_allowlist(self):
-        filename = 'nemo_en_titanet_large.onnx'
+        filename = 'voxceleb_ECAPA512_LM.onnx'
         installer, _, artifact, server, _, _ = self.make_hf_installer({filename: b'x'})
         artifact['revision'] = 'main'
         with self.assertRaises((InstallError, ManifestError)):
@@ -554,24 +554,24 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(server.file_requests, [])
 
     def test_huggingface_missing_file_and_corrupt_content_never_publish(self):
-        filename = 'nemo_en_titanet_large.onnx'
+        filename = 'voxceleb_ECAPA512_LM.onnx'
         data = b'correct-model-file'
         installer, _, _, server, missing_root, _ = self.make_hf_installer(
             {filename: data}, missing_from_repo={filename})
         with self.assertRaises(InstallError):
             installer.install('speaker_purity', 'linux-x86_64', experimental=True)
-        self.assertFalse(list(missing_root.glob('**/nemo_en_titanet_large.onnx')))
+        self.assertFalse(list(missing_root.glob('**/voxceleb_ECAPA512_LM.onnx')))
 
         installer, _, _, server, corrupt_root, _ = self.make_hf_installer({filename: data})
         server.corrupt_data[filename] = b'x' * len(data)
         with self.assertRaisesRegex(InstallError, 'SHA-256'):
             installer.install('speaker_purity', 'linux-x86_64', experimental=True)
-        self.assertFalse(list(corrupt_root.glob('**/nemo_en_titanet_large.onnx')))
+        self.assertFalse(list(corrupt_root.glob('**/voxceleb_ECAPA512_LM.onnx')))
         server.corrupt_data.clear()
         self.assertTrue(installer.install('speaker_purity', 'linux-x86_64', experimental=True)['integrity_verified'])
 
     def test_huggingface_multifile_completeness_and_interrupted_retry(self):
-        filename = 'nemo_en_titanet_large.onnx'
+        filename = 'voxceleb_ECAPA512_LM.onnx'
         second = 'config/model.json'
         files = {filename: b'weights', second: b'{"fixture":true}'}
         installer, _, _, server, _, _ = self.make_hf_installer(files)
@@ -585,7 +585,7 @@ class DownloadTests(unittest.TestCase):
         installer, _, _, _, missing_root, _ = self.make_hf_installer(files, missing_from_repo={second})
         with self.assertRaises(InstallError):
             installer.install('speaker_purity', 'linux-x86_64', experimental=True)
-        self.assertFalse(list(missing_root.glob('titanet-large-speaker-purity/*/nemo_en_titanet_large.onnx')))
+        self.assertFalse(list(missing_root.glob('wespeaker-ecapa-tdnn512-lm/*/voxceleb_ECAPA512_LM.onnx')))
 
     def test_whisper_multifile_interruption_restarts_and_verifies_every_file(self):
         repo = 'Systran/faster-whisper-large-v3'
@@ -730,7 +730,7 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual((Path(result['root']) / name).read_bytes(), data)
 
     def test_huggingface_insufficient_disk_fails_before_acquisition(self):
-        filename = 'nemo_en_titanet_large.onnx'
+        filename = 'voxceleb_ECAPA512_LM.onnx'
         installer, _, _, server, _, _ = self.make_hf_installer({filename: b'model'})
         low = SimpleNamespace(f_bavail=1, f_frsize=1)
         with patch('speechcraft_models.download.os.fstatvfs', return_value=low):
@@ -739,7 +739,7 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(server.file_requests, [])
 
     def test_huggingface_checks_separate_xet_cache_capacity(self):
-        filename = 'nemo_en_titanet_large.onnx'
+        filename = 'voxceleb_ECAPA512_LM.onnx'
         installer, _, _, server, _, _ = self.make_hf_installer({filename: b'model'})
         from huggingface_hub import constants
         real_stat = os.stat
@@ -762,7 +762,7 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(server.file_requests, [])
 
     def test_huggingface_capacity_accounts_only_configured_xet_cache_growth(self):
-        filename = 'nemo_en_titanet_large.onnx'
+        filename = 'voxceleb_ECAPA512_LM.onnx'
         installer, _, _, server, _, events = self.make_hf_installer({filename: b'model'})
         from huggingface_hub import constants
         chunk_cache = Path(constants.HF_XET_CACHE) / 'fixture-region' / 'chunk_cache'
@@ -781,16 +781,26 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(capacity['xet_chunk_cache_growth_required_bytes'], expected_growth)
         self.assertEqual(server.file_requests, [])
 
-    def test_titanet_artifact_selects_both_supported_platforms_and_blockers_remain(self):
+    def test_ecapa_artifact_selects_supported_platforms_with_verified_provenance(self):
         catalog = load_catalog()
         linux = select_artifact(catalog, 'speaker_purity', 'linux-x86_64')
         macos = select_artifact(catalog, 'speaker_purity', 'macos-arm64')
         self.assertEqual(linux['revision'], macos['revision'])
-        self.assertEqual(linux['source']['repo_id'], macos['source']['repo_id'])
+        self.assertEqual(linux['source']['repo_id'], 'Wespeaker/wespeaker-ecapa-tdnn512-LM')
+        self.assertEqual(linux['required_files'][0]['path'], 'voxceleb_ECAPA512_LM.onnx')
+        self.assertEqual(linux['required_files'][0]['size_bytes'], 24861931)
+        self.assertEqual(linux['required_files'][0]['sha256'], 'd71b85d9b48058ef68004f04f1b78acebefb9dfcf542e19b976a12a5ad1f10b0')
         self.assertEqual(linux['required_files'], macos['required_files'])
+        self.assertEqual(next(m for m in catalog['models'] if m['role'] == 'speaker_purity')['license']['status'], 'verified')
+        self.assertTrue(_Installer(Path(self.temp.name) / 'verified', catalog).resolve('speaker_purity', 'macos-arm64'))
+
+    def test_experimental_flag_cannot_bypass_model_release_blockers(self):
+        catalog = load_catalog()
+        model = next(item for item in catalog['models'] if item['role'] == 'speaker_purity')
+        model['artifacts'][0]['release_blockers'] = ['fixture unresolved redistribution review']
+        installer = _Installer(Path(self.temp.name) / 'blocked', catalog)
         with self.assertRaisesRegex(InstallError, 'release-blocked'):
-            _Installer(Path(self.temp.name) / 'blocked', catalog).install(
-                'speaker_purity', 'macos-arm64')
+            installer.resolve('speaker_purity', 'linux-x86_64', experimental=True)
 
     def test_whisper_platforms_select_distinct_trusted_artifacts_and_wsl_alias(self):
         catalog = load_catalog()

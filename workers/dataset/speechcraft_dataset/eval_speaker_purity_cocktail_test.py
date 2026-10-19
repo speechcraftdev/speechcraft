@@ -13,7 +13,7 @@ from .buffers import read_analysis_audio, sec_to_sample, write_pcm16_mono
 from .eval_speaker_purity import (
     DEFAULT_MODEL,
     SpeakerPurityConfig,
-    load_titanet_model,
+    load_speaker_purity_model,
     score_candidate_clip,
 )
 from .io import read_json_value, read_jsonl, resolve_under_root, write_json
@@ -451,7 +451,7 @@ def run_cocktail_test(
     )
     log(f"testing {len(clean_clips)} clean clips")
 
-    model = load_titanet_model(model_name, device)
+    model = load_speaker_purity_model(model_name, device)
     trials: list[dict[str, Any]] = []
     clip_results: list[dict[str, Any]] = []
 
@@ -633,7 +633,7 @@ DATASET_REGISTRY: dict[str, dict[str, str]] = {
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="TitaNet cocktail-party torture test (hard splice + overlap blend).")
+    parser = argparse.ArgumentParser(description="ECAPA speaker-purity cocktail-party test (hard splice + overlap blend).")
     parser.add_argument("--out", required=True)
     parser.add_argument("--dataset", default="mb", choices=sorted(DATASET_REGISTRY))
     parser.add_argument("--run-root", default=None)

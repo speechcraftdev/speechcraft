@@ -192,7 +192,7 @@ export function ExportDialog({ runId, open, onOpenChange }: ExportDialogProps) {
                   <p className="mt-2 uppercase tracking-wide text-[#878787]">Current QC subset</p>
                   <p className="mt-1">
                     {preview.active_qc_subset
-                      ? `Speaker Purity ≥ ${preview.active_qc_subset.speaker_check_min} · Transcript Match ≥ ${preview.active_qc_subset.transcript_match_min}`
+                      ? `Speaker Purity review score ≥ ${preview.active_qc_subset.speaker_check_min} · Transcript Match ≥ ${preview.active_qc_subset.transcript_match_min}`
                       : "All clips · no QC thresholds applied"}
                   </p>
                 </div>

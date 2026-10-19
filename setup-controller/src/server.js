@@ -92,7 +92,7 @@ function publicModels(controller) {
   const records = [
     ['silero', 'speech_detection', 'silero-vad-onnx', 'Silero VAD ONNX'],
     ['whisper', 'asr', 'whisper-large-v3', 'Whisper Large-v3'],
-    ['titanet', 'speaker_purity', 'titanet-large-onnx-fp32', 'TitaNet-Large ONNX FP32'],
+    ['ecapa', 'speaker_purity', 'wespeaker-ecapa-tdnn512-lm', 'WeSpeaker ECAPA-TDNN512-LM ONNX'],
     ['pyannote', 'diarization', 'pyannote/speaker-diarization-community-1', 'pyannote Community-1'],
   ];
   return { schema_version: 1, models: records.map(([key, role, model_id, display_name]) => {
@@ -102,7 +102,7 @@ function publicModels(controller) {
       runtime_ready: value.runtime_ready === true || value.state === 'runtime_ready',
       action_required: value.state === 'waiting_for_token' || value.state === 'access_denied',
       failure_code: value.failure_code || null, message: value.message || null,
-      release_blockers: key === 'titanet' ? value.release_blockers || [value.message || 'Experimental provenance and license review remains unresolved.'] : [] };
+      release_blockers: value.release_blockers || [] };
   }) };
 }
 

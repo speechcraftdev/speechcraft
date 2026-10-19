@@ -26,7 +26,7 @@
       "linux-x86_64-cpu": {
         "available": true,
         "validated": true,
-        "validated_scope": "Locked Linux CPU environment installed with managed CPython 3.12.15; genuine local Silero, Whisper Large-v3 CPU, experimental TitaNet, managed FFmpeg/FFprobe, and post-diarization worker pipeline using explicit test-only reference speaker regions exercised. Pyannote authorization and production diarization remain blocked.",
+        "validated_scope": "Locked Linux CPU environment installed with managed CPython 3.12.15; genuine local Silero, Whisper Large-v3 CPU, managed FFmpeg/FFprobe, and post-diarization worker pipeline using explicit test-only reference speaker regions exercised. Pyannote authorization and production diarization remain blocked. The ECAPA runtime probe was added in the current source revision and must pass before Speaker Purity or technical readiness is reported ready.",
         "project": "workers/dataset/runtime-profiles/linux-cpu",
         "lockfile": "uv.lock",
         "lock_sha256": "b5e17aed011c1dc06f4546592c3f67c268e32ff9dde5e7e2785d3b458db5f3d5",
@@ -119,22 +119,25 @@
     "manager_interface": "python -m speechcraft_models",
     "approved_roles": [
       "speech_detection",
-      "asr"
+      "asr",
+      "speaker_purity"
     ],
     "blocked_roles": {
-      "diarization": "Community-1 installation requires accepted Hugging Face conditions and an explicit ephemeral read token; runtime readiness additionally requires the offline inference probe.",
-      "speaker_purity": "TitaNet provenance and redistribution approval remain blocked."
+      "diarization": "Community-1 installation requires accepted Hugging Face conditions and an explicit ephemeral read token; runtime readiness additionally requires the offline inference probe."
+    },
+    "notes": {
+      "speaker_purity": "WeSpeaker ECAPA-TDNN512-LM is manifest-pinned and technically ready only after the offline embedding probe passes. Speaker Purity cosine scores remain uncalibrated and review-required."
     }
   },
   "runtime_validation": {
     "available": true,
     "protocol": "speechcraft-runtime-probe-v1",
-    "reason": "Trusted, hashed CC0 speech fixtures are bundled for FFmpeg, Silero, Whisper, TitaNet, and a two-voice Community-1 probe. Gated diarization remains blocked until an authorized local snapshot is installed and offline inference succeeds.",
+    "reason": "Trusted, hashed CC0 speech fixtures are bundled for FFmpeg, Silero, Whisper, WeSpeaker ECAPA, and a two-voice Community-1 probe. Gated diarization remains blocked until an authorized local snapshot is installed and offline inference succeeds.",
     "probes": [
       {
         "component": "ffmpeg",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
+        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
         "environment_role": "worker",
         "arguments": [
           "ffmpeg"
@@ -145,7 +148,7 @@
       {
         "component": "silero",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
+        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
         "environment_role": "worker",
         "arguments": [
           "silero"
@@ -156,7 +159,7 @@
       {
         "component": "whisper",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
+        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
         "environment_role": "worker",
         "arguments": [
           "whisper"
@@ -165,12 +168,12 @@
         "fixture": "speech"
       },
       {
-        "component": "titanet",
+        "component": "ecapa",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
+        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
         "environment_role": "worker",
         "arguments": [
-          "titanet"
+          "ecapa"
         ],
         "timeout_ms": 600000,
         "fixture": "speech"
@@ -178,7 +181,7 @@
       {
         "component": "pyannote",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
+        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
         "environment_role": "worker",
         "arguments": [
           "pyannote"
@@ -189,7 +192,7 @@
       {
         "component": "cuda",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "ecabb8d09f39a643d038354959983dff0cb54367f833b2eaf8db740f78780ae5",
+        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
         "environment_role": "worker_cuda_candidate",
         "fixture": "speech",
         "arguments": [
@@ -275,7 +278,13 @@
       "sha256": "6626e1f622324597146a8cc90a89bb4c3529f7df55f0a8c998fde55ac5ae4161",
       "tar_root": "FFmpeg-46d899d7a02bc63237472cc4897258d5ddf274ac",
       "license": "LGPL-2.1-or-later",
-      "configure": ["--disable-gpl", "--disable-nonfree", "--disable-ffplay", "--disable-debug", "--enable-version3"],
+      "configure": [
+        "--disable-gpl",
+        "--disable-nonfree",
+        "--disable-ffplay",
+        "--disable-debug",
+        "--enable-version3"
+      ],
       "redistribution_status": "SpeechCraft does not redistribute a macOS FFmpeg binary. The pinned source archive hash was recorded from a download on 2026-10-17. The Mac builds it locally. GitHub archive bytes can change if GitHub repacks the same commit, and product redistribution review remains required.",
       "reason": "No redistribution-cleared Apple Silicon binary is bundled. A verified local build of the pinned FFmpeg commit is required before FFmpeg can be marked runtime-ready."
     }

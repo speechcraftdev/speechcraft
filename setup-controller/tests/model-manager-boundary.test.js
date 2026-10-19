@@ -76,6 +76,7 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
   }));
   const helper = pythonShim(catalog, payloads, cache);
   const hubProgress = [];
+  let hubStdout = '';
   const actualPython = spawnSync(python, ['--version'], { encoding: 'utf8' });
   assert.equal(actualPython.status, 0, `Python is required for this boundary test: ${actualPython.stderr}`);
   const runtime = new RuntimeTasks({ dataDirectory: directory, applicationRoot: repositoryRoot,
@@ -85,7 +86,11 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
         integrity_verified: true, root: path.join(directory, 'models', role), role }), stderr: '' };
       const output = options.onOutput;
       const launched = await runOwnedProcess(executable, ['-c', helper, ...args.slice(3)], { ...options,
-        onOutput: (stream, chunk) => { hubProgress.push(chunk.toString('utf8')); output?.(stream, chunk); } });
+        onOutput: (stream, chunk) => {
+          if (stream === 'stdout') hubStdout += chunk.toString('utf8');
+          else hubProgress.push(chunk.toString('utf8'));
+          output?.(stream, chunk);
+        } });
       return launched;
     } });
   runtime.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
@@ -118,7 +123,8 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
     assert.equal(JSON.stringify(await authorized.json()).includes(secret), false);
     await app.controller.waitForIdle();
     const component = app.store.snapshot().job.bootstrap_status.components.pyannote;
-    assert.equal(app.store.snapshot().job.state, 'completed');
+    assert.equal(app.store.snapshot().job.state, 'completed', JSON.stringify({ error: app.store.snapshot().job.error,
+      stdout: hubStdout.slice(-4000), progress: hubProgress.join('').slice(-4000) }));
     assert.equal(component.state, 'files_verified');
     assert.equal(component.report.inventory_exact, true);
     assert.equal(component.report.integrity_verified, true);

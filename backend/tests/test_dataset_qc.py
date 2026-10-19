@@ -321,7 +321,8 @@ class DatasetQcTests(TestCase):
                             "p10_window_similarity": 0.78,
                             "scored_window_count": 8,
                             "skipped_window_count": 0,
-                            "intruder_window_count": 1,
+                            "intruder_window_count": None,
+                            "bucket": "review_pending_calibration",
                             "worst_window_start_sec": 2.5,
                             "reason_codes": [],
                             "windows": [{"start_sec": 2.5, "end_sec": 5.5, "similarity": 0.74}],
@@ -335,7 +336,8 @@ class DatasetQcTests(TestCase):
                             "p10_window_similarity": 0.85,
                             "scored_window_count": 7,
                             "skipped_window_count": 0,
-                            "intruder_window_count": 0,
+                            "intruder_window_count": None,
+                            "bucket": "review_pending_calibration",
                             "worst_window_start_sec": 2.0,
                             "reason_codes": [],
                             "windows": [],
@@ -350,7 +352,7 @@ class DatasetQcTests(TestCase):
                 json.dumps({"speaker_id": "speaker_0", "embedding_dim": 3}),
                 encoding="utf-8",
             )
-            return {"target_speaker_id": "speaker_0"}
+            return {"target_speaker_id": "speaker_0", "clip_count": 4, "scored_count": 2}
 
         with patch(
             "speechcraft_dataset.analyze_whisper_b1_transcript_qc.resolve_transcript_qc_model_reference",

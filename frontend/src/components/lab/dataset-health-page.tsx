@@ -210,7 +210,7 @@ export function DatasetHealthPage({
       <div className="mx-auto max-w-[1400px] p-6">
         <div className="mb-6 flex items-center justify-between">
           <div className="font-serif text-lg leading-none">
-            {summary.acceptedCount} of {clips.length} clips pass both gates at these thresholds ·{" "}
+            {summary.acceptedCount} of {clips.length} clips meet both review filters at these thresholds ·{" "}
             {formatDuration(summary.acceptedDurationSec)}
             {activeQcSubset ? <span className="ml-2 text-xs text-[#878787]">(active subset)</span> : null}
           </div>
@@ -241,7 +241,7 @@ export function DatasetHealthPage({
             humanLabels={transcriptMarkers}
           />
           <ThresholdImpactChart
-            title="Speaker check"
+            title="Speaker Purity · uncalibrated review score"
             points={speakerCurve}
             threshold={speakerThreshold}
             onThresholdChange={(value) => onDraftQcThresholdsChange({

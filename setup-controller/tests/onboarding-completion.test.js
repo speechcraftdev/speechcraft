@@ -24,12 +24,10 @@ class VerifiedFixtureTasks extends RuntimeTasks {
     for (const name of ['managed_python', 'backend_environment', 'worker_environment']) {
       status.components[name] = { state: 'verified', verification: 'test_fixture_identity', identity: `${name}:fixture` };
     }
-    for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+    for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa']) {
       status.components[name] = { state: 'runtime_ready', runtime_ready: true,
         verification: 'controlled_verified_runtime_fixture', identity: `${name}:fixture` };
     }
-    status.components.titanet.release_approved = false;
-    status.components.titanet.message = 'TitaNet provenance remains unresolved in this internal acceptance fixture.';
     status.components.ffmpeg.redistribution_approved = false;
     return status;
   }
@@ -49,7 +47,8 @@ test('the production controller transition writes onboarding from evaluated runt
     assert.equal(persisted.job.bootstrap_status.technical_processing_ready, true);
     assert.equal(persisted.onboarding.completed, true);
     assert.equal(persisted.onboarding.profile, 'linux-x86_64-cpu');
-    assert.ok(persisted.job.bootstrap_status.release_blockers.some((item) => item.component === 'titanet'));
+    assert.ok(persisted.job.bootstrap_status.release_blockers.some((item) => item.component === 'ffmpeg'));
+    assert.ok(!persisted.job.bootstrap_status.release_blockers.some((item) => item.component === 'ecapa'));
     assert.equal(persisted.job.bootstrap_status.production_ready, false);
   } finally {
     await controller.shutdown();

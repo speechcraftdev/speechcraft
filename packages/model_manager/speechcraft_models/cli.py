@@ -9,6 +9,43 @@ from .download import InstallError, check_installation, install_gated_model, ins
 from .manifest import ManifestError, load_catalog, select_artifact, verify_artifact
 
 
+def _safe_diagnostic_from_chain(exc):
+    cause = exc
+    for _ in range(8):
+        candidate = getattr(cause, 'diagnostic', None)
+        if isinstance(candidate, dict):
+            diagnostic = {}
+            if isinstance(candidate.get('exception_type'), str) and re.fullmatch(
+                r'[A-Za-z][A-Za-z0-9]{0,79}', candidate['exception_type']
+            ):
+                diagnostic['exception_type'] = candidate['exception_type']
+            status = candidate.get('http_status')
+            if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+                diagnostic['http_status'] = status
+            for key in ('attribute', 'object_type'):
+                value = candidate.get(key)
+                if isinstance(value, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}', value):
+                    diagnostic[key] = value
+            frames = candidate.get('frames')
+            if isinstance(frames, list):
+                safe_frames = []
+                for frame in frames[-4:]:
+                    if not isinstance(frame, dict):
+                        continue
+                    module, function = frame.get('module'), frame.get('function')
+                    if (isinstance(module, str) and re.fullmatch(r'[A-Za-z0-9_.]{1,160}', module)
+                            and isinstance(function, str) and re.fullmatch(r'[A-Za-z0-9_]{1,100}', function)):
+                        safe_frames.append({'module': module, 'function': function})
+                if safe_frames:
+                    diagnostic['frames'] = safe_frames
+            if diagnostic:
+                return diagnostic
+        cause = getattr(cause, '__cause__', None)
+        if cause is None:
+            break
+    return {}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Install or verify SpeechCraft model files (no inference).')
     parser.add_argument('action', choices=('install', 'status', 'verify', 'authorize-install'))
@@ -62,7 +99,9 @@ def main(argv=None):
                        'MODEL_STORAGE_INSUFFICIENT', 'AUTHORIZATION_REQUIRED_AFTER_RESTART'}
             if code not in allowed:
                 code, safe = 'MODEL_INSTALL_FAILED', 'Community-1 authorization or installation failed safely.'
-        print(json.dumps({'status': 'error', 'error_code': code, 'error': safe[:320], 'runtime_ready': None}))
+        diagnostic = _safe_diagnostic_from_chain(exc)
+        print(json.dumps({'status': 'error', 'error_code': code, 'error': safe[:320],
+                          'diagnostic': diagnostic or None, 'runtime_ready': None}))
         return 1
 
 

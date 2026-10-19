@@ -73,11 +73,9 @@ class RuntimeCompletionFixture extends RuntimeTasks {
     for (const name of ['managed_python', 'backend_environment', 'worker_environment']) {
       value.components[name] = { state: 'verified', verification: 'controlled_fixture', identity: `${name}:fixture` };
     }
-    for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'titanet']) {
+    for (const name of ['ffmpeg', 'silero', 'whisper', 'pyannote', 'ecapa']) {
       value.components[name] = { state: 'runtime_ready', runtime_ready: true, verification: 'controlled_fixture', identity: `${name}:fixture` };
     }
-    value.components.titanet.release_approved = false;
-    value.components.titanet.message = 'TitaNet provenance remains a release blocker.';
     value.components.ffmpeg.redistribution_approved = false;
     return value;
   }

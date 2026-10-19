@@ -66,11 +66,7 @@ Installation results add `reused`. File readiness does not establish inference
 readiness. Catalog licensing/access status, inventory completeness, immutable
 revision, exact positive sizes, hashes, approved HTTPS sources, and release
 blockers are checked before transfer. Hugging Face acquisitions must match the
-catalog repository, filename allowlist, and a full 40-character commit. No Hub
-token is read or persisted. TitaNet can only be fetched with the explicit
-Python `experimental=True` option while its provenance/licensing blockers remain;
-its report has `integrity_verified: true`, `install_ready: false`, and
-`runtime_ready: null`. Normal installation refuses it.
+catalog repository, filename allowlist, and a full 40-character commit. No Hub token is read or persisted. The selected WeSpeaker ECAPA artifact is a verified public catalog entry; normal installation verifies its exact pinned size and SHA-256 and reports file readiness separately from runtime inference readiness.
 
 ### Gated Community-1 acquisition
 
@@ -250,13 +246,10 @@ uses the internal module interface, never a separate installed executable:
 /tmp/speechcraft-stage2-env/bin/python -I packages/model_manager/tests/smoke_real_silero.py --download-real-silero
 ```
 
-TitaNet's real public Hub download is also opt-in. The script is developer-only:
-it uses `experimental=True`, verifies the exact file, confirms repeat reuse, and
-keeps the result's `install_ready` false because catalog release blockers remain.
-Run from an installed package environment:
+The pinned WeSpeaker ECAPA artifact's real public Hub download is opt-in. The script verifies the catalog-pinned bytes and confirms repeat reuse. Run from an installed package environment:
 
 ```bash
-/tmp/speechcraft-stage2-env/bin/python -I packages/model_manager/tests/smoke_titanet.py --download-real-titanet --platform linux-x86_64
+/tmp/speechcraft-stage2-env/bin/python -I packages/model_manager/tests/smoke_ecapa.py --download-real-ecapa --platform linux-x86_64
 ```
 
 ### macOS handoff for Kavin (Apple Silicon M4 Pro)
@@ -269,13 +262,11 @@ temporary directory:
 uname -m
 uv venv --python 3.12 /tmp/speechcraft-model-manager-macos
 uv pip install --python /tmp/speechcraft-model-manager-macos/bin/python packages/model_manager
-/tmp/speechcraft-model-manager-macos/bin/python -I packages/model_manager/tests/smoke_titanet.py --download-real-titanet --platform macos-arm64
+/tmp/speechcraft-model-manager-macos/bin/python -I packages/model_manager/tests/smoke_ecapa.py --download-real-ecapa --platform macos-arm64
 ```
 
-The smoke should report verified file integrity, `install_ready: false`,
-`runtime_ready: null`, and reuse on the second call. Record the macOS version,
-Python version, test result, and any filesystem or Xet-cache issue. Do not clear
-the catalog's macOS release blocker until Kavin has run this on Apple Silicon
+The acquisition smoke should report verified file integrity, `install_ready: true`,
+`runtime_ready: null`, and reuse on the second call. File acquisition alone does not establish native Apple Silicon inference readiness.
 and the provenance/licensing blockers are resolved.
 
 See [PROVENANCE.md](PROVENANCE.md) for measured identities and sources. Linux
