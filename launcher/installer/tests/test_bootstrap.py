@@ -90,13 +90,15 @@ esac
         result = self.run_bootstrap()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.marker.read_text(), "installed")
-        self.assertIn("SpeechCraft 0.1.1 is installed", result.stdout)
+        self.assertIn("SpeechCraft 0.1.1 is installed", result.stderr)
+        self.assertNotIn("Fetching", result.stdout)
         self.assert_clean_tmp()
 
     def test_noninteractive_install_prints_stages_without_progress_spam_or_urls(self):
         result = self.run_bootstrap()
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = result.stdout
+        text = result.stderr
+        self.assertNotIn("Fetching", result.stdout)
         archive = "speechcraft-0.1.1-linux-x86_64.tar.gz"
         self.assertLess(text.index("Checking platform and prerequisites"), text.index(f"Fetching {archive}"))
         self.assertLess(text.index(f"Fetching {archive}"), text.index(f"Verified SHA-256 for {archive}"))
@@ -214,6 +216,7 @@ esac
         self.assertIn("archive verification failed", result.stderr)
         self.assertIn("failed at SHA-256 check", result.stderr)
         self.assertIn("run the installer again", result.stderr)
+        self.assertNotIn("Verified SHA-256", result.stderr)
         self.assertNotIn("Verified SHA-256", result.stdout)
         self.assertFalse(self.marker.exists())
         self.assert_clean_tmp()
@@ -254,7 +257,7 @@ esac
         result = self.run_bootstrap(UNAME_VALUE="Darwin")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("supported platform: Linux x86-64 only", result.stderr)
-        self.assertNotIn("Platform checks passed", result.stdout)
+        self.assertNotIn("Platform checks passed", result.stderr)
         self.assert_clean_tmp()
         (self.mockbin / "uname").write_text("#!/bin/sh\nif [ \"$1\" = -s ]; then printf 'Linux\\n'; else printf 'aarch64\\n'; fi\n")
         os.chmod(self.mockbin / "uname", 0o755)
@@ -305,6 +308,65 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("download failed", result.stderr)
         self.assertFalse(self.marker.exists())
+        self.assert_clean_tmp()
+
+    def test_generated_installer_parses_as_posix_shell(self):
+        result = subprocess.run(["bash", "--posix", "-n", str(self.script)], text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_pinned_sidecar_size_rejects_a_different_length(self):
+        import re
+        text = self.script.read_text()
+        self.assertRegex(text, r"CHECKSUM_SIZE='[0-9]+'")
+        self.script.write_text(re.sub(r"CHECKSUM_SIZE='[0-9]+'", "CHECKSUM_SIZE='1'", text, count=1))
+        result = self.run_bootstrap()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("release checksum verification failed", result.stderr)
+        self.assertNotIn("Verified SHA-256 for speechcraft-0.1.1-linux-x86_64.tar.gz.sha256", result.stderr)
+        self.assertNotIn("is installed", result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assert_clean_tmp()
+
+    def test_terminal_stderr_requests_archive_progress_while_stdout_stays_quiet(self):
+        import pty
+        import threading
+        master, slave = pty.openpty()
+        chunks = []
+
+        def drain():
+            try:
+                while True:
+                    data = os.read(master, 4096)
+                    if not data:
+                        break
+                    chunks.append(data)
+            except OSError:
+                return
+
+        thread = threading.Thread(target=drain, daemon=True)
+        thread.start()
+        env = {**os.environ, "HOME": str(self.home), "TMPDIR": str(self.tmpdir),
+               "TEST_ASSET_DIR": str(self.assets), "INSTALL_MARKER": str(self.marker),
+               "MOCK_CURL_LOG": str(self.curl_log),
+               "PATH": f"{self.mockbin}:{os.environ['PATH']}"}
+        result = subprocess.run(["sh", str(self.script)], env=env, text=True, stdout=subprocess.PIPE,
+                                stderr=slave, timeout=30)
+        os.close(slave)
+        thread.join(timeout=5)
+        os.close(master)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Fetching", result.stdout)
+        self.assertNotIn("is installed", result.stdout)
+        shown = b"".join(chunks).decode(errors="replace")
+        self.assertIn("Fetching speechcraft-0.1.1-linux-x86_64.tar.gz", shown)
+        self.assertIn("SpeechCraft 0.1.1 is installed", shown)
+        lines = self.curl_log.read_text().splitlines()
+        archive_lines = [line for line in lines if line.split()[-1].endswith("-linux-x86_64.tar.gz")]
+        other_lines = [line for line in lines if line not in archive_lines]
+        self.assertEqual(len(archive_lines), 1)
+        self.assertIn("--progress-bar", archive_lines[0])
+        self.assertTrue(all("--silent" in line and "--progress-bar" not in line for line in other_lines))
+        self.assertEqual(self.marker.read_text(), "installed")
         self.assert_clean_tmp()
 
 

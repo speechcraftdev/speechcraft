@@ -3,7 +3,9 @@ set -eu
 
 # Generated for one immutable SpeechCraft release by scripts/generate-bootstrap.mjs.
 # The installer accepts no arguments, including when started from a pipe.
-# Set SPEECHCRAFT_INSTALL_VERBOSE=1 to show archive transfer progress when stderr is not a terminal.
+# Status lines go to stderr so they stay visible when stdout is a pipe.
+# Archive transfer progress is shown when stderr is a terminal, or when
+# SPEECHCRAFT_INSTALL_VERBOSE=1.
 RELEASE_TAG='@@RELEASE_TAG@@'
 APP_VERSION='@@APP_VERSION@@'
 SOURCE_REVISION='@@SOURCE_REVISION@@'
@@ -11,9 +13,13 @@ ARCHIVE='@@ARCHIVE@@'
 ARCHIVE_SHA256='@@ARCHIVE_SHA256@@'
 ARCHIVE_SIZE='@@ARCHIVE_SIZE@@'
 CHECKSUM_SHA256='@@CHECKSUM_SHA256@@'
+CHECKSUM_SIZE='@@CHECKSUM_SIZE@@'
 MANIFEST_SHA256='@@MANIFEST_SHA256@@'
+MANIFEST_SIZE='@@MANIFEST_SIZE@@'
 INSTALLER_SHA256='@@INSTALLER_SHA256@@'
+INSTALLER_SIZE='@@INSTALLER_SIZE@@'
 INSTALLER_SH_SHA256='@@INSTALLER_SH_SHA256@@'
+INSTALLER_SH_SIZE='@@INSTALLER_SH_SIZE@@'
 ASSET_BASE_URL='@@ASSET_BASE_URL@@'
 
 step=startup
@@ -22,8 +28,12 @@ install_verbose=0
 
 fail() {
   printf 'SpeechCraft installer: failed at %s: %s\n' "$step" "$*" >&2
-  printf 'SpeechCraft installer: no files were activated. Correct the problem and run the installer again.\n' >&2
+  printf 'SpeechCraft installer: correct the problem and run the installer again.\n' >&2
   exit 1
+}
+
+say() {
+  printf '%s\n' "$*" >&2
 }
 
 file_bytes() {
@@ -37,12 +47,12 @@ download() {
   step="fetching $name"
   show_progress=0
   if [ "$name" = "$ARCHIVE" ]; then
-    printf 'Fetching %s (%s bytes expected)\n' "$name" "$ARCHIVE_SIZE"
+    say "Fetching $name ($ARCHIVE_SIZE bytes expected)"
     if [ "$stderr_is_tty" -eq 1 ] || [ "$install_verbose" -eq 1 ]; then
       show_progress=1
     fi
   else
-    printf 'Fetching %s\n' "$name"
+    say "Fetching $name"
   fi
   set -- --fail --show-error --location --max-redirs 3 \
     --proto "$curl_proto" --proto-redir "$curl_proto" --retry 3 --retry-delay 1 \
@@ -54,6 +64,7 @@ download() {
   fi
   set -- "$@" --output "$target" --write-out '%{url_effective}' "$url"
   effective_url=$(curl "$@") || fail "download failed for $name; check your connection and retry."
+  actual_bytes=$(file_bytes "$target") || fail "could not measure $name after download."
   case "$base_url" in
     https://github.com/speechcraftdev/speechcraft/releases/download/*)
       case "$effective_url" in
@@ -65,7 +76,7 @@ download() {
       [ "$effective_url" = "$url" ] || fail "staged download for $name left its pinned URL."
       ;;
   esac
-  printf 'Fetched %s (%s bytes)\n' "$name" "$(file_bytes "$target")"
+  say "Fetched $name ($actual_bytes bytes)"
 }
 
 verify_file() {
@@ -79,9 +90,9 @@ verify_pinned() {
   size=$4
   failure=$5
   step="SHA-256 check for $name"
-  printf '%s\n' "Checking pinned SHA-256 for $name"
+  say "Checking pinned SHA-256 for $name"
   verify_file "$file" "$hash" "$size" || fail "$failure"
-  printf '%s\n' "Verified SHA-256 for $name ($size bytes)"
+  say "Verified SHA-256 for $name ($size bytes)"
 }
 
 step=arguments
@@ -90,7 +101,7 @@ if [ "$#" -ne 0 ]; then
 fi
 
 step='platform check'
-printf '%s\n' "Checking platform and prerequisites for SpeechCraft $APP_VERSION"
+say "Checking platform and prerequisites for SpeechCraft $APP_VERSION"
 if [ "$(uname -s 2>/dev/null || true)" != Linux ]; then
   fail 'supported platform: Linux x86-64 only. See platform instructions for macOS and Windows.'
 fi
@@ -102,7 +113,7 @@ python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)
 command -v curl >/dev/null 2>&1 || fail 'curl is required to download the release.'
 command -v mktemp >/dev/null 2>&1 || fail 'mktemp is required to create a private download directory.'
 command -v rm >/dev/null 2>&1 || fail 'rm is required to clean up the private download directory.'
-printf '%s\n' 'Platform checks passed: Linux x86-64'
+say 'Platform checks passed: Linux x86-64'
 
 if [ -t 2 ]; then
   stderr_is_tty=1
@@ -136,13 +147,13 @@ download install-linux.py "$installer_path"
 download install-linux.sh "$installer_sh_path"
 
 verify_pinned "$ARCHIVE" "$archive_path" "$ARCHIVE_SHA256" "$ARCHIVE_SIZE" 'archive verification failed; nothing was installed.'
-verify_pinned "$ARCHIVE.sha256" "$checksum_path" "$CHECKSUM_SHA256" "$(file_bytes "$checksum_path")" 'release checksum verification failed.'
-verify_pinned "$ARCHIVE.release.json" "$manifest_path" "$MANIFEST_SHA256" "$(file_bytes "$manifest_path")" 'release manifest verification failed.'
-verify_pinned install-linux.py "$installer_path" "$INSTALLER_SHA256" "$(file_bytes "$installer_path")" 'official installer verification failed.'
-verify_pinned install-linux.sh "$installer_sh_path" "$INSTALLER_SH_SHA256" "$(file_bytes "$installer_sh_path")" 'official installer wrapper verification failed.'
+verify_pinned "$ARCHIVE.sha256" "$checksum_path" "$CHECKSUM_SHA256" "$CHECKSUM_SIZE" 'release checksum verification failed.'
+verify_pinned "$ARCHIVE.release.json" "$manifest_path" "$MANIFEST_SHA256" "$MANIFEST_SIZE" 'release manifest verification failed.'
+verify_pinned install-linux.py "$installer_path" "$INSTALLER_SHA256" "$INSTALLER_SIZE" 'official installer verification failed.'
+verify_pinned install-linux.sh "$installer_sh_path" "$INSTALLER_SH_SHA256" "$INSTALLER_SH_SIZE" 'official installer wrapper verification failed.'
 
 step='release manifest check'
-printf '%s\n' "Checking release manifest for SpeechCraft $APP_VERSION"
+say "Checking release manifest for SpeechCraft $APP_VERSION"
 python3 - "$checksum_path" "$manifest_path" "$ARCHIVE" "$ARCHIVE_SHA256" "$ARCHIVE_SIZE" "$APP_VERSION" "$SOURCE_REVISION" <<'PY' || fail 'release metadata mismatch; nothing was installed.'
 import json, pathlib, re, sys
 checksum_path, manifest_path, archive, digest, size, version, revision = sys.argv[1:]
@@ -154,13 +165,14 @@ expected = {"schema_version": 1, "archive": archive, "archive_sha256": digest, "
 if not isinstance(manifest, dict) or any(manifest.get(key) != value for key, value in expected.items()): raise SystemExit("manifest does not match pinned release identity")
 if not re.fullmatch(r"[a-f0-9]{64}", str(manifest.get("model_manager_wheel_sha256", ""))): raise SystemExit("manifest has no valid model-manager wheel identity")
 PY
-printf '%s\n' "Verified release manifest for SpeechCraft $APP_VERSION"
+say "Verified release manifest for SpeechCraft $APP_VERSION"
 
 step='package installation'
-printf '%s\n' "Installing verified SpeechCraft $APP_VERSION package"
+say "Installing verified SpeechCraft $APP_VERSION package"
 if ! (cd "$tmp_dir" && sh "$installer_sh_path" "$archive_path"); then
-  fail 'the verified package could not be installed. No application files were activated.'
+  fail 'the verified package was not activated. A failed activation restores the previous command and release pointer.'
 fi
-printf '\nSpeechCraft %s is installed.\n' "$APP_VERSION"
-printf 'Next: run speechcraft. It serves the local setup page at http://127.0.0.1:3002/setup.\n'
-printf 'Model and runtime preparation happens in that local setup page.\n'
+say ""
+say "SpeechCraft $APP_VERSION is installed."
+say 'Next: run speechcraft. It serves the local setup page at http://127.0.0.1:3002/setup.'
+say 'Model and runtime preparation happens in that local setup page.'

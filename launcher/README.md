@@ -27,7 +27,7 @@ speechcraft status --json
 speechcraft stop
 ```
 
-The first launch opens `/setup`. After the controller records verified onboarding completion, later launches open `/login`. `--no-browser` prints the URL and leaves services running in the terminal. On a headless server, use an SSH tunnel from the computer where you want the browser. `cozytent` below is only an example SSH alias; use your own alias or `user@host`:
+The first launch serves `/setup`. After the controller records verified onboarding completion, later launches serve `/login`. On a desktop, SpeechCraft asks the platform opener to show that page; a stub or failed opener is not a GUI window. `--no-browser` prints the URL and leaves services running in the terminal. On a headless or SSH server, use a tunnel from the computer where you want the browser. `cozytent` below is only an example SSH alias; use your own alias or `user@host`:
 
 ```bash
 ssh -N -L 3002:127.0.0.1:3002 cozytent
@@ -73,7 +73,7 @@ mkdir -p "$HOME/.local/bin"
 ln -s "$(pwd)/bin/speechcraft" "$HOME/.local/bin/speechcraft"
 ```
 
-On desktop Linux it opens the browser after Next.js responds. On a headless server it prints the local URL and does not claim that a browser opened. From your own computer, use an SSH tunnel. `cozytent` is an example alias:
+On desktop Linux it asks the desktop to open the page after the frontend proves it is healthy. That request does not prove a window appeared. On a headless server it prints the local URL and SSH tunnel example. `cozytent` is an example alias:
 
 ```bash
 ssh -N -L 3002:127.0.0.1:3002 cozytent
@@ -123,6 +123,8 @@ node launcher/scripts/integration.mjs
 It verifies the loopback page, server-side session bridge, authenticated status/SSE, duplicate-launch reuse, and an onboarding record created through `SetupController` and `RuntimeTasks` using controlled verified component evidence. The latter validates the production state transition, not model inference; it is not evidence of model installation or inference. Repeat-launch fixture intentionally removes wheel path/digest inputs and checks the normal route remains available while missing runtime artifacts surface as repair blockers.
 
 ## Troubleshooting and safe diagnostics
+
+Service stdout and stderr are read by the launcher and appended to `launcher.log` in the data directory (mode 0600, one rotated generation, 256 KiB each). Routine Next.js banners and controller listening lines stay in that file. Errors are also printed. `--verbose` or `SPEECHCRAFT_LOG_LEVEL=verbose` prints the routine lines too. If the log cannot be opened or written, SpeechCraft still starts and keeps those errors on the terminal. `SPEECHCRAFT_READY` is printed only after the frontend ownership check, and only when stdout is not a terminal or verbose mode is on.
 
 The controller diagnostics endpoint is available in the setup page after session establishment. A port collision is not killed automatically: stop the known owner or choose a later supported launcher configuration in a future release. If shutdown reports uncertain process identity, preserve the data directory and inspect the reported process before retrying. Do not remove controller lock or service ownership records by hand while an owned process may still exist.
 

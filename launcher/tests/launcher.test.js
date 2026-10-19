@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { assertLoopbackAddress, chooseDestination, formatFrontendReadyEvent, openDefaultBrowser, parseArgs, parseFrontendReadyEvent, readOrCreateFrontendIdentity, resolveLaunchContext, stopOwned, stopOwnedRecord, verifyFrontendOwnership } from '../src/launcher.js';
-import { classifyChildStreamLine, createLauncherLog, formatLaunchAccess, formatRemoteAccessGuidance, isRoutineChildStdout, launchOutputMode, redactLaunchText } from '../src/launch-log.js';
-import { EventEmitter } from 'node:events';
+import { classifyChildStreamLine, createLauncherLog, createLaunchLogSession, formatLaunchAccess, formatRemoteAccessGuidance, isRoutineChildStdout, launchOutputMode, redactLaunchText } from '../src/launch-log.js';
+import { PassThrough } from 'node:stream';
+import { EventEmitter, once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ownedProcessIdentity } from '../../setup-controller/src/bootstrap.js';
@@ -317,49 +318,140 @@ test('default launch output hides routine service banners and explains a remote 
   assert.match(guidance, /example SSH alias/);
   assert.match(guidance, /127\.0\.0\.1 only/);
   assert.doesNotMatch(guidance, /user@cozytent-host|0\.0\.0\.0|browser was opened on the server/);
-  assert.match(formatLaunchAccess({ url: 'http://127.0.0.1:3002/setup', opened: true, env: { DISPLAY: ':0' } }), /asked this desktop to open/);
+  const opened = formatLaunchAccess({ url: 'http://127.0.0.1:3002/setup', opened: true, env: { DISPLAY: ':0' } });
+  assert.match(opened, /asked this desktop to open/);
+  assert.match(opened, /does not prove a window appeared/);
+  assert.doesNotMatch(opened, /cozytent/);
+  const localFailure = formatLaunchAccess({ url: 'http://127.0.0.1:3002/setup', opened: false, env: { DISPLAY: ':0' } });
+  assert.match(localFailure, /could not open a desktop browser/);
+  assert.doesNotMatch(localFailure, /cozytent|ssh -N/);
+  const skipped = formatLaunchAccess({
+    url: 'http://127.0.0.1:3002/setup', opened: false, browserRequested: false, env: { SSH_CONNECTION: '203.0.113.4 1 127.0.0.1 22' },
+  });
+  assert.match(skipped, /--no-browser/);
+  assert.match(skipped, /example SSH alias/);
   assert.match(formatRemoteAccessGuidance('http://127.0.0.1:3002/login'), /http:\/\/127\.0\.0\.1:3002\/login/);
 });
 
-test('service log helper redacts secrets and keeps routine output off the terminal', async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-log-helper-'));
+test('service logs stay in-process when the log file, pipe, or child fails', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-log-session-'));
   const secret = 'bootstrap-secret-value';
   const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
   try {
     fs.chmodSync(directory, 0o700);
     fs.writeFileSync(path.join(directory, 'bootstrap.token'), `${secret}\n`, { mode: 0o600 });
-    const logFile = path.join(directory, 'launcher.log');
-    const child = spawn(process.execPath, [cli], {
-      cwd: directory,
-      shell: false,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        PATH: process.env.PATH,
-        HOME: directory,
-        SPEECHCRAFT_LAUNCHER_LOG_HELPER: '1',
-        SPEECHCRAFT_LAUNCHER_DATA_DIR: directory,
-        SPEECHCRAFT_LAUNCHER_LOG_FILE: logFile,
-        SPEECHCRAFT_LAUNCHER_LOG_VERBOSE: '0',
-      },
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
-    child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
-    child.stdin.write('{"event":"listening","host":"127.0.0.1","port":4317}\n');
-    child.stdin.write(`Error: ${secret} leaked token=${secret}\n`);
-    child.stdin.end();
-    const [code] = await onceExit(child);
-    assert.equal(code, 0, stderr);
-    const stored = fs.readFileSync(logFile, 'utf8');
-    assert.equal(fs.statSync(logFile).mode & 0o777, 0o600);
+    const terminal = [];
+    const session = createLaunchLogSession(directory, { writeTerminal: (text) => terminal.push(text) });
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    session.attach('stdout', stdout);
+    session.attach('stderr', stderr);
+    stdout.write('{"event":"listening","host":"127.0.0.1","port":4317}\n');
+    stdout.write('✓ Ready in 1s\n');
+    stderr.write('✓ Ready in 1s\n');
+    stderr.write(`Error: ${secret} leaked token=${secret}\n`);
+    const stdoutEnded = once(stdout, 'end');
+    const stderrEnded = once(stderr, 'end');
+    stdout.write('partial');
+    stdout.end();
+    stderr.end();
+    await Promise.all([stdoutEnded, stderrEnded]);
+    const stored = fs.readFileSync(session.path, 'utf8');
+    const shown = terminal.join('');
+    assert.equal(fs.statSync(session.path).mode & 0o777, 0o600);
     assert.match(stored, /"event":"listening"/);
+    assert.match(stored, /partial/);
     assert.doesNotMatch(stored, new RegExp(secret));
     assert.match(stored, /\[redacted\]/);
-    assert.doesNotMatch(stdout, /listening/);
-    assert.match(stdout, /Error:/);
-    assert.doesNotMatch(stdout, new RegExp(secret));
-    assert.doesNotMatch(stderr, new RegExp(secret));
+    assert.doesNotMatch(shown, /listening/);
+    assert.doesNotMatch(shown, /stdout-ready/);
+    assert.match(shown, /✓ Ready in 1s/);
+    assert.equal(shown.match(/✓ Ready in 1s/g).length, 1);
+    assert.match(shown, /Error:/);
+    assert.doesNotMatch(shown, new RegExp(secret));
+    session.close();
+
+    const verbose = [];
+    const verboseSession = createLaunchLogSession(directory, { verbose: true, writeTerminal: (text) => verbose.push(text) });
+    const verboseOut = new PassThrough();
+    verboseSession.attach('stdout', verboseOut);
+    const verboseEnded = once(verboseOut, 'end');
+    verboseOut.end('{"event":"listening","port":4317}\n');
+    await verboseEnded;
+    assert.match(verbose.join(''), /listening/);
+    verboseSession.close();
+
+    const blocked = [];
+    const blockedSession = createLaunchLogSession(directory, {
+      openLog() { throw Object.assign(new Error('permission denied'), { code: 'EACCES' }); },
+      writeTerminal: (text) => blocked.push(text),
+    });
+    assert.equal(blockedSession.fileEnabled, false);
+    const blockedErr = new PassThrough();
+    blockedSession.attach('stderr', blockedErr);
+    const blockedEnded = once(blockedErr, 'end');
+    blockedErr.end('Error: still visible\n');
+    await blockedEnded;
+    assert.match(blocked.join(''), /could not open the detailed log/);
+    assert.match(blocked.join(''), /still visible/);
+    blockedSession.close();
+
+    const full = [];
+    let writes = 0;
+    const fullSession = createLaunchLogSession(directory, {
+      openLog: () => ({
+        path: path.join(directory, 'launcher.log'),
+        write() { writes += 1; throw Object.assign(new Error('no space'), { code: 'ENOSPC' }); },
+        close() {},
+      }),
+      writeTerminal: (text) => full.push(text),
+    });
+    const fullErr = new PassThrough();
+    fullSession.attach('stderr', fullErr);
+    const fullEnded = once(fullErr, 'end');
+    fullErr.write('Error: first\n');
+    fullErr.end('Error: second\n');
+    await fullEnded;
+    assert.equal(writes, 1);
+    assert.match(full.join(''), /stopped writing the detailed log \(ENOSPC\)/);
+    assert.match(full.join(''), /Error: first/);
+    assert.match(full.join(''), /Error: second/);
+    fullSession.close();
+
+    const huge = [];
+    const hugeSession = createLaunchLogSession(directory, { writeTerminal: (text) => huge.push(text) });
+    const hugeErr = new PassThrough();
+    hugeSession.attach('stderr', hugeErr);
+    const hugeEnded = once(hugeErr, 'end');
+    hugeErr.write(`${'E'.repeat(2 * 1024 * 1024)}`);
+    hugeErr.end('\nError: after-huge\n');
+    await hugeEnded;
+    const hugeText = huge.join('');
+    assert.match(hugeText, /truncated a long service line/);
+    assert.match(hugeText, /after-huge/);
+    assert.ok(hugeText.length < 64 * 1024);
+    hugeSession.close();
+
+    const crashed = [];
+    const crashSession = createLaunchLogSession(directory, { writeTerminal: (text) => crashed.push(text) });
+    const child = spawn(process.execPath, ['-e', 'console.error("crash-marker"); process.exit(2);'], { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+    crashSession.attach('stdout', child.stdout);
+    crashSession.attach('stderr', child.stderr);
+    const [code] = await onceExit(child);
+    assert.equal(code, 2);
+    assert.match(crashed.join(''), /crash-marker/);
+    crashSession.close();
+
+    const helper = spawn(process.execPath, [cli, '--help'], {
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, SPEECHCRAFT_LAUNCHER_LOG_HELPER: '1' },
+    });
+    let help = '';
+    helper.stdout.setEncoding('utf8').on('data', (chunk) => { help += chunk; });
+    const [helpCode] = await onceExit(helper);
+    assert.equal(helpCode, 0);
+    assert.match(help, /Usage: speechcraft/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 

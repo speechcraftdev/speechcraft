@@ -65,9 +65,13 @@ const pins = {
   ARCHIVE_SHA256: archiveSha,
   ARCHIVE_SIZE: String(fs.statSync(archivePath).size),
   CHECKSUM_SHA256: sha(checksum),
+  CHECKSUM_SIZE: String(fs.statSync(checksum).size),
   MANIFEST_SHA256: sha(releaseManifest),
+  MANIFEST_SIZE: String(fs.statSync(releaseManifest).size),
   INSTALLER_SHA256: sha(pythonInstaller),
+  INSTALLER_SIZE: String(fs.statSync(pythonInstaller).size),
   INSTALLER_SH_SHA256: sha(shellInstaller),
+  INSTALLER_SH_SIZE: String(fs.statSync(shellInstaller).size),
   ASSET_BASE_URL: assetBaseUrl,
 };
 let template = fs.readFileSync(path.join(root, 'launcher/installer/install.sh.in'), 'utf8');

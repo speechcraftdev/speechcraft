@@ -10,7 +10,7 @@ import { defaultDataDirectory } from '../../setup-controller/src/paths.js';
 import { ownedProcessIdentity, terminateRecoveredProcess } from '../../setup-controller/src/bootstrap.js';
 import { assertCurrentWslGuest, assertExistingManagedFiles, freeBytes, hostEnvironment, managedStorageLocations, probeLoopback, probeProcessGroup, sanitizeWslProcessEnvironment, validateManagedStorage, validateManagedStorageTargets, WSL_LAUNCH_FREE_BYTES } from '../../setup-controller/src/platform.js';
 import { selectRuntimeProfile } from '../../setup-controller/src/runtime-plan.js';
-import { createLauncherLog, formatLaunchAccess, launchOutputMode } from './launch-log.js';
+import { createLaunchLogSession, formatLaunchAccess, launchOutputMode } from './launch-log.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const FRONTEND_PORT = 3002;
@@ -570,11 +570,15 @@ async function waitForRestoration(session, timeoutMs = STARTUP_TIMEOUT_MS, signa
     warning: 'Managed service restoration is still pending. SpeechCraft has not confirmed processing readiness; open /setup to inspect status.' };
 }
 
-function launch(executable, args, { cwd, env, label, serviceOutput }) {
+function launch(executable, args, { cwd, env, label, logSession }) {
   const nonce = crypto.randomBytes(24).toString('hex');
   const childEnv = { ...env, SPEECHCRAFT_OWNED_PROCESS_NONCE: nonce };
   const child = spawn(executable, args, { cwd, env: childEnv, shell: false, detached: true,
-    stdio: ['ignore', serviceOutput, serviceOutput], windowsHide: true });
+    stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  child.stdout?.on('error', () => {});
+  child.stderr?.on('error', () => {});
+  logSession?.attach('stdout', child.stdout);
+  logSession?.attach('stderr', child.stderr);
   const ready = new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('spawn', resolve);
@@ -645,43 +649,6 @@ export async function openDefaultBrowser(url, { platform = process.platform, env
   if (!started) return false;
   opener.unref();
   return true;
-}
-
-async function startServiceLog({ dataDirectory, logFile, env, verbose }) {
-  if (!process.argv[1]) throw new Error('SpeechCraft could not locate its launcher entrypoint for service logs.');
-  const helper = spawn(process.execPath, [process.argv[1]], {
-    cwd: dataDirectory,
-    detached: true,
-    shell: false,
-    windowsHide: true,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      PATH: env.PATH || '',
-      HOME: env.HOME || os.homedir(),
-      LANG: env.LANG || 'C.UTF-8',
-      SPEECHCRAFT_LAUNCHER_LOG_HELPER: '1',
-      SPEECHCRAFT_LAUNCHER_DATA_DIR: dataDirectory,
-      SPEECHCRAFT_LAUNCHER_LOG_FILE: logFile,
-      SPEECHCRAFT_LAUNCHER_LOG_VERBOSE: verbose ? '1' : '0',
-    },
-  });
-  const forward = (stream) => {
-    stream.setEncoding('utf8');
-    stream.on('data', (chunk) => { process.stderr.write(chunk); });
-    stream.on('error', () => {});
-  };
-  forward(helper.stdout);
-  forward(helper.stderr);
-  helper.stdin.on('error', () => {});
-  await new Promise((resolve, reject) => {
-    helper.once('spawn', resolve);
-    helper.once('error', reject);
-  });
-  helper.unref();
-  helper.stdout.unref();
-  helper.stderr.unref();
-  helper.stdin.unref();
-  return helper;
 }
 
 export async function runLauncher({ args = process.argv.slice(2), env = process.env, signal = null,
@@ -800,30 +767,25 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
       // controller reused from a prior launcher must remain owned after this
       // frontend-only launch exits.
       persistLauncherOwnership(dataDirectory, []);
-      try { if (serviceLog?.stdin && !serviceLog.stdin.destroyed) serviceLog.stdin.end(); } catch { /* the helper exits on its own after the last writer closes */ }
-      serviceLog?.stdin?.unref?.();
-      serviceLog?.stdout?.unref?.();
-      serviceLog?.stderr?.unref?.();
-      serviceLog?.unref?.();
+      try { serviceLog?.close(); } catch { /* a log-file failure must not change shutdown */ }
     })();
     return shutdownPromise;
   };
 
   try {
   const outputMode = launchOutputMode({ verbose: options.verbose, env: launchEnv, stdoutIsTTY: process.stdout.isTTY === true });
-  const preparedLog = createLauncherLog(dataDirectory);
-  const logPath = preparedLog.path;
-  preparedLog.close();
-  serviceLog = await startServiceLog({ dataDirectory, logFile: logPath, env: launchEnv, verbose: outputMode.verbose });
+  serviceLog = createLaunchLogSession(dataDirectory, { verbose: outputMode.verbose });
   console.log(`SpeechCraft: starting on ${host.os} ${host.architecture}; services stay on ${LOOPBACK}`);
-  console.log(`SpeechCraft: detailed log: ${logPath}`);
+  console.log(serviceLog.fileEnabled
+    ? `SpeechCraft: detailed log: ${serviceLog.path}`
+    : 'SpeechCraft: detailed log unavailable; startup is continuing');
   let controllerHandle = null;
   if (await isPortAvailable(CONTROLLER_PORT)) {
     console.log(`SpeechCraft: starting the setup controller at http://${LOOPBACK}:${CONTROLLER_PORT}`);
     const controllerEntry = path.join(ROOT, 'setup-controller/src/server.js');
     controllerHandle = launch(process.execPath, [controllerEntry, '--data-dir', dataDirectory,
       '--port', String(CONTROLLER_PORT), '--mode', options.simulated ? 'simulated' : 'runtime'],
-    { cwd: ROOT, env: common, label: 'setup controller', serviceOutput: serviceLog.stdin });
+    { cwd: ROOT, env: common, label: 'setup controller', logSession: serviceLog });
     children.push(controllerHandle);
     await controllerHandle.ready;
     controllerHandle.identityValue = await controllerHandle.identity;
@@ -857,7 +819,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
         SPEECHCRAFT_SETUP_BOOTSTRAP_FILE: path.join(dataDirectory, 'bootstrap.token'),
         SPEECHCRAFT_SETUP_ALLOWED_APP_ORIGINS: `${appOrigin},http://localhost:${FRONTEND_PORT}`,
         SPEECHCRAFT_LAUNCHER_INSTALL_ID: installId,
-        SPEECHCRAFT_LAUNCHER_PRIVATE_IDENTITY: frontendIdentity }, serviceOutput: serviceLog.stdin });
+        SPEECHCRAFT_LAUNCHER_PRIVATE_IDENTITY: frontendIdentity }, logSession: serviceLog });
     children.push(frontendHandle);
     await frontendHandle.ready;
     frontendHandle.identityValue = await frontendHandle.identity;
@@ -890,12 +852,12 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   const url = `${appOrigin}${route}`;
   if (outputMode.emitReadyEvent) console.log(formatFrontendReadyEvent({ url, route, ready: true, owned: children.length > 0 }));
   onUrl(url);
+  let opened = false;
   if (options.openBrowser) {
-    let opened = false;
     try { opened = await open(url, { wsl: host.wsl, platform: process.platform, env }); }
     catch { opened = false; }
-    console.log(formatLaunchAccess({ url, opened, env }));
   }
+  console.log(formatLaunchAccess({ url, opened, env, browserRequested: options.openBrowser }));
   const unexpected = Promise.race(children.map((child) => child.exit.then((result) => ({ child, result }))))
     .then(async (event) => {
       if (event.child.label === 'setup controller' && event.result.code === 0 && event.result.signal === null) {

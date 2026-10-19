@@ -48,25 +48,21 @@ export function formatRemoteAccessGuidance(url) {
   ].join('\n');
 }
 
-export function formatLaunchAccess({ url, opened, env = {} }) {
-  if (opened) return `SpeechCraft asked this desktop to open ${url}.`;
+export function formatLaunchAccess({ url, opened, env = {}, browserRequested = true }) {
+  if (opened) {
+    return `SpeechCraft asked this desktop to open ${url}. That only means the opener started; it does not prove a window appeared.`;
+  }
   const remote = Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY);
   const headless = !env.DISPLAY && !env.WAYLAND_DISPLAY;
+  if (!browserRequested) {
+    const lead = `SpeechCraft did not open a browser (--no-browser). The page is ${url} on this machine (127.0.0.1 only).`;
+    return remote || headless ? `${lead}\n${formatRemoteAccessGuidance(url)}` : lead;
+  }
+  if (!remote && !headless) return `SpeechCraft could not open a desktop browser. Open ${url} on this machine.`;
   const lead = remote
     ? 'This is an SSH session, so SpeechCraft did not open a browser on the server.'
-    : headless
-      ? 'No display was found, so SpeechCraft did not open a browser here.'
-      : 'SpeechCraft could not open a desktop browser.';
+    : 'No display was found, so SpeechCraft did not open a browser here.';
   return `${lead}\n${formatRemoteAccessGuidance(url)}`;
-}
-
-export function assertLauncherLogPath(dataDirectory, logFile) {
-  const root = fs.realpathSync(dataDirectory);
-  const resolved = path.resolve(logFile);
-  if (path.basename(resolved) !== 'launcher.log') throw new Error('Unexpected SpeechCraft log name.');
-  const parent = fs.realpathSync(path.dirname(resolved));
-  if (parent !== root) throw new Error('SpeechCraft log must stay inside the data directory.');
-  return resolved;
 }
 
 export function createLauncherLog(directory, { limit = LAUNCHER_LOG_LIMIT_BYTES } = {}) {
@@ -139,47 +135,79 @@ function readSecretFile(file) {
   return null;
 }
 
-export async function runLauncherLogHelper() {
-  const dataDirectory = process.env.SPEECHCRAFT_LAUNCHER_DATA_DIR || '';
-  const requestedLog = process.env.SPEECHCRAFT_LAUNCHER_LOG_FILE || '';
-  const logFile = assertLauncherLogPath(dataDirectory, requestedLog);
-  const verbose = process.env.SPEECHCRAFT_LAUNCHER_LOG_VERBOSE === '1';
-  const log = createLauncherLog(path.dirname(logFile));
-  let cached = { at: 0, secrets: [] };
-  const secretsNow = () => {
-    const now = Date.now();
-    if (now - cached.at < 200) return cached.secrets;
-    const secrets = ['bootstrap.token', 'frontend.identity']
-      .map((name) => readSecretFile(path.join(dataDirectory, name)))
-      .filter(Boolean);
-    cached = { at: now, secrets };
-    return secrets;
+function writeTerminalLine(writeTerminal, text) {
+  try { writeTerminal(text); }
+  catch (error) { if (error?.code !== 'EPIPE') { /* a closed terminal must not stop the services */ } }
+}
+
+// The launcher reads service pipes itself. A separate logger process used to
+// own those pipes; if it died, the services received EPIPE and could exit.
+export function createLaunchLogSession(directory, {
+  verbose = false,
+  limit = LAUNCHER_LOG_LIMIT_BYTES,
+  openLog = () => createLauncherLog(directory, { limit }),
+  writeTerminal = (text) => { process.stderr.write(text); },
+} = {}) {
+  let log = null;
+  let fileEnabled = false;
+  let warning = null;
+  try {
+    log = openLog();
+    fileEnabled = true;
+  } catch (error) {
+    warning = error?.message || 'log file could not be opened';
+    writeTerminalLine(writeTerminal, `SpeechCraft: could not open the detailed log (${warning}). Startup is continuing.\n`);
+  }
+  const secretsNow = () => ['bootstrap.token', 'frontend.identity']
+    .map((name) => readSecretFile(path.join(directory, name)))
+    .filter(Boolean);
+  const disableFile = (error) => {
+    if (!fileEnabled) return;
+    fileEnabled = false;
+    warning = error?.code || error?.message || 'log write failed';
+    try { log?.close(); } catch { /* the failed log is already unusable */ }
+    log = null;
+    writeTerminalLine(writeTerminal, `SpeechCraft: stopped writing the detailed log (${warning}). Startup is continuing.\n`);
   };
-  const emit = (line) => {
-    const safe = redactLaunchText(line, secretsNow()).slice(0, 4000);
-    const action = classifyChildStreamLine('stdout', safe);
+  const emit = (stream, line) => {
+    const safe = redactLaunchText(String(line).slice(0, 8000), secretsNow()).slice(0, 4000);
+    const action = classifyChildStreamLine(stream, safe);
     if (action === 'drop') return;
-    log.write(safe);
-    if (action === 'show' || verbose) {
-      try { process.stdout.write(`${safe}\n`); }
-      catch (error) { if (error?.code !== 'EPIPE') throw error; }
+    if (fileEnabled) {
+      try { log.write(safe); }
+      catch (error) { disableFile(error); }
     }
+    if (action === 'show' || verbose) writeTerminalLine(writeTerminal, `${safe}\n`);
   };
-  process.stdout.on('error', (error) => { if (error.code !== 'EPIPE') throw error; });
-  process.stdin.setEncoding('utf8');
-  let buffer = '';
-  process.stdin.on('data', (chunk) => {
-    buffer += chunk;
-    if (buffer.length > 1024 * 1024) buffer = buffer.slice(-8192);
-    const parts = buffer.split('\n');
-    buffer = parts.pop() ?? '';
-    for (const part of parts) emit(part);
-  });
-  await new Promise((resolve) => {
-    process.stdin.on('end', () => {
-      if (buffer) emit(buffer);
-      resolve();
-    });
-  });
-  log.close();
+  const attach = (stream, readable) => {
+    if (!readable) return;
+    readable.setEncoding('utf8');
+    let buffer = '';
+    const takeLines = () => {
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        emit(stream, buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf('\n');
+      }
+      if (buffer.length > 1024 * 1024) {
+        emit(stream, '[SpeechCraft truncated a long service line]');
+        buffer = '';
+      }
+    };
+    readable.on('data', (chunk) => { buffer += chunk; takeLines(); });
+    readable.on('end', () => { if (buffer) emit(stream, buffer); buffer = ''; });
+    readable.on('error', () => {});
+  };
+  return {
+    path: log?.path || path.join(directory, 'launcher.log'),
+    fileEnabled,
+    get warning() { return warning; },
+    attach,
+    close() {
+      fileEnabled = false;
+      try { log?.close(); } catch { /* closing a failed log is not a startup failure */ }
+      log = null;
+    },
+  };
 }

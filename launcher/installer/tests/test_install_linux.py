@@ -103,6 +103,17 @@ class InstallerTransactionTests(unittest.TestCase):
         self.assertEqual(self.current().resolve().name, "speechcraft-0.2.0-linux-x86_64")
         self.assertTrue((self.home / ".local/share/speechcraft/app/releases/speechcraft-0.1.0-linux-x86_64").is_dir())
 
+    def test_reinstall_preserves_user_data(self):
+        archive = self.make_archive("0.1.0")
+        self.install(archive)
+        data = self.home / ".local/share/speechcraft/data"
+        data.mkdir(parents=True)
+        marker = data / "keep.txt"
+        marker.write_text("user-data", encoding="utf8")
+        self.install(archive)
+        self.assertEqual(marker.read_text(encoding="utf8"), "user-data")
+        self.assertEqual(self.current().resolve().name, "speechcraft-0.1.0-linux-x86_64")
+
     def test_unrelated_command_collision_does_not_change_current_pointer(self):
         archive = self.make_archive()
         self.install(archive)
