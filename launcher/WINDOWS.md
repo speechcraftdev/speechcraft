@@ -56,7 +56,7 @@ An optional data directory must already be a Linux path, for example `--data-dir
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1 -Uninstall
 ```
 
-This removes `speechcraft.exe` and its user PATH entry. It does not unregister Ubuntu and does not delete models, projects, or application data.
+This removes `speechcraft.exe` and its user PATH entry. It does not unregister Ubuntu and does not delete models, projects, or application data. The Linux application inside Ubuntu is a separate install. From an Ubuntu shell, `speechcraft uninstall` removes that per-user Linux application; that command is not part of this Windows switch and was not verified here.
 
 ## Development build limits
 

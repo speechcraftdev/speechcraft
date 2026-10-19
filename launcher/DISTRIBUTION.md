@@ -107,12 +107,4 @@ The Linux command installs per-user under `~/.local/share/speechcraft/app` and r
 
 After installation, run `speechcraft`, open the local `/setup` page, and follow its runtime preparation flow. Model downloads and gated Hugging Face authorization happen there; the bootstrap never accepts model terms or downloads models. Use `speechcraft status` and `speechcraft stop` to inspect and stop the local services.
 
-To uninstall while preserving all user data, stop SpeechCraft, remove only the versioned application and command registration, and keep `~/.local/share/speechcraft` data intact. The supported manual sequence is:
-
-```sh
-speechcraft stop
-rm -rf -- "$HOME/.local/share/speechcraft/app"
-rm -f -- "$HOME/.local/bin/speechcraft"
-```
-
-This uninstall command assumes the command path is the installer-managed SpeechCraft wrapper; inspect it first if it was replaced or customized. To remove user data as well, do that separately and only after making any backups you need.
+To uninstall while preserving user data, run `speechcraft uninstall` from any directory. It stops owned services through the authenticated lifecycle, then removes the verified per-user command and `~/.local/share/speechcraft/app`. It leaves `data`, `setup-controller`, and `models` in place. Add `--yes` when input is not a terminal. `--purge` is a separate confirmation and only deletes those three directories when each one is a real user-owned directory inside `~/.local/share/speechcraft`. The command is Linux-only; macOS and Windows uninstall are not implemented. A source checkout is not an installation and is not removed.

@@ -191,6 +191,10 @@ If your backend is not on the default port:
 SMOKE_BACKEND_BASE_URL=http://127.0.0.1:8000 make smoke-backend
 ```
 
+## Packaged Linux command
+
+The per-user Linux installer always uses `~/.local/share/speechcraft/app` and `~/.local/bin/speechcraft`. It does not create a `speechcraft` directory in the current working directory. `speechcraft uninstall` removes that application installation and keeps user data unless `--purge` is confirmed. A source checkout used with `make dev-backend` is separate and is not removed. macOS and Windows do not implement this uninstall command yet. See `launcher/README.md`.
+
 ## Local Runtime State
 
 Expected local files/directories:
