@@ -127,7 +127,7 @@ if (!isMain) {
   fs.mkdirSync(appRoot, { recursive: true });
   const archive = path.join(work, 'source.tar');
   const archiveFd = fs.openSync(archive, 'w');
-  const exported = spawnSync('git', ['archive', '--format=tar', sourceRevisionArg, '--', 'bin', 'frontend', 'launcher', 'setup-controller/src', 'setup-controller/resources', 'backend/app', 'backend/pyproject.toml', 'backend/uv.lock', 'workers/dataset', 'packages/model_manager', 'LICENSE'], { cwd: repositoryRoot, shell: false, stdio: ['ignore', archiveFd, 'inherit'] });
+  const exported = spawnSync('git', ['archive', '--format=tar', sourceRevisionArg, '--', 'bin', 'frontend', 'launcher', 'setup-controller/src', 'setup-controller/resources', 'setup-controller/package.json', 'backend/app', 'backend/pyproject.toml', 'backend/uv.lock', 'workers/dataset', 'packages/model_manager', 'LICENSE'], { cwd: repositoryRoot, shell: false, stdio: ['ignore', archiveFd, 'inherit'] });
   fs.closeSync(archiveFd);
   if (exported.status !== 0) throw new Error(`Could not export pinned source revision ${sourceRevisionArg}.`);
   const source = path.join(work, 'source');

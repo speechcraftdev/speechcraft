@@ -55,6 +55,8 @@ jobs:
       - name: Run Linux-side platform, installer, archive, and launcher regressions
         run: |
           set -eu
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
           python3 launcher/scripts/verify-macos-locks.py
           python3 -m unittest launcher.installer.tests.test_bootstrap launcher.installer.tests.test_install_linux launcher.installer.tests.test_install_macos launcher.scripts.tests.test_package_archive
           node --test launcher/tests/*.test.*
