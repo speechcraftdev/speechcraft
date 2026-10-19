@@ -87,6 +87,31 @@ test('browser opener selects safe platform-native commands and avoids headless a
   await assert.rejects(openDefaultBrowser('http://example.com', { platform: 'darwin', env: {}, spawnImpl }), /non-SpeechCraft local URL/);
 });
 
+test('WSL browser opener safely falls back to Windows and leaves URL guidance when both openers fail', async () => {
+  const calls = [];
+  const fallbackSpawn = (command, args, options) => {
+    calls.push({ command, args, options });
+    const child = new EventEmitter(); child.unref = () => {};
+    queueMicrotask(() => child.emit(command === 'wslview' ? 'error' : 'spawn', new Error('not found')));
+    return child;
+  };
+  assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/setup', {
+    platform: 'linux', wsl: true, env: {}, spawnImpl: fallbackSpawn,
+  }), true);
+  assert.deepEqual(calls.map(({ command }) => command), ['wslview', 'cmd.exe']);
+  assert.deepEqual(calls[1].args, ['/c', 'start', '', 'http://127.0.0.1:3002/setup']);
+  assert.equal(calls[1].options.shell, false);
+  assert.equal(calls[1].options.detached, true);
+
+  assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/login', {
+    platform: 'linux', wsl: true, env: {}, spawnImpl: (command) => {
+      const child = new EventEmitter(); child.unref = () => {};
+      queueMicrotask(() => child.emit('error', new Error(`${command} missing`)));
+      return child;
+    },
+  }), false);
+});
+
 test('WSL launch context ignores Windows cache overrides and keeps a native data directory', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-launch-context-'));
   const mounts = `1 1 0:1 / ${root.replaceAll(' ', '\\040')} rw - ext4 /dev/sda rw\n2 1 0:2 / /mnt/c rw - 9p drvfs rw`;
