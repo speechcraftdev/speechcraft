@@ -42,6 +42,19 @@ def fail(message):
     raise SystemExit(f"speechcraft installer: {message}")
 
 
+def note(message):
+    print(f"SpeechCraft installer: {message}", flush=True)
+
+
+def progress_checkpoints(total):
+    if not isinstance(total, int) or total < 1:
+        return ()
+    half = total // 2
+    if 0 < half < total:
+        return (half, total)
+    return (total,)
+
+
 def digest_file(path):
     digest = hashlib.sha256()
     with open(path, "rb") as stream:
@@ -106,6 +119,7 @@ def main(archive_arg):
     expected = checksum.read_text("ascii").split()[0]
     if len(expected) != 64 or digest_file(archive) != expected:
         fail("archive SHA-256 verification failed")
+    note("archive SHA-256 verified")
     release = json.loads(release_file.read_text("utf8"))
     if release.get("schema_version") != 1 or release.get("archive_sha256") != expected \
             or release.get("archive_size_bytes") != archive.stat().st_size or release.get("archive") != archive.name \
@@ -152,6 +166,10 @@ def main(archive_arg):
             members = tar.getmembers()
             if not members or len(members) > 10_000 or sum(max(0, member.size) for member in members) > 1024 * 1024 * 1024:
                 fail("archive is empty or exceeds the installation size/member limits")
+            file_total = sum(1 for member in members if member.isfile())
+            note(f"extracting {archive.name} ({file_total} files)")
+            extracted_files = 0
+            extract_marks = set(progress_checkpoints(file_total))
             top = None
             extracted = {}
             for member in members:
@@ -172,6 +190,9 @@ def main(archive_arg):
                         shutil.copyfileobj(source, output)
                     os.chmod(target, 0o755 if member.mode & 0o111 else 0o644)
                     extracted["/".join(rel.parts[1:])] = target
+                    extracted_files += 1
+                    if extracted_files in extract_marks:
+                        note(f"extracted {extracted_files} of {file_total} files")
                 else:
                     target.mkdir(parents=True, exist_ok=True)
             app_root = stage / top
@@ -195,11 +216,18 @@ def main(archive_arg):
             actual_names = set(extracted) - {"application-release-manifest.json"}
             if actual_names != expected_names:
                 fail("archive file inventory differs from the release manifest")
+            total_records = len(records)
+            note(f"verifying {total_records} packaged files")
+            verified_files = 0
+            verify_marks = set(progress_checkpoints(total_records)) - {total_records}
             for record in records:
                 rel = safe_relative(record["path"])
                 item = app_root.joinpath(*rel.parts)
                 if not item.is_file() or item.is_symlink() or item.stat().st_size != record.get("size_bytes") or digest_file(item) != record.get("sha256"):
                     fail(f"release file verification failed: {record['path']}")
+                verified_files += 1
+                if verified_files in verify_marks:
+                    note(f"verified {verified_files} of {total_records} packaged files")
             runtime_inventory = manifest.get("runtime_inventory")
             declared_runtime = runtime_inventory.get("required_files") if isinstance(runtime_inventory, dict) else None
             if runtime_inventory.get("status") != "complete" or not isinstance(declared_runtime, list):
@@ -231,6 +259,8 @@ def main(archive_arg):
                 fail("bundled Node executable could not be started")
             if version_result.stdout.strip() != f"v{manifest['node']['version']}":
                 fail("bundled Node version does not match the release manifest")
+            note(f"bundled Node.js {manifest['node']['version']} matches the release")
+            note(f"verified {verified_files} of {total_records} packaged files")
             release_name = f"{manifest['application'].lower()}-{version}-linux-x86_64"
             destination = releases / release_name
             if destination.exists():
@@ -248,6 +278,7 @@ def main(archive_arg):
                 stage = None
             # Release contents are immutable at runtime. Publish the new
             # versioned directory first, but do not activate it yet.
+            note(f"setting read-only permissions on {release_name}")
             for root, dirs, files in os.walk(destination, topdown=False, followlinks=False):
                 for name in files:
                     item = pathlib.Path(root) / name
@@ -262,6 +293,7 @@ def main(archive_arg):
                 inspect_command(command, app_base)
             marker = "# SpeechCraft per-user command wrapper"
             script = f"#!/bin/sh\n{marker}\nexec \"{app_base}/current/bin/speechcraft\" \"$@\"\n"
+            note("activating the launcher command")
             temp_command = bin_dir / f".speechcraft-{os.getpid()}"
             current_tmp = app_base / f".current-{os.getpid()}"
             activated_command = False

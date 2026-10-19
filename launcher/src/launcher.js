@@ -10,6 +10,7 @@ import { defaultDataDirectory } from '../../setup-controller/src/paths.js';
 import { ownedProcessIdentity, terminateRecoveredProcess } from '../../setup-controller/src/bootstrap.js';
 import { assertCurrentWslGuest, assertExistingManagedFiles, freeBytes, hostEnvironment, managedStorageLocations, probeLoopback, probeProcessGroup, sanitizeWslProcessEnvironment, validateManagedStorage, validateManagedStorageTargets, WSL_LAUNCH_FREE_BYTES } from '../../setup-controller/src/platform.js';
 import { selectRuntimeProfile } from '../../setup-controller/src/runtime-plan.js';
+import { createLaunchLogSession, formatLaunchAccess, launchOutputMode } from './launch-log.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const FRONTEND_PORT = 3002;
@@ -29,7 +30,7 @@ function bounded(promise, timeoutMs, onTimeout) {
 }
 
 export function parseArgs(args) {
-  const result = { command: 'start', dataDirectory: null, development: false, simulated: false, openBrowser: true, json: false };
+  const result = { command: 'start', dataDirectory: null, development: false, simulated: false, openBrowser: true, json: false, verbose: false };
   let index = 0;
   if (['status', 'stop'].includes(args[0])) result.command = args[index++];
   for (; index < args.length; index += 1) {
@@ -38,6 +39,7 @@ export function parseArgs(args) {
     else if (arg === '--development') result.development = true;
     else if (arg === '--simulated') result.simulated = true;
     else if (arg === '--no-browser') result.openBrowser = false;
+    else if (arg === '--verbose' && result.command === 'start') result.verbose = true;
     else if (arg === '--json' && result.command === 'status') result.json = true;
     else if (arg === '--prove-frontend' && args[index + 1] && /^[A-Za-z0-9_-]{16,128}$/.test(args[index + 1])) {
       result.proveFrontend = args[++index];
@@ -568,11 +570,15 @@ async function waitForRestoration(session, timeoutMs = STARTUP_TIMEOUT_MS, signa
     warning: 'Managed service restoration is still pending. SpeechCraft has not confirmed processing readiness; open /setup to inspect status.' };
 }
 
-function launch(executable, args, { cwd, env, label }) {
+function launch(executable, args, { cwd, env, label, logSession }) {
   const nonce = crypto.randomBytes(24).toString('hex');
   const childEnv = { ...env, SPEECHCRAFT_OWNED_PROCESS_NONCE: nonce };
   const child = spawn(executable, args, { cwd, env: childEnv, shell: false, detached: true,
-    stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
+    stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  child.stdout?.on('error', () => {});
+  child.stderr?.on('error', () => {});
+  logSession?.attach('stdout', child.stdout);
+  logSession?.attach('stderr', child.stderr);
   const ready = new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('spawn', resolve);
@@ -649,7 +655,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   onUrl = (url) => console.log(`SpeechCraft is available at ${url}`), open = openDefaultBrowser } = {}) {
   const options = parseArgs(args);
   if (options.help) {
-    console.log('Usage: speechcraft [--data-dir PATH] [--development] [--simulated] [--no-browser]\n       speechcraft status [--json] [--data-dir PATH]\n       speechcraft stop [--data-dir PATH]');
+    console.log('Usage: speechcraft [--data-dir PATH] [--development] [--simulated] [--no-browser] [--verbose]\n       speechcraft status [--json] [--data-dir PATH]\n       speechcraft stop [--data-dir PATH]\nSPEECHCRAFT_LOG_LEVEL=verbose prints service output. Services stay on 127.0.0.1.');
     return { help: true };
   }
   if (options.proveFrontend) {
@@ -751,6 +757,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   const children = [];
   let shuttingDown = false;
   let shutdownPromise;
+  let serviceLog = null;
   const shutdown = () => {
     if (shutdownPromise) return shutdownPromise;
     shuttingDown = true;
@@ -760,24 +767,34 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
       // controller reused from a prior launcher must remain owned after this
       // frontend-only launch exits.
       persistLauncherOwnership(dataDirectory, []);
+      try { serviceLog?.close(); } catch { /* a log-file failure must not change shutdown */ }
     })();
     return shutdownPromise;
   };
 
   try {
+  const outputMode = launchOutputMode({ verbose: options.verbose, env: launchEnv, stdoutIsTTY: process.stdout.isTTY === true });
+  serviceLog = createLaunchLogSession(dataDirectory, { verbose: outputMode.verbose });
+  console.log(`SpeechCraft: starting on ${host.os} ${host.architecture}; services stay on ${LOOPBACK}`);
+  console.log(serviceLog.fileEnabled
+    ? `SpeechCraft: detailed log: ${serviceLog.path}`
+    : 'SpeechCraft: detailed log unavailable; startup is continuing');
   let controllerHandle = null;
   if (await isPortAvailable(CONTROLLER_PORT)) {
+    console.log(`SpeechCraft: starting the setup controller at http://${LOOPBACK}:${CONTROLLER_PORT}`);
     const controllerEntry = path.join(ROOT, 'setup-controller/src/server.js');
     controllerHandle = launch(process.execPath, [controllerEntry, '--data-dir', dataDirectory,
       '--port', String(CONTROLLER_PORT), '--mode', options.simulated ? 'simulated' : 'runtime'],
-    { cwd: ROOT, env: common, label: 'setup controller' });
+    { cwd: ROOT, env: common, label: 'setup controller', logSession: serviceLog });
     children.push(controllerHandle);
     await controllerHandle.ready;
     controllerHandle.identityValue = await controllerHandle.identity;
     if (!controllerHandle.identityValue) throw new Error('Could not establish setup controller process identity.');
     persistLauncherOwnership(dataDirectory, children);
     await waitFor(`${controllerOrigin}/setup-api/health`, async (response) => response.ok && (await response.json()).status === 'ok', STARTUP_TIMEOUT_MS, signal, controllerHandle);
+    console.log('SpeechCraft: setup controller is healthy');
   } else {
+    console.log(`SpeechCraft: using the setup controller already listening at http://${LOOPBACK}:${CONTROLLER_PORT}`);
     // Reuse only a controller that proves possession of this data directory's
     // private bootstrap capability; never infer ownership from its PID/port.
     try { await fetch(`${controllerOrigin}/setup-api/health`, { signal: AbortSignal.timeout(1_000) }).then((r) => { if (!r.ok) throw new Error(); }); }
@@ -791,6 +808,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   const frontendHealth = `${appOrigin}/api/speechcraft-launcher/health`;
   let frontendHandle = null;
   if (await isPortAvailable(FRONTEND_PORT)) {
+    console.log(`SpeechCraft: starting the frontend at http://${LOOPBACK}:${FRONTEND_PORT}`);
     const frontendArgs = preparedFrontend.command === 'standalone'
       ? [preparedFrontend.nextEntry]
       : [preparedFrontend.nextEntry, preparedFrontend.command, '--hostname', LOOPBACK, '-p', String(FRONTEND_PORT)];
@@ -801,7 +819,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
         SPEECHCRAFT_SETUP_BOOTSTRAP_FILE: path.join(dataDirectory, 'bootstrap.token'),
         SPEECHCRAFT_SETUP_ALLOWED_APP_ORIGINS: `${appOrigin},http://localhost:${FRONTEND_PORT}`,
         SPEECHCRAFT_LAUNCHER_INSTALL_ID: installId,
-        SPEECHCRAFT_LAUNCHER_PRIVATE_IDENTITY: frontendIdentity } });
+        SPEECHCRAFT_LAUNCHER_PRIVATE_IDENTITY: frontendIdentity }, logSession: serviceLog });
     children.push(frontendHandle);
     await frontendHandle.ready;
     frontendHandle.identityValue = await frontendHandle.identity;
@@ -809,11 +827,17 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     persistLauncherOwnership(dataDirectory, children);
     await waitFor(frontendHealth, async (response) => response.ok, STARTUP_TIMEOUT_MS, signal, frontendHandle);
     await verifyFrontendOwnership(appOrigin, frontendIdentity, frontendHandle);
+    console.log('SpeechCraft: frontend is healthy');
   } else {
+    console.log(`SpeechCraft: checking the frontend already listening at http://${LOOPBACK}:${FRONTEND_PORT}`);
     try { await verifyFrontendOwnership(appOrigin, frontendIdentity, null); }
     catch { throw new Error('Frontend port 3002 is occupied by a different or unverified application; SpeechCraft will not stop it.'); }
+    console.log('SpeechCraft: frontend identity matches this installation');
   }
   const route = chooseDestination(status.onboarding);
+  console.log(route === '/setup'
+    ? 'SpeechCraft: initial setup is incomplete'
+    : 'SpeechCraft: initial setup is already complete');
   // An already onboarded installation gets an opportunity to restore its
   // managed backend. If it remains unhealthy, the normal UI still opens and
   // its repair notice points to /setup; the launcher never starts a download.
@@ -826,12 +850,14 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     if (!restoration.ready) console.error(`SpeechCraft repair required: ${restoration.warning}`);
   }
   const url = `${appOrigin}${route}`;
-  console.log(formatFrontendReadyEvent({ url, route, ready: true, owned: children.length > 0 }));
+  if (outputMode.emitReadyEvent) console.log(formatFrontendReadyEvent({ url, route, ready: true, owned: children.length > 0 }));
   onUrl(url);
+  let opened = false;
   if (options.openBrowser) {
-    try { if (!await open(url, { wsl: host.wsl, platform: process.platform, env })) console.log(`No local browser was opened. Open ${url} locally or through an SSH tunnel, for example: ssh -N -L 3002:127.0.0.1:3002 user@cozytent-host`); }
-    catch { console.log(`Could not open a browser. Open ${url} manually.`); }
+    try { opened = await open(url, { wsl: host.wsl, platform: process.platform, env }); }
+    catch { opened = false; }
   }
+  console.log(formatLaunchAccess({ url, opened, env, browserRequested: options.openBrowser }));
   const unexpected = Promise.race(children.map((child) => child.exit.then((result) => ({ child, result }))))
     .then(async (event) => {
       if (event.child.label === 'setup controller' && event.result.code === 0 && event.result.signal === null) {

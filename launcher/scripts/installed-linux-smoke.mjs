@@ -47,7 +47,11 @@ let fakeBackend;
 let output = [];
 try {
   run('/usr/bin/python3', [installer, archive]);
-  run('/usr/bin/python3', [installer, archive]); // Repeat installation must be idempotent.
+  const preserved = path.join(home, '.local/share/speechcraft/data/keep.txt');
+  fs.mkdirSync(path.dirname(preserved), { recursive: true });
+  fs.writeFileSync(preserved, 'user-data');
+  run('/usr/bin/python3', [installer, archive]); // Repeat installation must be idempotent and keep user data.
+  assert.equal(fs.readFileSync(preserved, 'utf8'), 'user-data');
   const command = path.join(home, '.local/bin/speechcraft');
   assert.match(fs.readFileSync(path.join(home, '.profile'), 'utf8'), /SpeechCraft user command PATH/);
   const loginShell = spawnSync('/bin/bash', ['-lc', 'command -v speechcraft'], { env, cwd: base, encoding: 'utf8', shell: false });
@@ -70,6 +74,9 @@ try {
   });
   await new Promise((resolve, reject) => { fakeBackend.once('error', reject); fakeBackend.listen(8010, '127.0.0.1', resolve); });
   const runtimeData = path.join(base, 'Runtime Mode Persistent Data');
+  delete env.DISPLAY;
+  delete env.WAYLAND_DISPLAY;
+  env.SSH_CONNECTION = '203.0.113.5 54000 192.0.2.10 22';
   app = start(runtimeData, false);
   output = [];
   app.stdout.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
@@ -77,7 +84,18 @@ try {
   await waitFor('http://127.0.0.1:3002/setup');
   const urlDeadline = Date.now() + 2_000;
   while (!output.join('').includes('SpeechCraft is available at') && Date.now() < urlDeadline) await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.match(output.join(''), /SpeechCraft is available at http:\/\/127\.0\.0\.1:3002\/setup/);
+  const runtimeText = output.join('');
+  assert.match(runtimeText, /SpeechCraft is available at http:\/\/127\.0\.0\.1:3002\/setup/);
+  assert.match(runtimeText, /SPEECHCRAFT_READY \{"event":"frontend_ready","protocol":1,"url":"http:\/\/127\.0\.0\.1:3002\/setup","route":"\/setup","ready":true/);
+  assert.match(runtimeText, /--no-browser/);
+  assert.match(runtimeText, /ssh -N -L 3002:127\.0\.0\.1:3002 cozytent/);
+  assert.match(runtimeText, /example SSH alias/);
+  assert.doesNotMatch(runtimeText, /asked this desktop to open|browser window is open/);
+  const runtimeLogPath = path.join(runtimeData, 'launcher.log');
+  assert.equal(fs.statSync(runtimeLogPath).mode & 0o777, 0o600);
+  const runtimeLog = fs.readFileSync(runtimeLogPath, 'utf8');
+  assert.equal(runtimeLog.includes(fs.readFileSync(path.join(runtimeData, 'bootstrap.token'), 'utf8').trim()), false);
+  assert.equal(runtimeLog.includes(fs.readFileSync(path.join(runtimeData, 'frontend.identity'), 'utf8').trim()), false);
   const runtimeSession = await fetch('http://127.0.0.1:3002/setup-api/session', { method: 'POST', headers: {
     origin: 'http://127.0.0.1:3002', 'content-type': 'application/json',
   }, body: '{}' });
@@ -90,6 +108,10 @@ try {
   if (app.exitCode === null && app.signalCode === null) await runtimeExit;
   assert.doesNotMatch(output.join(''), /exited unexpectedly/, 'authenticated stop is not surfaced as an application crash');
   app = null;
+  delete env.SSH_CONNECTION;
+  delete env.SSH_CLIENT;
+  delete env.SSH_TTY;
+  env.DISPLAY = ':99';
   app = start(data, true, false);
   output = [];
   app.stdout.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
@@ -98,7 +120,11 @@ try {
   const browserDeadline = Date.now() + 2_000;
   while (!fs.existsSync(browserLog) && Date.now() < browserDeadline) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(fs.readFileSync(browserLog, 'utf8').trim(), 'http://127.0.0.1:3002/setup',
-    'a fresh installed launch opens the first-run setup page through the platform browser opener');
+    'the installed launch invokes the stub opener with the setup URL; this does not start a GUI');
+  const browserText = output.join('');
+  assert.match(browserText, /asked this desktop to open/);
+  assert.match(browserText, /does not prove a window appeared/);
+  assert.doesNotMatch(browserText, /cozytent/);
   for (const route of ['/login', '/lab']) assert.equal((await fetch(`http://127.0.0.1:3002${route}`)).status, 200);
   const sessionResponse = await fetch('http://127.0.0.1:3002/setup-api/session', { method: 'POST', headers: {
     origin: 'http://127.0.0.1:3002', 'content-type': 'application/json',

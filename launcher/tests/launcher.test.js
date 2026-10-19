@@ -4,8 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { assertLoopbackAddress, chooseDestination, formatFrontendReadyEvent, openDefaultBrowser, parseArgs, parseFrontendReadyEvent, readOrCreateFrontendIdentity, resolveLaunchContext, stopOwned, stopOwnedRecord, verifyFrontendOwnership } from '../src/launcher.js';
-import { EventEmitter } from 'node:events';
+import { classifyChildStreamLine, createLauncherLog, createLaunchLogSession, formatLaunchAccess, formatRemoteAccessGuidance, isRoutineChildStdout, launchOutputMode, redactLaunchText } from '../src/launch-log.js';
+import { PassThrough } from 'node:stream';
+import { EventEmitter, once } from 'node:events';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { ownedProcessIdentity } from '../../setup-controller/src/bootstrap.js';
 import { persistLauncherOwnership } from '../src/launcher.js';
 import { REQUIRED_RUNTIME_FILES, validateRuntimeInventory } from '../src/package-inventory.js';
@@ -31,13 +34,15 @@ test('frontend readiness is a versioned loopback event and never carries secrets
 
 test('launcher arguments are explicit and reject unknown options', () => {
   assert.deepEqual(parseArgs(['--development', '--simulated', '--no-browser', '--data-dir', '/tmp/sc-data']), {
-    command: 'start', dataDirectory: '/tmp/sc-data', development: true, simulated: true, openBrowser: false, json: false,
+    command: 'start', dataDirectory: '/tmp/sc-data', development: true, simulated: true, openBrowser: false, json: false, verbose: false,
   });
   assert.deepEqual(parseArgs(['status', '--json', '--data-dir', '/tmp/sc-data']), {
-    command: 'status', dataDirectory: '/tmp/sc-data', development: false, simulated: false, openBrowser: true, json: true,
+    command: 'status', dataDirectory: '/tmp/sc-data', development: false, simulated: false, openBrowser: true, json: true, verbose: false,
   });
+  assert.equal(parseArgs(['--verbose']).verbose, true);
   assert.equal(parseArgs(['stop']).command, 'stop');
   assert.throws(() => parseArgs(['--bind', '0.0.0.0']), /Unknown launcher option/);
+  assert.throws(() => parseArgs(['status', '--verbose']), /Unknown launcher option/);
   assert.deepEqual(parseArgs(['--help']).help, true);
 });
 
@@ -257,3 +262,202 @@ test('persisted process record with uncertain identity is not signalled', async 
     await closed;
   }
 });
+
+test('launch logs stay private, bounded, and free of secret values', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-launch-log-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-launch-log-outside-'));
+  const secret = 'bootstrap-secret-value';
+  try {
+    fs.chmodSync(directory, 0o700);
+    fs.writeFileSync(path.join(directory, 'launcher.log'), 'x'.repeat(50), { mode: 0o644 });
+    const log = createLauncherLog(directory, { limit: 80 });
+    log.write('a'.repeat(40));
+    log.write('y'.repeat(40));
+    log.write('z'.repeat(40));
+    log.close();
+    const current = fs.readFileSync(log.path, 'utf8');
+    const previous = fs.readFileSync(`${log.path}.1`, 'utf8');
+    assert.equal(fs.statSync(log.path).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(`${log.path}.1`).mode & 0o777, 0o600);
+    assert.ok(fs.statSync(log.path).size <= 80);
+    assert.ok(fs.statSync(`${log.path}.1`).size <= 80);
+    assert.equal(fs.readdirSync(directory).filter((name) => name.startsWith('launcher.log')).length, 2);
+    fs.symlinkSync(path.join(outside, 'elsewhere.log'), path.join(directory, 'linked.log'));
+    fs.writeFileSync(path.join(outside, 'elsewhere.log'), 'keep');
+    fs.rmSync(log.path, { force: true });
+    fs.symlinkSync(path.join(outside, 'elsewhere.log'), log.path);
+    assert.throws(() => createLauncherLog(directory, { limit: 80 }), /regular file/);
+    assert.equal(fs.readFileSync(path.join(outside, 'elsewhere.log'), 'utf8'), 'keep');
+    assert.equal(redactLaunchText(`failed token=${secret} Bearer ${secret}`, [secret]).includes(secret), false);
+    assert.match(redactLaunchText(`failed token=${secret}`, []), /\[redacted\]/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('default launch output hides routine service banners and explains a remote session', () => {
+  assert.equal(isRoutineChildStdout('{"event":"listening","host":"127.0.0.1","port":4317}'), true);
+  assert.equal(isRoutineChildStdout('  ▲ Next.js 15.0.0'), true);
+  assert.equal(isRoutineChildStdout('  - Local: http://127.0.0.1:3002'), true);
+  assert.equal(isRoutineChildStdout('Error: listen EADDRINUSE'), false);
+  assert.equal(classifyChildStreamLine('stdout', '{"event":"listening","port":4317}'), 'log');
+  assert.equal(classifyChildStreamLine('stderr', 'Error: listen EADDRINUSE'), 'show');
+  assert.equal(classifyChildStreamLine('stdout', ''), 'drop');
+  assert.deepEqual(launchOutputMode({ stdoutIsTTY: true }), { verbose: false, emitReadyEvent: false });
+  assert.deepEqual(launchOutputMode({ stdoutIsTTY: false }), { verbose: false, emitReadyEvent: true });
+  assert.equal(launchOutputMode({ verbose: true, stdoutIsTTY: true }).emitReadyEvent, true);
+  assert.equal(launchOutputMode({ env: { SPEECHCRAFT_LOG_LEVEL: 'debug' }, stdoutIsTTY: true }).verbose, true);
+  const guidance = formatLaunchAccess({
+    url: 'http://127.0.0.1:3002/setup',
+    opened: false,
+    env: { SSH_CONNECTION: '1', DISPLAY: '', WAYLAND_DISPLAY: '' },
+  });
+  assert.match(guidance, /did not open a browser/);
+  assert.match(guidance, /ssh -N -L 3002:127\.0\.0\.1:3002 cozytent/);
+  assert.match(guidance, /example SSH alias/);
+  assert.match(guidance, /127\.0\.0\.1 only/);
+  assert.doesNotMatch(guidance, /user@cozytent-host|0\.0\.0\.0|browser was opened on the server/);
+  const opened = formatLaunchAccess({ url: 'http://127.0.0.1:3002/setup', opened: true, env: { DISPLAY: ':0' } });
+  assert.match(opened, /asked this desktop to open/);
+  assert.match(opened, /does not prove a window appeared/);
+  assert.doesNotMatch(opened, /cozytent/);
+  const localFailure = formatLaunchAccess({ url: 'http://127.0.0.1:3002/setup', opened: false, env: { DISPLAY: ':0' } });
+  assert.match(localFailure, /could not open a desktop browser/);
+  assert.doesNotMatch(localFailure, /cozytent|ssh -N/);
+  const skipped = formatLaunchAccess({
+    url: 'http://127.0.0.1:3002/setup', opened: false, browserRequested: false, env: { SSH_CONNECTION: '203.0.113.4 1 127.0.0.1 22' },
+  });
+  assert.match(skipped, /--no-browser/);
+  assert.match(skipped, /example SSH alias/);
+  assert.match(formatRemoteAccessGuidance('http://127.0.0.1:3002/login'), /http:\/\/127\.0\.0\.1:3002\/login/);
+});
+
+test('service logs stay in-process when the log file, pipe, or child fails', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-log-session-'));
+  const secret = 'bootstrap-secret-value';
+  const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
+  try {
+    fs.chmodSync(directory, 0o700);
+    fs.writeFileSync(path.join(directory, 'bootstrap.token'), `${secret}\n`, { mode: 0o600 });
+    const terminal = [];
+    const session = createLaunchLogSession(directory, { writeTerminal: (text) => terminal.push(text) });
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    session.attach('stdout', stdout);
+    session.attach('stderr', stderr);
+    stdout.write('{"event":"listening","host":"127.0.0.1","port":4317}\n');
+    stdout.write('✓ Ready in 1s\n');
+    stderr.write('✓ Ready in 1s\n');
+    stderr.write(`Error: ${secret} leaked token=${secret}\n`);
+    const stdoutEnded = once(stdout, 'end');
+    const stderrEnded = once(stderr, 'end');
+    stdout.write('partial');
+    stdout.end();
+    stderr.end();
+    await Promise.all([stdoutEnded, stderrEnded]);
+    const stored = fs.readFileSync(session.path, 'utf8');
+    const shown = terminal.join('');
+    assert.equal(fs.statSync(session.path).mode & 0o777, 0o600);
+    assert.match(stored, /"event":"listening"/);
+    assert.match(stored, /partial/);
+    assert.doesNotMatch(stored, new RegExp(secret));
+    assert.match(stored, /\[redacted\]/);
+    assert.doesNotMatch(shown, /listening/);
+    assert.doesNotMatch(shown, /stdout-ready/);
+    assert.match(shown, /✓ Ready in 1s/);
+    assert.equal(shown.match(/✓ Ready in 1s/g).length, 1);
+    assert.match(shown, /Error:/);
+    assert.doesNotMatch(shown, new RegExp(secret));
+    session.close();
+
+    const verbose = [];
+    const verboseSession = createLaunchLogSession(directory, { verbose: true, writeTerminal: (text) => verbose.push(text) });
+    const verboseOut = new PassThrough();
+    verboseSession.attach('stdout', verboseOut);
+    const verboseEnded = once(verboseOut, 'end');
+    verboseOut.end('{"event":"listening","port":4317}\n');
+    await verboseEnded;
+    assert.match(verbose.join(''), /listening/);
+    verboseSession.close();
+
+    const blocked = [];
+    const blockedSession = createLaunchLogSession(directory, {
+      openLog() { throw Object.assign(new Error('permission denied'), { code: 'EACCES' }); },
+      writeTerminal: (text) => blocked.push(text),
+    });
+    assert.equal(blockedSession.fileEnabled, false);
+    const blockedErr = new PassThrough();
+    blockedSession.attach('stderr', blockedErr);
+    const blockedEnded = once(blockedErr, 'end');
+    blockedErr.end('Error: still visible\n');
+    await blockedEnded;
+    assert.match(blocked.join(''), /could not open the detailed log/);
+    assert.match(blocked.join(''), /still visible/);
+    blockedSession.close();
+
+    const full = [];
+    let writes = 0;
+    const fullSession = createLaunchLogSession(directory, {
+      openLog: () => ({
+        path: path.join(directory, 'launcher.log'),
+        write() { writes += 1; throw Object.assign(new Error('no space'), { code: 'ENOSPC' }); },
+        close() {},
+      }),
+      writeTerminal: (text) => full.push(text),
+    });
+    const fullErr = new PassThrough();
+    fullSession.attach('stderr', fullErr);
+    const fullEnded = once(fullErr, 'end');
+    fullErr.write('Error: first\n');
+    fullErr.end('Error: second\n');
+    await fullEnded;
+    assert.equal(writes, 1);
+    assert.match(full.join(''), /stopped writing the detailed log \(ENOSPC\)/);
+    assert.match(full.join(''), /Error: first/);
+    assert.match(full.join(''), /Error: second/);
+    fullSession.close();
+
+    const huge = [];
+    const hugeSession = createLaunchLogSession(directory, { writeTerminal: (text) => huge.push(text) });
+    const hugeErr = new PassThrough();
+    hugeSession.attach('stderr', hugeErr);
+    const hugeEnded = once(hugeErr, 'end');
+    hugeErr.write(`${'E'.repeat(2 * 1024 * 1024)}`);
+    hugeErr.end('\nError: after-huge\n');
+    await hugeEnded;
+    const hugeText = huge.join('');
+    assert.match(hugeText, /truncated a long service line/);
+    assert.match(hugeText, /after-huge/);
+    assert.ok(hugeText.length < 64 * 1024);
+    hugeSession.close();
+
+    const crashed = [];
+    const crashSession = createLaunchLogSession(directory, { writeTerminal: (text) => crashed.push(text) });
+    const child = spawn(process.execPath, ['-e', 'console.error("crash-marker"); process.exit(2);'], { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+    crashSession.attach('stdout', child.stdout);
+    crashSession.attach('stderr', child.stderr);
+    const [code] = await onceExit(child);
+    assert.equal(code, 2);
+    assert.match(crashed.join(''), /crash-marker/);
+    crashSession.close();
+
+    const helper = spawn(process.execPath, [cli, '--help'], {
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, SPEECHCRAFT_LAUNCHER_LOG_HELPER: '1' },
+    });
+    let help = '';
+    helper.stdout.setEncoding('utf8').on('data', (chunk) => { help += chunk; });
+    const [helpCode] = await onceExit(helper);
+    assert.equal(helpCode, 0);
+    assert.match(help, /Usage: speechcraft/);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+function onceExit(child) {
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code) => resolve([code]));
+  });
+}
