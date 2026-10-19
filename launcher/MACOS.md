@@ -2,7 +2,9 @@
 
 ## Current Linux-side status
 
-**Native Apple Silicon execution: NOT YET VALIDATED.** No macOS archive has been built or run in this Linux workspace. The new `package-release-candidate.yml` workflow builds the Linux package on Ubuntu and the Mac package on a native Apple Silicon `macos-15` runner, then combines the exact-revision assets and generates one platform-detecting `install.sh`. It uploads a private, expiring workflow artifact; it does not create a GitHub Release or version tag.
+**Native Apple Silicon application acceptance: NOT YET VALIDATED.** A native Apple Silicon CI runner built the Mac package, checked its executable architecture and frontend inventory, and combined it with the Linux package. This verifies packaging only; it did not install or execute SpeechCraft, the backend, or its ML/audio pipeline on macOS. The workflow uploads a private, expiring artifact and does not create a GitHub Release or version tag.
+
+Latest candidate: source commit `fde1860f53122dd7080ac9536c3a9460bc3b8f57`, run [39295050804](https://github.com/speechcraftdev/speechcraft/actions/runs/39295050804), artifact `speechcraft-private-candidate-fde1860f53122dd7080ac9536c3a9460bc3b8f57`. It contains `speechcraft-0.1.1-macos-arm64.tar.gz` (SHA-256 `6bf7a91db555fa272c12341b0a18c385f91ce8912965badac27d8a8122f02d91`) and `speechcraft-0.1.1-linux-x86_64.tar.gz` (SHA-256 `38c65efc27dd5e066240561e2c8f6980502b8ba0e1ccce57c6187acda333069b`), corresponding checksums and release manifests, installer components, and the generated shared `install.sh`. Download it with `gh run download 39295050804 --repo speechcraftdev/speechcraft --name speechcraft-private-candidate-fde1860f53122dd7080ac9536c3a9460bc3b8f57`. No static HTTPS installer URL has been configured or verified.
 
 Start the workflow on the exact feature-branch commit to be tested. Download `speechcraft-private-candidate-<commit>` and retain the workflow URL, full source commit, archive filename, and SHA-256 values. Those values are intentionally not fabricated in this source handoff. The generated bootstrap is bound to both platform archives and the same application version and source revision.
 

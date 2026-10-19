@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - feature/macos-arm64-v1-infrastructure
+    paths-ignore:
+      - launcher/MACOS.md
   workflow_dispatch:
     inputs:
       source_commit:
