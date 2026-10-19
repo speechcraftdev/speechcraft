@@ -81,8 +81,10 @@ case "${MOCK_EFFECTIVE_URL:-}" in
 esac
 """)
         os.chmod(self.mockbin / "curl", 0o755)
-        (self.mockbin / "uname").write_text("#!/bin/sh\nif [ \"$1\" = -s ]; then printf '%s\\n' \"${UNAME_VALUE:-Linux}\"; else printf '%s\\n' \"${UNAME_MACHINE:-x86_64}\"; fi\n")
+        (self.mockbin / "uname").write_text("#!/bin/sh\ncase \"$1\" in -s) printf '%s\\n' \"${UNAME_VALUE:-Linux}\" ;; -m) printf '%s\\n' \"${UNAME_MACHINE:-x86_64}\" ;; -r) printf '%s\\n' \"${UNAME_RELEASE:-7.2.5-linux}\" ;; *) exit 1 ;; esac\n")
         os.chmod(self.mockbin / "uname", 0o755)
+        (self.mockbin / "id").write_text("#!/bin/sh\n[ \"$1\" = -u ] || exit 2\nprintf '%s\\n' \"${MOCK_UID:-1000}\"\n")
+        os.chmod(self.mockbin / "id", 0o755)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -206,6 +208,22 @@ esac
         result = self.run_bootstrap(UNAME_VALUE="Darwin", UNAME_MACHINE="armv7")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsupported platform Darwin/armv7", result.stderr)
+        self.assertFalse(self.curl_log.exists())
+
+    def test_root_and_wsl1_fail_before_any_release_download(self):
+        result = self.run_bootstrap(MOCK_UID="0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('ordinary non-root user, without sudo', result.stderr)
+        self.assertFalse(self.curl_log.exists())
+        result = self.run_bootstrap(UNAME_RELEASE="4.4.0-19041-Microsoft")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('WSL1 is not supported', result.stderr)
+        self.assertFalse(self.curl_log.exists())
+
+    def test_wsl2_unsupported_guest_fails_before_any_release_download(self):
+        result = self.run_bootstrap(UNAME_RELEASE="6.6.87.2-microsoft-standard-WSL2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('WSL2 guest', result.stderr)
         self.assertFalse(self.curl_log.exists())
 
     def test_corrupt_mac_archive_is_rejected_before_mac_installer(self):
@@ -347,7 +365,8 @@ esac
         limited_path.mkdir()
         for name, target in (("python3", os.path.realpath(os.sys.executable)),
                              ("curl", str(self.mockbin / "curl")),
-                             ("uname", str(self.mockbin / "uname"))):
+                             ("uname", str(self.mockbin / "uname")),
+                             ("id", str(self.mockbin / "id"))):
             (limited_path / name).symlink_to(target)
         env = {**os.environ, "HOME": str(self.home), "TMPDIR": str(self.tmpdir),
                "TEST_ASSET_DIR": str(self.assets), "INSTALL_MARKER": str(self.marker),

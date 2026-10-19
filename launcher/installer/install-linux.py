@@ -206,6 +206,8 @@ def restore_command(command, prior):
 def main(archive_arg):
     if sys.platform != "linux" or os.uname().machine not in ("x86_64", "amd64"):
         fail("this archive is only for Linux x86-64")
+    if os.getuid() == 0:
+        fail("run the SpeechCraft installer as your ordinary Linux user, without sudo")
     archive = pathlib.Path(archive_arg).resolve(strict=True)
     checksum = pathlib.Path(str(archive) + ".sha256")
     release_file = pathlib.Path(str(archive) + ".release.json")

@@ -1,65 +1,102 @@
-# SpeechCraft on Windows
+# SpeechCraft on Windows 11 with Ubuntu WSL2
 
-SpeechCraft runs the existing Linux application inside Ubuntu on WSL2. The Windows command is only a dispatcher.
+SpeechCraft runs its existing Linux application inside WSL2. The browser UI is served from Ubuntu and opened in your normal Windows browser. This workflow does not install a native Windows application.
+
+## Requirements
+
+- Windows 11 x86-64 with WSL2 virtualization support enabled.
+- Ubuntu 24.04 LTS (primary) or Ubuntu 22.04 LTS on WSL2.
+- An ordinary, non-root Ubuntu account.
+- At least 1 GiB free before installation; allow substantially more for prepared Python environments and ML models. Model downloads can require many gigabytes.
+- SpeechCraft's application, runtime, model and project files must stay in the Ubuntu Linux filesystem (normally under `/home/<user>`), not `/mnt/c` or another Windows-mounted drive.
+
+## Install WSL2 and Ubuntu
+
+In PowerShell, run the one-time Windows prerequisite:
 
 ```powershell
+wsl --install -d Ubuntu-24.04
+```
+
+Restart Windows if prompted, open Ubuntu from the Start menu, and finish account setup with a normal username. SpeechCraft's installer does not install WSL, change Windows features or configure Windows drivers.
+
+Verify from PowerShell:
+
+```powershell
+wsl --list --verbose
+```
+
+The Ubuntu row must show `VERSION 2`. In Ubuntu, check the guest and user:
+
+```bash
+uname -r
+cat /etc/os-release
+id -u
+```
+
+The kernel should contain `microsoft-standard-WSL2`, `/etc/os-release` should identify Ubuntu 24.04 or 22.04, and `id -u` must not print `0`. Convert an existing WSL1 Ubuntu distribution from PowerShell with `wsl --set-version Ubuntu-24.04 2`.
+
+## Install SpeechCraft
+
+Run this in Ubuntu, using the HTTPS URL for the verified SpeechCraft release candidate:
+
+```bash
+curl -fsSL https://<verified-speechcraft-installer-url>/install.sh | sh
+```
+
+The universal installer selects the pinned Linux x86-64 archive in Ubuntu WSL2. It verifies the release identity and SHA-256 pins before activating the per-user package. `curl`, `python3` 3.9+, `mktemp`, and standard Ubuntu utilities are required. If a prerequisite is missing, install it with Ubuntu's package manager and retry; the installer itself does not use `sudo`.
+
+The installer registers `~/.local/bin` in `~/.profile` only when needed, using a marked, idempotent block. Open a fresh Ubuntu terminal after installation, then run:
+
+```bash
+command -v speechcraft
 speechcraft
 ```
 
-That starts or reuses the Linux application and opens `http://127.0.0.1:3002` in the default Windows browser. The first launch uses `/setup`. After onboarding is complete, later launches use `/login`.
+The launcher waits until the frontend is ready, then tries `wslview` and the Windows `cmd.exe` browser handoff. It stays running if browser opening fails and prints the manual URL:
 
-## What you need
-
-- Windows 10 or Windows 11, x64.
-- An existing Ubuntu 22.04 or 24.04 distribution on WSL2, with an ordinary non-root user.
-- The verified Linux x86-64 archive (`speechcraft-<version>-linux-x86_64.tar.gz`) and its `.sha256` and `.release.json` files.
-- This Windows integration directory, containing `speechcraft.exe` and `install-windows.ps1`.
-
-SpeechCraft does not install Ubuntu for you, does not request administrator rights for the per-user install, and does not change the system PATH. If WSL itself is missing, install and reboot it using Microsoft's WSL2 instructions, then rerun the installer.
-
-## Install
-
-Open a normal PowerShell window. Do not use an elevated prompt.
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1 -Archive C:\Users\you\Downloads\speechcraft-0.1.0-linux-x86_64.tar.gz
+```text
+http://127.0.0.1:3002
 ```
 
-If more than one suitable Ubuntu distribution is installed, choose one:
+SpeechCraft binds local services to `127.0.0.1`. It does not need a Linux GUI browser, a Windows service, or a firewall change.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1 -Archive C:\Users\you\Downloads\speechcraft-0.1.0-linux-x86_64.tar.gz -Distribution Ubuntu-24.04
-```
+## Files, projects and exports
 
-The installer copies the archive into the Ubuntu filesystem, runs the existing Linux per-user installer, and adds `%LOCALAPPDATA%\SpeechCraft\launcher` to the current user's PATH. Close and reopen Windows Terminal so the new PATH is visible.
+The application is installed under `~/.local/share/speechcraft/app`; managed setup state, projects, recordings, models, runtimes, caches and exports are under `~/.local/share/speechcraft` on the WSL Linux filesystem. Keep the Ubuntu virtual disk on a drive with sufficient free space.
 
-Models, projects, Python environments, and the application stay in the Ubuntu home directory. They are not stored under `C:\`.
+Use the existing Browse or drag-and-drop control in the Windows browser to select a recording from `C:\Users\...`. The browser uploads it to SpeechCraft in chunks; SpeechCraft stores a managed copy inside Ubuntu. You do not need to copy source recordings into WSL manually. Original files remain untouched. Generated exports can be downloaded from the existing UI through the browser.
 
-## Commands
+## CPU and optional NVIDIA acceleration
 
-```powershell
-speechcraft
-speechcraft --no-browser
+CPU operation is supported and does not require an NVIDIA GPU or native Windows Python. On a compatible NVIDIA system, WSL2 can expose CUDA through the Windows NVIDIA driver. Install/update the Windows driver that supports WSL CUDA using NVIDIA's instructions; do not install a Linux display driver inside Ubuntu. CUDA is enabled only after the actual SpeechCraft runtime and inference checks pass. Otherwise SpeechCraft remains on CPU and reports the fallback.
+
+## Commands and recovery
+
+```bash
 speechcraft status
-speechcraft status --json
 speechcraft stop
-speechcraft --help
+speechcraft
+speechcraft uninstall
+speechcraft uninstall --yes
+speechcraft uninstall --purge
 ```
 
-`speechcraft` opens the Windows browser after the Linux launcher reports that the frontend is ready. `--no-browser` prints the URL and does not open a browser. `status` and `stop` use the same Linux application lifecycle. A second `speechcraft` reuses the running application instead of starting another backend.
+Default uninstall removes the application while preserving projects, recordings, models and exports. `--purge` explicitly requests removal of SpeechCraft-managed persistent data. Review the command's confirmation before proceeding.
 
-An optional data directory must already be a Linux path, for example `--data-dir /home/you/speechcraft-data`. Windows paths and `/mnt/c` paths are rejected.
+If Windows stopped WSL while SpeechCraft was running, reopen Ubuntu and run `speechcraft`; the launcher reconciles owned processes and stale state before starting. If startup fails, inspect the actionable error and launch logs in the SpeechCraft managed data directory. Check that the Ubuntu distribution is version 2, the current user is not root, and managed directories are not symlinks or Windows-backed mounts. Use `speechcraft status` before stopping processes; SpeechCraft will refuse to kill a process whose ownership cannot be verified.
 
-## Remove the Windows command
+If the browser does not open, visit `http://127.0.0.1:3002` in Windows after the launcher reports frontend readiness. Keep the Ubuntu launcher running while using the UI. Do not change the bind address or open a firewall port.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1 -Uninstall
-```
+## Later Windows laptop acceptance checklist
 
-This removes `speechcraft.exe` and its user PATH entry. It does not unregister Ubuntu and does not delete models, projects, or application data. The Linux application inside Ubuntu is a separate install. From an Ubuntu shell, `speechcraft uninstall` removes that per-user Linux application; that command is not part of this Windows switch and was not verified here.
+Run this on a separate Windows 11 laptop; Linux simulations do not satisfy it:
 
-## Development build limits
+1. Install fresh Ubuntu 24.04 with `wsl --install -d Ubuntu-24.04`; verify WSL2 and an ordinary user.
+2. Run the actual verified curl installer and confirm the release identity and checksum; open a fresh Ubuntu terminal and confirm `command -v speechcraft`.
+3. Launch SpeechCraft and confirm setup UI access from the Windows browser at `127.0.0.1:3002`; test status, stop, restart and project persistence.
+4. Prepare managed Python, FFmpeg and model dependencies. Run CPU inference on a non-NVIDIA laptop; on NVIDIA hardware, record CUDA validation and any CPU fallback.
+5. Upload a real Windows-hosted WAV or MP3 using Browse or drag-and-drop; run diarization, speaker selection, slicing, QC, Clip Lab, accept/reject review and verify a downloaded export.
+6. Run default uninstall and confirm personal projects, recordings, models and exports remain. Test purge only against disposable test data.
 
-The Windows executable produced by the package script is not code-signed. SmartScreen trust is not established. Package creation does not prove that the command works on a physical Windows machine, that Windows can reach the WSL frontend, or that CUDA or model inference succeeded.
-
-Native acceptance is the separate procedure in `accept-windows.ps1`.
+The full pipeline checklist is an upcoming host acceptance run. This infrastructure work does not claim that Windows browser connectivity or real CUDA/model inference has passed.

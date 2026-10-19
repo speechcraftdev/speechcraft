@@ -69,12 +69,44 @@ case "$os/$arch" in
   MINGW*/*|MSYS*/*|CYGWIN*/*) fail 'Native Windows is not supported by this installer. See the Windows installation instructions.' ;;
   *) fail "unsupported platform $os/$arch. Supported: Linux x86-64 and Apple Silicon macOS." ;;
 esac
+command -v id >/dev/null 2>&1 || fail 'the id command is required to verify the current user.'
+if [ "$(id -u)" -eq 0 ]; then fail 'run this installer as your ordinary non-root user, without sudo.'; fi
 command -v curl >/dev/null 2>&1 || fail 'curl is required.'
 command -v mktemp >/dev/null 2>&1 || fail 'mktemp is required.'
 command -v rm >/dev/null 2>&1 || fail 'rm is required.'
 if [ "$platform" = linux ]; then
   command -v python3 >/dev/null 2>&1 || fail 'system Python 3.9 or newer is required for Linux installation.'
   python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,9) else 1)' || fail 'system Python 3.9 or newer is required; install it using your OS package manager and retry.'
+  kernel=$(uname -r 2>/dev/null || true)
+  case "$kernel" in
+    *microsoft*|*Microsoft*|*WSL*)
+      case "$kernel" in *microsoft-standard-WSL2*|*Microsoft-standard-WSL2*) ;; *) fail 'WSL1 is not supported. Upgrade Ubuntu to WSL2 with `wsl --set-version Ubuntu-24.04 2` from PowerShell.' ;; esac
+      [ -r /etc/os-release ] || fail 'cannot identify the WSL Ubuntu release; check /etc/os-release and retry.'
+      distro_id=$(sed -n 's/^ID=//p' /etc/os-release | tr -d '\"\047' | head -n 1)
+      distro_version=$(sed -n 's/^VERSION_ID=//p' /etc/os-release | tr -d '\"\047' | head -n 1)
+      [ "$distro_id" = ubuntu ] || fail "WSL2 guest '$distro_id' is unsupported; use Ubuntu 22.04 or 24.04."
+      case "$distro_version" in 22.04|24.04) ;; *) fail "Ubuntu $distro_version is unsupported; use Ubuntu 22.04 or 24.04 on WSL2." ;; esac
+      python3 - "$HOME" <<'PY' || fail 'the WSL home directory must be on the WSL Linux filesystem, not a Windows-mounted drive.'
+import pathlib, sys
+home = pathlib.Path(sys.argv[1]).resolve(strict=True)
+mounts = []
+for line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines():
+    left, right = line.split(' - ', 1)
+    fields, fs = left.split(), right.split()
+    point = pathlib.Path(fields[4].replace('\\040', ' ').replace('\\011', '\t').replace('\\134', '\\')).resolve()
+    if home == point or point in home.parents:
+        mounts.append((len(str(point)), fs[0].lower(), fs[1].lower(), fs[2].lower()))
+if not mounts:
+    raise SystemExit(1)
+_, filesystem, source, options = max(mounts)
+if filesystem in {'9p', 'drvfs', 'ntfs', 'ntfs3', 'fuseblk', 'cifs', 'smbfs'} or 'drvfs' in f'{source} {options}':
+    raise SystemExit(1)
+PY
+      available_kb=$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+      case "$available_kb" in ''|*[!0-9]*) ;; *) [ "$available_kb" -ge 1048576 ] || fail 'less than 1 GiB is free on the WSL Linux filesystem; free space and retry.' ;; esac
+      say "WSL checks passed: Ubuntu $distro_version on WSL2 x86-64"
+      ;;
+  esac
 else
   command -v shasum >/dev/null 2>&1 || fail 'macOS shasum is required.'
   command -v plutil >/dev/null 2>&1 || fail 'macOS plutil is required.'
