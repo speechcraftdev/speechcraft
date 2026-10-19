@@ -705,7 +705,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   if (options.command === 'uninstall') {
     const wsl = process.platform === 'linux' && hostEnvironment().wsl === true;
     const uninstall = process.platform === 'darwin' ? runMacUninstall : runLinuxUninstall;
-    return uninstall({
+    const result = await uninstall({
       home: os.homedir(),
       env,
       yes: options.yes,
@@ -721,6 +721,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
       wsl,
       stopServices: stopForUninstall,
     });
+    return { command: 'uninstall', ...result };
   }
   if (options.proveFrontend) {
     const host = hostEnvironment();
