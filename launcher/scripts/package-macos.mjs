@@ -25,6 +25,29 @@ export function assertDarwinArm64(platform = process.platform, arch = process.ar
   }
 }
 
+function copyPinnedSource(sourceRoot, appRoot, relative) {
+  const rootReal = fs.realpathSync(sourceRoot);
+  const source = path.join(sourceRoot, relative);
+  const target = path.join(appRoot, relative);
+  const copyEntry = (from, to) => {
+    const info = fs.lstatSync(from);
+    if (info.isSymbolicLink()) {
+      const resolved = fs.realpathSync(from);
+      if (!resolved.startsWith(`${rootReal}${path.sep}`)) throw new Error(`Runtime source symlink escapes the pinned snapshot: ${path.relative(sourceRoot, from)}`);
+      return copyEntry(resolved, to);
+    }
+    if (info.isDirectory()) {
+      fs.mkdirSync(to, { recursive: true, mode: info.mode & 0o777 });
+      for (const name of fs.readdirSync(from).sort()) copyEntry(path.join(from, name), path.join(to, name));
+    } else if (info.isFile()) {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
+      fs.chmodSync(to, info.mode & 0o777);
+    } else throw new Error(`Unsupported source entry in pinned snapshot: ${path.relative(sourceRoot, from)}`);
+  };
+  copyEntry(source, target);
+}
+
 export function validateMacRelease(directory) {
   const missing = MAC_REQUIRED_FILES.filter((name) => !fs.existsSync(path.join(directory, name)));
   const releasePath = path.join(directory, 'application-release-manifest.json');
@@ -159,9 +182,8 @@ if (!isMain) {
     'LICENSE', 'launcher/README.md', 'workers/dataset/RUNTIME_PROFILES.md', 'workers/dataset/MODEL_STORAGE.md',
   ]) {
     const from = path.join(source, relative);
-    const to = path.join(appRoot, relative);
-    fs.mkdirSync(path.dirname(to), { recursive: true });
-    fs.cpSync(from, to, { recursive: true, verbatimSymlinks: true });
+    if (!fs.existsSync(from)) throw new Error(`Pinned source snapshot is missing required resource: ${relative}`);
+    copyPinnedSource(source, appRoot, relative);
   }
   const wheelOut = path.join(work, 'wheel');
   fs.mkdirSync(wheelOut);
