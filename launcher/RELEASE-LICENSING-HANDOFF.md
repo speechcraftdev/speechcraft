@@ -21,25 +21,27 @@ opinion or a claim that all distribution obligations are complete.
 
 | Component | Publisher/source | Recorded license | Distribution path and handoff |
 | --- | --- | --- | --- |
-| WeSpeaker ECAPA-TDNN512-LM ONNX | `Wespeaker/wespeaker-ecapa-tdnn512-LM`, pinned revision `a2f3dcb1c8702caccc7a55ceb57f5e8d1842112b`; SHA-256 `d71b85d9b48058ef68004f04f1b78acebefb9dfcf542e19b976a12a5ad1f10b0` | CC BY 4.0, publisher model card | Downloaded by setup after install; attribution is retained in the catalog and provenance file. Confirm the required attribution and license are sufficiently visible to users in the setup/download flow. |
+| WeSpeaker ECAPA-TDNN512-LM ONNX | `Wespeaker/wespeaker-ecapa-tdnn512-LM`, pinned revision `a2f3dcb1c8702caccc7a55ceb57f5e8d1842112b`; SHA-256 `d71b85d9b48058ef68004f04f1b78acebefb9dfcf542e19b976a12a5ad1f10b0` | CC BY 4.0, publisher model card | Downloaded by setup after install. The setup Models row now shows WeSpeaker attribution, immutable revision, model-page link, and CC BY 4.0 license link before and after download. The artifact is used unchanged and remains hash-verified. |
 | Silero VAD 6.2.1 ONNX | `snakers4/silero-vad`, pinned commit in the runtime manifest | MIT | Downloaded and hash-verified during setup; see model catalog and manifest. |
 | Whisper Large-v3 | `Systran/faster-whisper-large-v3`, pinned revision in the model catalog; macOS selects the separate MLX publisher artifact | MIT, as recorded from publisher metadata | Downloaded and hash-verified during setup; no weights in the application archive. |
 | pyannote Community-1 | `pyannote/speaker-diarization-community-1`, pinned revision in the model catalog | CC BY 4.0 publisher metadata; gated access terms also apply | Downloaded only after the user accepts the upstream terms and supplies a read token. It is not bundled. Review the model-card terms and attribution for the product flow. |
-| FFmpeg and FFprobe | BtbN pinned release and exact build identity in `setup-controller/resources/runtime-manifest.json` | The selected recipe is marked LGPL; the exact build's options and applicable obligations remain for review | Downloaded directly during setup; binaries are not in the Speechcraft archive. See `setup-controller/resources/FFMPEG-LICENSE-NOTICE.md`. Confirm the publisher's exact license/build configuration, notice/source obligations, and any patent considerations before publication. |
+| FFmpeg and FFprobe | BtbN release `autobuild-2026-10-14-13-03`, release commit `63ac3265b0789ea16c7b1f8351cd2ad195a28722`, asset SHA-256 `602ca2985139dbab87e0d7c70f48afc69548060463dcfab44c0e5f50ebe39df8` | BtbN identifies `linux64-lgpl 8.1` as LGPL; pinned recipe uses `--enable-version3 --disable-debug`, omits GPL/nonfree flags, and includes upstream `COPYING.LGPLv3` | Downloaded directly from BtbN over HTTPS to the user's per-user data directory. SpeechCraft does not bundle or mirror the binaries; it invokes them as subprocesses and retains the LGPL text. The exact open question is whether this setup-triggered direct download is conveyance by SpeechCraft and, if so, whether BtbN's pinned source/recipe plus the stored LGPL text suffice for its static-dependency CLI build or corresponding-source hosting/additional notices are required. Codec patent review also needs a scoped decision. See `setup-controller/resources/FFMPEG-LICENSE-NOTICE.md`. |
 | Backend, worker, and model-manager Python dependencies | PyPI and the pinned PyTorch CPU/CUDA or Apple Silicon package indexes recorded in the lockfiles | Individual package licenses | Installed into per-user managed environments. Audit the resolved Linux CPU lock first for this release; CUDA, macOS, and WSL2 profiles have separate lockfiles. |
 | Node.js production dependencies | Pinned by `frontend/bun.lock`; standalone production files are included in the archive | Individual package licenses | Included in the Linux archive. Check the packaged dependency tree and required notices against the exact generated archive. |
 | Node.js executable | Official Node.js 24.22.0 Linux x64 release, pinned by `launcher/scripts/fetch-node-runtime.mjs` | Node.js license and bundled third-party notices | Executable is included in the archive. Verify that the archive's notice files cover the executable and bundled components. |
 
 ## Publication items for review
 
-1. Confirm CC BY 4.0 attribution and license presentation for ECAPA in the
-   installed setup flow. The immutable source revision, checksum, publisher,
-   license, and attribution must stay aligned with `PROVENANCE.md` and the
-   model catalog.
-2. Review the exact BtbN FFmpeg/FFprobe build and the download-time product
-   behavior. Determine the applicable source, configuration, notice, and
-   other obligations for that artifact; the current notice records that this
-   review is open.
+1. Confirm the setup-flow ECAPA notice against the publisher's CC BY 4.0
+   conditions. The visible notice now names WeSpeaker and the model, links to
+   the source and license, and identifies the pinned revision. Keep it aligned
+   with `PROVENANCE.md` and the model catalog.
+2. Resolve the exact FFmpeg decision quoted in
+   `setup-controller/resources/FFMPEG-LICENSE-NOTICE.md`: whether setup's
+   direct upstream download is conveyance by SpeechCraft; if so, whether the
+   pinned source, build recipe, upstream LGPL text, and source links suffice
+   for this static-dependency CLI artifact; and whether patent review is
+   required for the intended testing release.
 3. Check the exact Linux archive's Node.js and frontend production dependency
    notices, then check the locked Python runtime dependencies and their
    delivery/notice flow. Record any missing notices before publishing.

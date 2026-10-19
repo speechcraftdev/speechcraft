@@ -1,0 +1,201 @@
+name: Publish approved Linux pre-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact current main commit to release
+        required: true
+        type: string
+      approval_issue:
+        description: Closed repository issue with the release-approved label and reviewer decision
+        required: true
+        type: string
+      approval_reviewer:
+        description: GitHub username of the designated release reviewer who recorded the approval comment
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: speechcraft-public-release-v0.1.1
+  cancel-in-progress: false
+
+jobs:
+  publish-linux-prerelease:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      RELEASE_TAG: v0.1.1
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      APPROVAL_ISSUE: ${{ inputs.approval_issue }}
+      APPROVAL_REVIEWER: ${{ inputs.approval_reviewer }}
+      RELEASE_DIR: ${{ runner.temp }}/speechcraft-release-assets
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the current main source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source, version, approval record, and unused release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$SOURCE_COMMIT" = "$(git rev-parse origin/main)"
+          test "$SOURCE_COMMIT" = "$(git rev-parse HEAD)"
+          test "v$(node -p "require('./frontend/package.json').version")" = "$RELEASE_TAG"
+          [[ "$APPROVAL_ISSUE" =~ ^[0-9]+$ ]]
+          [[ "$APPROVAL_REVIEWER" =~ ^[A-Za-z0-9-]{1,39}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/issues/$APPROVAL_ISSUE" > "$RUNNER_TEMP/release-approval.json"
+          jq -e '
+            .state == "closed"
+            and (has("pull_request") | not)
+            and ([.labels[].name] | index("release-approved") != null)
+            and (.title | contains("v0.1.1 FFmpeg direct-download obligations"))
+          ' "$RUNNER_TEMP/release-approval.json" >/dev/null
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$APPROVAL_ISSUE/comments" > "$RUNNER_TEMP/release-approval-comments.json"
+          jq -e --arg author "$(jq -r '.user.login' "$RUNNER_TEMP/release-approval.json")" \
+            --arg reviewer "$APPROVAL_REVIEWER" \
+            --arg publisher "$GITHUB_ACTOR" \
+            --arg revision "$SOURCE_COMMIT" '
+              any(.[];
+                .user.login == $reviewer
+                and .user.login != $author
+                and .user.login != $publisher
+                and (.body | contains("APPROVED_FOR_PUBLIC_TESTING_RELEASE"))
+                and (.body | contains("v0.1.1 Linux x86-64"))
+                and (.body | contains($revision))
+              )
+            ' "$RUNNER_TEMP/release-approval-comments.json" >/dev/null
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing release $RELEASE_TAG" >&2; exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Refusing to reuse existing immutable tag $RELEASE_TAG" >&2; exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.14.0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.0
+
+      - name: Install locked frontend dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: bun test
+
+      - name: Run setup-controller tests
+        working-directory: setup-controller
+        run: node --test
+
+      - name: Run launcher, package, bootstrap, and installer tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest launcher.installer.tests.test_bootstrap launcher.installer.tests.test_install_linux
+          node --test launcher/tests/launcher.test.js launcher/tests/package-inventory.test.mjs launcher/tests/windows-package.test.mjs
+
+      - name: Build the exact-source package and official bootstrap
+        run: |
+          set -euo pipefail
+          node launcher/scripts/package-linux.mjs --source-revision "$SOURCE_COMMIT" --output "$RELEASE_DIR"
+          node launcher/scripts/generate-bootstrap.mjs --tag "$RELEASE_TAG" --source-revision "$SOURCE_COMMIT" --output "$RELEASE_DIR"
+          archive=$(find "$RELEASE_DIR" -maxdepth 1 -type f -name 'speechcraft-*-linux-x86_64.tar.gz' -print -quit)
+          test -n "$archive"
+          (cd "$RELEASE_DIR" && sha256sum -c "$(basename "$archive").sha256")
+          node launcher/scripts/installed-linux-smoke.mjs --archive "$archive" --installer "$RELEASE_DIR/install-linux.py"
+
+      - name: Write release verification report and notes
+        run: |
+          set -euo pipefail
+          python3 - "$RELEASE_DIR" "$SOURCE_COMMIT" "$RELEASE_TAG" "$APPROVAL_ISSUE" <<'PY'
+          import hashlib, json, pathlib, sys
+          out, revision, tag, issue = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+          archive = next(out.glob('speechcraft-*-linux-x86_64.tar.gz'))
+          meta = json.loads(pathlib.Path(str(archive) + '.release.json').read_text())
+          lines = [
+              '# SpeechCraft Linux pre-release verification', '',
+              f'- Tag: `{tag}` (public pre-release)',
+              f'- Source commit: `{revision}`',
+              f'- Release approval record: https://github.com/{__import__("os").environ["GITHUB_REPOSITORY"]}/issues/{issue}',
+              f'- Platform: `{meta["platform"]}`',
+              f'- Archive: `{archive.name}`',
+              f'- Archive size: `{meta["archive_size_bytes"]}` bytes',
+              f'- Archive SHA-256: `{meta["archive_sha256"]}`',
+              f'- Model-manager wheel SHA-256: `{meta["model_manager_wheel_sha256"]}`',
+              '- Checks: frontend suite; setup-controller suite; bootstrap and installer suites; launcher/package tests; package build; archive verification; installed Linux package smoke.',
+              '- Provenance: GitHub Actions Sigstore build provenance is generated for every release asset and independently verified against this repository workflow before publication.',
+              '- Platform support: Linux x86-64 testing pre-release only; Windows/WSL2 and macOS are not production verified.',
+              '', '## SHA-256 for each release asset', ''
+          ]
+          for item in sorted(out.iterdir()):
+              if item.is_file() and item.name != 'VERIFICATION.md':
+                  lines.append(f'- `{item.name}` — `{hashlib.sha256(item.read_bytes()).hexdigest()}`')
+          (out / 'VERIFICATION.md').write_text('\n'.join(lines) + '\n')
+          notes = [
+              f'# SpeechCraft {tag} Linux testing pre-release', '',
+              f'Source commit: `{revision}`.', '',
+              'This is a public Linux x86-64 testing pre-release. It installs per-user, downloads verified runtime artifacts during setup, and preserves user data across updates. macOS and Windows/WSL2 are not production-supported by this release.', '',
+              f'Release review record: https://github.com/{__import__("os").environ["GITHUB_REPOSITORY"]}/issues/{issue}.', '',
+              'All uploaded assets have GitHub Actions Sigstore provenance. Verify an asset with `gh attestation verify <asset> --repo speechcraftdev/speechcraft --signer-workflow speechcraftdev/speechcraft/.github/workflows/release-linux.yml` (GitHub CLI is optional and not required to install).', '',
+              'See `VERIFICATION.md` and the repository licensing handoff for package hashes, included notices, and supported-platform limits.'
+          ]
+          (out / 'RELEASE-NOTES.md').write_text('\n'.join(notes) + '\n')
+          PY
+
+      - name: Generate GitHub Actions artifact provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ runner.temp }}/speechcraft-release-assets/*
+
+      - name: Verify every asset's provenance identity
+        run: |
+          set -euo pipefail
+          for asset in "$RELEASE_DIR"/*; do
+            [ -f "$asset" ] || continue
+            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-linux.yml"
+          done
+
+      - name: Publish the public pre-release
+        run: |
+          set -euo pipefail
+          assets=()
+          for asset in "$RELEASE_DIR"/*; do
+            [ "$(basename "$asset")" = RELEASE-NOTES.md ] || assets+=("$asset")
+          done
+          gh release create "$RELEASE_TAG" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_COMMIT" --prerelease \
+            --title "SpeechCraft $RELEASE_TAG (Linux testing pre-release)" \
+            --notes-file "$RELEASE_DIR/RELEASE-NOTES.md"
+
+      - name: Verify public assets and test the unauthenticated installer
+        run: |
+          set -euo pipefail
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/downloaded-release"
+          for asset in "$RUNNER_TEMP"/downloaded-release/*; do
+            [ -f "$asset" ] || continue
+            case "$(basename "$asset")" in RELEASE-NOTES.md) continue ;; esac
+            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-linux.yml"
+          done
+          launcher/scripts/public-linux-install-smoke.sh \
+            "https://github.com/speechcraftdev/speechcraft/releases/download/$RELEASE_TAG/install.sh"
