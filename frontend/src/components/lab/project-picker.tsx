@@ -10,9 +10,9 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@midday/ui/tooltip";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { fetchProjects } from "./speechcraft-api";
+import { deleteProject, fetchProjects } from "./speechcraft-api";
 
 type ProjectPickerProps = {
   variant?: "sidebar" | "header";
@@ -22,6 +22,7 @@ export function ProjectPicker({ variant = "sidebar" }: ProjectPickerProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const queryClient = useQueryClient();
 
   const { data: projects = [] } = useQuery({
     queryKey: ["sc-projects"],
@@ -38,6 +39,18 @@ export function ProjectPicker({ variant = "sidebar" }: ProjectPickerProps) {
     params.set("project", id);
     params.delete("run");
     router.replace(`${pathname}?${params.toString()}`);
+  };
+
+  const removeProject = async (project: { id: string; name: string }) => {
+    const confirmed = window.confirm(`Delete “${project.name}” and its uploaded copies, processing runs, and exports? The source WAV outside Speechcraft storage will be preserved.`);
+    if (!confirmed) return;
+    try {
+      await deleteProject(project.id);
+      await queryClient.invalidateQueries({ queryKey: ["sc-projects"] });
+      if (project.id === activeProject?.id) router.replace("/lab");
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Project deletion failed.");
+    }
   };
 
   const trigger = (
@@ -81,26 +94,24 @@ export function ProjectPicker({ variant = "sidebar" }: ProjectPickerProps) {
             {projects.map((project) => {
               const isActive = project.id === activeProject?.id;
               return (
-                <button
+                <div
                   key={project.id}
-                  type="button"
-                  onClick={() => selectProject(project.id)}
-                  title={project.name}
-                  className={cn(
-                    "flex w-full items-center justify-between gap-2 px-2 py-1.5 text-sm transition-colors hover:bg-secondary",
-                    isActive && "text-foreground",
-                  )}
+                  className={cn("flex w-full items-center gap-1 rounded-sm px-1 hover:bg-secondary", isActive && "text-foreground")}
                 >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <Avatar className="h-5 w-5 shrink-0 rounded-none border border-border">
-                      <AvatarFallback className="rounded-none text-[9px]">
-                        {project.name.slice(0, 2).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="truncate">{project.name}</span>
-                  </span>
-                  {isActive ? <Icons.Check className="size-4 shrink-0" /> : null}
-                </button>
+                  <button type="button" onClick={() => selectProject(project.id)} title={project.name}
+                    className="flex min-w-0 flex-1 items-center justify-between gap-2 py-1.5 text-left text-sm">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <Avatar className="h-5 w-5 shrink-0 rounded-none border border-border">
+                        <AvatarFallback className="rounded-none text-[9px]">{project.name.slice(0, 2).toUpperCase()}</AvatarFallback>
+                      </Avatar>
+                      <span className="truncate">{project.name}</span>
+                    </span>
+                    {isActive ? <Icons.Check className="size-4 shrink-0" /> : null}
+                  </button>
+                  <button type="button" onClick={() => void removeProject(project)}
+                    aria-label={`Delete project ${project.name}`} title={`Delete ${project.name}`}
+                    className="shrink-0 px-2 py-1 text-xs text-muted-foreground hover:text-destructive">Delete</button>
+                </div>
               );
             })}
           </div>

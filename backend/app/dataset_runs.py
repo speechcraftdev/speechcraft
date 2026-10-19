@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -386,6 +388,78 @@ def refresh_dataset_run(repository: Any, run_id: str) -> DatasetRunView:
         if _run_state_snapshot(run) != before or artifacts_changed:
             session.add(run)
             session.commit()
+        return _view(session, run)
+
+
+def _owned_worker_process(run: ProcessingRun) -> tuple[int, int] | None:
+    """Return (pid, process-group) only when the exact recorded worker is still owned."""
+    try:
+        pid = int(run.input_summary.get("worker_pid"))
+        command = [str(part) for part in run.input_summary.get("worker_command") or []]
+        if pid <= 1 or not command:
+            return None
+        proc = Path(f"/proc/{pid}")
+        raw = (proc / "cmdline").read_bytes()
+        if not raw:
+            return None
+        actual = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
+        if actual[:len(command)] != command:
+            return None
+        fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+        if fields[0] == "Z":
+            return None
+        process_group = int(fields[2])
+        if process_group != pid:
+            return None
+        return pid, process_group
+    except (OSError, ValueError, TypeError, IndexError):
+        return None
+
+
+def cancel_dataset_run(repository: Any, run_id: str, *, terminate_grace_seconds: float = 10.0) -> DatasetRunView:
+    """Gracefully stop a run's own process group, escalating only while ownership is verified."""
+    with Session(repository.engine, expire_on_commit=False) as session:
+        run = session.get(ProcessingRun, run_id)
+        if run is None:
+            raise KeyError("Dataset run not found")
+        if run.status != ProcessingRunStatus.RUNNING:
+            raise ValueError(f"Only a running dataset run can be cancelled; current status is {run.status.value}")
+        owned = _owned_worker_process(run)
+        if owned is None:
+            status = _read_json_object(_run_root(repository, run) / "status.json")
+            if status.get("ok") is True:
+                _apply_worker_status_to_run(run, status, pid_alive=False)
+                session.add(run)
+                session.commit()
+                return _view(session, run)
+            raise ValueError("The recorded worker is no longer verifiably owned; cancellation was not sent.")
+        pid, process_group = owned
+        os.killpg(process_group, signal.SIGTERM)
+        deadline = time.monotonic() + max(0.1, terminate_grace_seconds)
+        while time.monotonic() < deadline and _owned_worker_process(run) is not None:
+            time.sleep(0.1)
+        if _owned_worker_process(run) is not None:
+            # Recheck identity immediately before escalation so PID reuse cannot
+            # turn a stale run record into a signal to another user's process.
+            current = _owned_worker_process(run)
+            if current == (pid, process_group):
+                os.killpg(process_group, signal.SIGKILL)
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline and _owned_worker_process(run) is not None:
+                    time.sleep(0.1)
+        if _owned_worker_process(run) is not None:
+            raise RuntimeError("The owned dataset worker did not terminate after cancellation.")
+        run.status = ProcessingRunStatus.CANCELLED
+        run.reason_codes = ["dataset_worker_cancelled"]
+        run.completed_at = utc_now()
+        run.input_summary = {**run.input_summary, "worker_cancelled_at": run.completed_at.isoformat()}
+        status_path = _run_root(repository, run) / "status.json"
+        status = _read_json_object(status_path)
+        status.update(ok=False, cancelled=True, completed_at=run.completed_at.isoformat(),
+                      reason_codes=run.reason_codes)
+        status_path.write_text(json.dumps(status, indent=2, sort_keys=True), encoding="utf-8")
+        session.add(run)
+        session.commit()
         return _view(session, run)
 
 
@@ -826,6 +900,18 @@ def _apply_worker_status_to_run(
 
     completed_at = status.get("completed_at")
     ok = status.get("ok")
+
+    if status.get("cancelled") is True and completed_at:
+        parsed_completed_at = _parse_datetime(completed_at)
+        if parsed_completed_at is None:
+            run.status = ProcessingRunStatus.FAILED
+            run.reason_codes = ["dataset_worker_malformed_status"]
+            run.completed_at = utc_now()
+            return
+        run.status = ProcessingRunStatus.CANCELLED
+        run.reason_codes = list(status.get("reason_codes") or ["dataset_worker_cancelled"])
+        run.completed_at = parsed_completed_at
+        return
 
     if ok is True and not completed_at:
         run.status = ProcessingRunStatus.FAILED

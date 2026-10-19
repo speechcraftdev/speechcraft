@@ -200,6 +200,10 @@ export default function SetupPage() {
         ? <ProgressDetails progress={progress} fallbackName="SpeechCraft setup" />
         : <div className="mt-4 flex items-center gap-2 text-sm text-[#777]"><span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-r-transparent" />Working; the controller has not reported progress yet.</div>)}
       {status?.mode && <p className="mt-3 text-xs text-[#878787]">Mode: {status.mode}{status.runtime_profile && ` · Profile: ${JSON.stringify(status.runtime_profile)}`}</p>}
+      {status?.components?.pyannote && <p className="mt-1 text-xs text-[#878787]" role="status">
+        Pyannote device: {String(status.runtime_profile?.pyannote_device ?? status.components.pyannote.device ?? "cpu")} · CUDA validation: {status.runtime_profile?.pyannote_cuda_validated ? "passed" : "not passed"}
+        {status.components.pyannote.cuda_validation?.reason ? ` · ${status.components.pyannote.cuda_validation.reason}` : ""}
+      </p>}
       {status?.simulated && <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">Simulation only: this does not install models or validate inference.</p>}
       {status?.job.error && <p role="alert" className="mt-3 text-sm text-rose-700 dark:text-rose-300">{failureGuidance[status.job.error.code] || status.job.error.message} <span className="ml-1 font-mono text-xs">{status.job.error.code}</span></p>}
     </section>

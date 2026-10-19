@@ -30,6 +30,12 @@ from app.models import (
     SourceTranscriptionRequest,
     SourceRecording,
     SourceRecordingCreate,
+    ImportBatch,
+    ProcessingRun,
+    ProcessingRunStatus,
+    RfcStage,
+    RunArtifact,
+    RunArtifactKind,
     utc_now,
 )
 from app.repository import SQLiteRepository
@@ -170,6 +176,50 @@ class RepositoryMediaTests(TestCase):
         self.assertEqual(str(journal_mode).lower(), "wal")
         self.assertEqual(int(busy_timeout), 30000)
         self.assertEqual(int(synchronous), 1)
+
+    def test_project_deletion_removes_only_its_runs_and_managed_audio(self) -> None:
+        root = Path(self.temp_dir.name)
+        source = self.repository.media_root / "sources" / "owned.wav"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"project copy")
+        original = root / "original.wav"
+        original.write_bytes(b"original recording")
+        run_root = self.repository.media_root / "dataset-runs/project-delete/run-1"
+        run_root.mkdir(parents=True)
+        (run_root / "status.json").write_text("{}", encoding="utf-8")
+        with Session(self.repository.engine) as session:
+            session.add(ImportBatch(id="project-delete", name="Project to delete"))
+            session.add(ImportBatch(id="project-keep", name="Unrelated project"))
+            session.add(SourceRecording(id="recording-delete", batch_id="project-delete", file_path=str(source),
+                sample_rate=48000, num_channels=1, num_samples=12))
+            session.add(SourceRecording(id="recording-keep", batch_id="project-keep", file_path=str(original),
+                sample_rate=48000, num_channels=1, num_samples=18))
+            session.add(ProcessingRun(id="run-delete", project_id="project-delete", artifact_root="dataset-runs/project-delete/run-1",
+                stage=RfcStage.DIARIZATION, status=ProcessingRunStatus.COMPLETED))
+            session.add(RunArtifact(id="artifact-delete", run_id="run-delete", project_id="project-delete",
+                kind=RunArtifactKind.RUN_STATUS_JSON, path="status.json"))
+            session.commit()
+
+        result = self.repository.delete_project("project-delete")
+
+        self.assertEqual(result["deleted_processing_runs"], 1)
+        self.assertFalse(source.exists())
+        self.assertFalse(run_root.exists())
+        self.assertTrue(original.exists())
+        self.assertEqual(self.repository.get_project("project-keep").name, "Unrelated project")
+        with Session(self.repository.engine) as session:
+            self.assertIsNone(session.get(ProcessingRun, "run-delete"))
+            self.assertIsNone(session.get(RunArtifact, "artifact-delete"))
+
+    def test_project_deletion_refuses_to_remove_a_running_project(self) -> None:
+        with Session(self.repository.engine) as session:
+            session.add(ImportBatch(id="project-active", name="Active project"))
+            session.add(ProcessingRun(id="run-active", project_id="project-active", artifact_root="dataset-runs/project-active/run-active",
+                stage=RfcStage.DIARIZATION, status=ProcessingRunStatus.RUNNING))
+            session.commit()
+        with self.assertRaisesRegex(ValueError, "active dataset processing runs"):
+            self.repository.delete_project("project-active")
+        self.assertEqual(self.repository.get_project("project-active").name, "Active project")
 
     def _fake_forced_align_subprocess(
         self,

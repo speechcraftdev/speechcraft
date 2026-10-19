@@ -19,6 +19,7 @@ from .dataset_worker_client import run_dataset_worker_preflight
 from .defaults import resolve_whisper_model
 from .dataset_runs import (
     create_dataset_run,
+    cancel_dataset_run,
     get_candidate_review_media_bytes,
     get_dataset_export_results,
     get_dataset_run,
@@ -246,6 +247,18 @@ def refresh_project_dataset_run(run_id: str) -> DatasetRunView:
         return refresh_dataset_run(repository, run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/dataset-runs/{run_id}/cancel", response_model=DatasetRunView)
+def cancel_project_dataset_run(run_id: str) -> DatasetRunView:
+    try:
+        return cancel_dataset_run(repository, run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/dataset-runs/{run_id}/log", response_model=DatasetRunLogView)
@@ -690,6 +703,8 @@ def delete_project(project_id: str) -> dict[str, int | str]:
         return repository.delete_project(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/source-recordings", response_model=list[SourceRecordingView])
