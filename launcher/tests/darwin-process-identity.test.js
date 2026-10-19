@@ -11,7 +11,7 @@ test('Darwin ownership nonce remains visible after a child changes title and exp
   const nonce = randomBytes(24).toString('hex');
   const env = ownedChildEnvironment({ ...process.env, SPEECHCRAFT_FILLER: 'x'.repeat(120_000) }, nonce);
   assert.equal(Object.keys(env)[0], 'SPEECHCRAFT_OWNED_PROCESS_NONCE');
-  const source = `process.title='next-server (v16.2.1)'; for (let i=0;i<300;i++) process.env['SPEECHCRAFT_GROWN_'+i]='z'.repeat(128); setInterval(()=>{},1000)`;
+  const source = `process.title='SPEECHCRAFT-OWNED-'+process.env.SPEECHCRAFT_OWNED_PROCESS_NONCE; for (let i=0;i<300;i++) process.env['SPEECHCRAFT_GROWN_'+i]='z'.repeat(128); setInterval(()=>{},1000)`;
   const child = spawn(process.execPath, ['-e', source], { env, detached: true, stdio: 'ignore' });
   try {
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
