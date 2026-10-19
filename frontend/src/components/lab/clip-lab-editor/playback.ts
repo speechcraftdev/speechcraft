@@ -115,6 +115,15 @@ export function playheadSample(
   return transport.selectionEnd + (elapsed - transport.beforeLen);
 }
 
+export function playheadMediaSample(
+  transport: Transport,
+  mediaTimeSeconds: number,
+  fileSampleRateHz: number,
+): number | null {
+  // Media time already advances at the element's playback rate.
+  return playheadSample(transport, mediaTimeSeconds, fileSampleRateHz, 1);
+}
+
 export class ClipLabPlayback {
   private ctx: AudioContext | null = null;
   private source: AudioBufferSourceNode | null = null;
@@ -150,7 +159,9 @@ export class ClipLabPlayback {
 
   currentPlayheadSample(): number | null {
     if (this.media && this.transport) {
-      return playheadSample(this.transport, this.media.currentTime, this.fileSampleRateHz, this.playingRate);
+      // HTMLMediaElement.currentTime is already in media-timeline seconds.
+      // Only the Web Audio clock below needs scaling from wall time.
+      return playheadMediaSample(this.transport, this.media.currentTime, this.fileSampleRateHz);
     }
     if (!this.ctx || !this.transport) return null;
     return playheadSample(

@@ -1,6 +1,5 @@
 "use client";
 
-import { Badge } from "@midday/ui/badge";
 import { Button } from "@midday/ui/button";
 import { cn } from "@midday/ui/cn";
 import { Icons } from "@midday/ui/icons";
@@ -35,11 +34,8 @@ type ClipQueueProps = {
   search: string;
   onSearchChange: (value: string) => void;
   statuses: ReviewStatus[];
-  tags: string[];
-  availableTags: string[];
   buckets: MachineBucket[];
   onToggleStatus: (status: ReviewStatus) => void;
-  onToggleTag: (tag: string) => void;
   onToggleBucket: (bucket: MachineBucket) => void;
   onClearFilters: () => void;
   sortMode: SortMode;
@@ -53,11 +49,8 @@ export function ClipQueue({
   search,
   onSearchChange,
   statuses,
-  tags,
-  availableTags,
   buckets,
   onToggleStatus,
-  onToggleTag,
   onToggleBucket,
   onClearFilters,
   sortMode,
@@ -65,7 +58,7 @@ export function ClipQueue({
   onSelect,
 }: ClipQueueProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const activeFilterCount = statuses.length + tags.length + buckets.length;
+  const activeFilterCount = statuses.length + buckets.length;
 
   const virtualizer = useVirtualizer({
     count: clips.length,
@@ -86,7 +79,6 @@ export function ClipQueue({
       ? [
           ...statuses.map((s) => STATUS_LABELS[s]),
           ...buckets.map((b) => MACHINE_BUCKET_LABELS[b]),
-          ...tags,
         ].join(", ")
       : "All slices";
 
@@ -155,31 +147,6 @@ export function ClipQueue({
                   </button>
                 ))}
               </div>
-
-              {availableTags.length > 0 ? (
-                <>
-                  <p className="mb-2 mt-4 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Tags
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {availableTags.map((tag) => (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() => onToggleTag(tag)}
-                        className={cn(
-                          "border px-2 py-1 text-xs transition-colors",
-                          tags.includes(tag)
-                            ? "border-primary text-primary"
-                            : "border-border text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        {tag}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              ) : null}
 
               {activeFilterCount > 0 ? (
                 <button

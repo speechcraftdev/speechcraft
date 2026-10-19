@@ -14,7 +14,11 @@ import { useQuery } from "@tanstack/react-query";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { fetchProjects } from "./speechcraft-api";
 
-export function ProjectPicker() {
+type ProjectPickerProps = {
+  variant?: "sidebar" | "header";
+};
+
+export function ProjectPicker({ variant = "sidebar" }: ProjectPickerProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -36,25 +40,38 @@ export function ProjectPicker() {
     router.replace(`${pathname}?${params.toString()}`);
   };
 
+  const trigger = (
+    <PopoverTrigger asChild>
+      <button
+        type="button"
+        aria-label={`Switch project (current: ${activeProject?.name ?? "No project"})`}
+        className={cn(
+          "flex h-8 items-center justify-center px-2 text-sm text-foreground hover:bg-secondary",
+          variant === "header" && "max-w-48 min-w-0",
+        )}
+      >
+        {variant === "header" ? (
+          <span className="truncate">{activeProject?.name ?? "No project"}</span>
+        ) : (
+          "Projects"
+        )}
+      </button>
+    </PopoverTrigger>
+  );
+
   return (
     <TooltipProvider delayDuration={50}>
       <Popover>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                aria-label="Switch project"
-                className="flex h-8 items-center justify-center px-2 text-sm text-foreground hover:bg-secondary"
-              >
-                Projects
-              </button>
-            </PopoverTrigger>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" sideOffset={8}>
-            <p className="text-xs">{activeProject?.name ?? "No project"}</p>
-          </TooltipContent>
-        </Tooltip>
+        {variant === "header" ? (
+          trigger
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={8}>
+              <p className="text-xs">{activeProject?.name ?? "No project"}</p>
+            </TooltipContent>
+          </Tooltip>
+        )}
 
         <PopoverContent side="bottom" align="end" className="w-56 p-1">
           <p className="px-2 py-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">

@@ -22,13 +22,13 @@ import { LabRerunDialog } from "./rerun-dialog";
 import { TranscriptPanel } from "./transcript-panel";
 import type { HumanLabeledClip } from "./qc-logic";
 import {
-  type ClipEdit,
   type LabClip,
   type MachineBucket,
   type ReviewStatus,
   type SortMode,
   createMockClips,
   filterClips,
+  initialReviewClipId,
   sortClips,
   STATUS_LABELS,
 } from "./lab-data";
@@ -55,15 +55,6 @@ import {
   redoAudioOperation,
   undoAudioOperation,
 } from "./speechcraft-write-api";
-
-const PRESET_TAGS = [
-  "mispronunciation",
-  "background noise",
-  "clipping",
-  "overlap",
-  "filler word",
-  "breath",
-];
 
 type Mode = "qc" | "lab";
 
@@ -210,7 +201,6 @@ export function LabWorkstation() {
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filterStatuses, setFilterStatuses] = useState<ReviewStatus[]>([]);
-  const [filterTags, setFilterTags] = useState<string[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>("source");
   const [filterBuckets, setFilterBuckets] = useState<MachineBucket[]>([]);
   const [autoplayClipId, setAutoplayClipId] = useState<string | null>(null);
@@ -229,11 +219,14 @@ export function LabWorkstation() {
           speakerCheckMin: view.active_qc_subset?.speaker_check_min ?? 0,
         }),
       );
+      const initialQueue = sortClips(
+        mapped.filter((clip) => passesQcSubset(clip, view.active_qc_subset)),
+        sortMode,
+      );
       setClips(mapped);
-      setActiveClipId(mapped[0]?.id ?? null);
+      setActiveClipId(initialReviewClipId(initialQueue));
       setSearch("");
       setFilterStatuses([]);
-      setFilterTags([]);
       setFilterBuckets([]);
       setActiveQcSubset(view.active_qc_subset);
       setDraftQcThresholds({
@@ -246,7 +239,7 @@ export function LabWorkstation() {
     // run. Threshold changes after seeding are handled by the re-derive
     // effect below so in-progress edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, runId, useMockClips]);
+  }, [view, runId, useMockClips, sortMode]);
 
   // Active subset thresholds can change after clips are already seeded. Re-derive
   // machineBucket/qcScore in place —
@@ -295,12 +288,12 @@ export function LabWorkstation() {
     if (useMockClips && seededRunRef.current !== "demo") {
       const mock = createMockClips();
       setClips(mock);
-      setActiveClipId(mock[0]?.id ?? null);
+      setActiveClipId(initialReviewClipId(sortClips(mock, sortMode)));
       setActiveQcSubset(null);
       setDraftQcThresholds({ transcript_match_min: 0, speaker_check_min: 0 });
       seededRunRef.current = "demo";
     }
-  }, [useMockClips]);
+  }, [useMockClips, sortMode]);
 
   const qcScopedClips = useMemo(
     () => clips.filter((clip) => passesQcSubset(clip, activeQcSubset)),
@@ -308,8 +301,8 @@ export function LabWorkstation() {
   );
 
   const visibleClips = useMemo(
-    () => sortClips(filterClips(qcScopedClips, search, filterStatuses, filterTags, filterBuckets), sortMode),
-    [qcScopedClips, search, filterStatuses, filterTags, filterBuckets, sortMode],
+    () => sortClips(filterClips(qcScopedClips, search, filterStatuses, filterBuckets), sortMode),
+    [qcScopedClips, search, filterStatuses, filterBuckets, sortMode],
   );
 
   // If filters/search/sort hide the active clip, clear selection so the queue
@@ -323,17 +316,6 @@ export function LabWorkstation() {
   const activeClip = useMemo(
     () => clips.find((c) => c.id === activeClipId) ?? null,
     [clips, activeClipId],
-  );
-
-  const availableTags = useMemo(() => {
-    const set = new Set<string>();
-    for (const clip of clips) for (const tag of clip.tags) set.add(tag);
-    return Array.from(set).sort();
-  }, [clips]);
-
-  const allTags = useMemo(
-    () => Array.from(new Set([...PRESET_TAGS, ...availableTags])),
-    [availableTags],
   );
 
   const stats = useMemo(() => {
@@ -351,22 +333,7 @@ export function LabWorkstation() {
         durationSeconds: matching.reduce((sum, clip) => sum + (clip.durationSeconds || 0), 0),
       };
     });
-    const customTags = Array.from(
-      new Set(qcScopedClips.flatMap((clip) => clip.tags.filter((tag) => !PRESET_TAGS.includes(tag)))),
-    ).sort();
-    const reviewedClipCount = qcScopedClips.filter(
-      (clip) =>
-        clip.status !== "unresolved" ||
-        clip.tags.some((tag) => !PRESET_TAGS.includes(tag)),
-    ).length;
-    for (const tag of customTags) {
-      const matching = qcScopedClips.filter((clip) => clip.tags.includes(tag));
-      rows.push({
-        label: tag,
-        clips: matching.length,
-        durationSeconds: matching.reduce((sum, clip) => sum + (clip.durationSeconds || 0), 0),
-      });
-    }
+    const reviewedClipCount = counts.accepted + counts.rejected;
     const acceptedDurationSeconds = qcScopedClips
       .filter((clip) => clip.status === "accepted")
       .reduce((sum, clip) => sum + (clip.durationSeconds || 0), 0);
@@ -578,20 +545,6 @@ export function LabWorkstation() {
     [activeClipId, applyClipWrite, runId],
   );
 
-  const commitTags = useCallback(
-    (tags: string[]) => {
-      if (!activeClipId) return;
-      void applyClipWrite(
-        activeClipId,
-        (clip) => ({ ...clip, tags }),
-        (clip) =>
-          patchClipLab(runId!, clip.id, { ...tokensFor(clip), reviewer_tags: tags }),
-        "Tag update",
-      );
-    },
-    [activeClipId, applyClipWrite, runId],
-  );
-
   const navigate = useCallback(
     (direction: "prev" | "next") => {
       if (!activeClipId) return;
@@ -601,18 +554,6 @@ export function LabWorkstation() {
       if (target) setActiveClipId(target.id);
     },
     [activeClipId, visibleClips],
-  );
-
-  const appendEdit = useCallback(
-    (edit: ClipEdit) => {
-      toast({
-        title: "Not supported yet",
-        description: `"${edit.op}" isn't a backend audio operation.`,
-        variant: "error",
-        duration: 3000,
-      });
-    },
-    [toast],
   );
 
   const commitAudioOp = useCallback(
@@ -678,7 +619,6 @@ export function LabWorkstation() {
     setActiveQcSubset(nextSubset);
     setSearch("");
     setFilterStatuses([]);
-    setFilterTags([]);
     setFilterBuckets([]);
     setSortMode("source");
     const nextVisible = clips.filter((clip) => passesQcSubset(clip, nextSubset));
@@ -822,7 +762,7 @@ export function LabWorkstation() {
             runStatus={run?.status}
             runStage={run?.stage}
           />
-          <ProjectPicker />
+          <ProjectPicker variant="header" />
         </div>
       </header>
 
@@ -864,17 +804,10 @@ export function LabWorkstation() {
             search={search}
             onSearchChange={setSearch}
             statuses={filterStatuses}
-            tags={filterTags}
-            availableTags={availableTags}
             buckets={filterBuckets}
             onToggleStatus={(status) =>
               setFilterStatuses((cur) =>
                 cur.includes(status) ? cur.filter((s) => s !== status) : [...cur, status],
-              )
-            }
-            onToggleTag={(tag) =>
-              setFilterTags((cur) =>
-                cur.includes(tag) ? cur.filter((t) => t !== tag) : [...cur, tag],
               )
             }
             onToggleBucket={(bucket) =>
@@ -884,7 +817,6 @@ export function LabWorkstation() {
             }
             onClearFilters={() => {
               setFilterStatuses([]);
-              setFilterTags([]);
               setFilterBuckets([]);
             }}
             sortMode={sortMode}
@@ -902,7 +834,6 @@ export function LabWorkstation() {
                     canRedo={redoAvailable}
                     onAccept={() => decide("accepted")}
                     onReject={() => decide("rejected")}
-                    onAppendEdit={appendEdit}
                     onCommitAudioOp={commitAudioOp}
                     audioEditInFlight={audioEditInFlight}
                     tryBeginAudioEdit={tryBeginAudioEdit}
@@ -915,9 +846,7 @@ export function LabWorkstation() {
                   />
                   <TranscriptPanel
                     clip={activeClip}
-                    allTags={allTags}
                     onTranscriptChange={commitTranscript}
-                    onTagsChange={commitTags}
                   />
                 </>
               ) : (

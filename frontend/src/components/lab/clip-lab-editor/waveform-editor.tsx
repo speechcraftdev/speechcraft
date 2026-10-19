@@ -11,7 +11,7 @@ import {
 } from "react";
 import { formatClock } from "../lab-data";
 import type { DatasetAudioEditOperation } from "../speechcraft-write-api";
-import { ClipLabPlayback, buildCutPreviewPcm } from "./playback";
+import { ClipLabPlayback, buildCutPreviewPcm, type Transport } from "./playback";
 import { assertClipLabWavMatchesManifest, parseClipLabPcm16MonoWav } from "./pcm16-wav";
 import {
   clampSampleToClip,
@@ -79,6 +79,7 @@ type WaveformEditorProps = {
   onAutoplayConsumed: () => void;
   statusRefs: WaveformStatusRefs;
   onPlayingChange: (playing: boolean) => void;
+  onPlaybackError: (error: unknown) => void;
   onHasSelectionChange: (hasSelection: boolean) => void;
   tryBeginAudioEdit: () => boolean;
   endAudioEdit: () => void;
@@ -135,6 +136,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
       onAutoplayConsumed,
       statusRefs,
       onPlayingChange,
+      onPlaybackError,
       onHasSelectionChange,
       tryBeginAudioEdit,
       endAudioEdit,
@@ -170,6 +172,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
     const callbacksRef = useRef({
       onAutoplayConsumed,
       onPlayingChange,
+      onPlaybackError,
       onHasSelectionChange,
       tryBeginAudioEdit,
       endAudioEdit,
@@ -184,6 +187,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
     callbacksRef.current = {
       onAutoplayConsumed,
       onPlayingChange,
+      onPlaybackError,
       onHasSelectionChange,
       tryBeginAudioEdit,
       endAudioEdit,
@@ -324,17 +328,20 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
       paintOverlay();
     }, []);
 
-    const playRange = async (startSample: number, endSample: number) => {
-      const pcm = pcmRef.current;
-      const state = stateRef.current;
-      if (endSample <= startSample || pcm.length === 0) return;
+    const playTransport = async (
+      pcm: Int16Array,
+      sampleRateHz: number,
+      transport: Transport,
+      options?: { cacheOrdinaryBuffer?: boolean },
+    ) => {
+      if (pcm.length === 0) return;
       playingRef.current = true;
       callbacksRef.current.onPlayingChange(true);
       playbackRef.current.setPlaybackRate(playbackRateRef.current);
-      await playbackRef.current.playPcm(
+      const pendingPlayback = playbackRef.current.playPcm(
         pcm,
-        state.sampleRateHz,
-        { kind: "linear", startSample, endSample },
+        sampleRateHz,
+        transport,
         (sample) => {
           playheadRef.current = sample;
           paintOverlay();
@@ -347,7 +354,26 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
           }
           paintOverlay();
         },
+        options,
       );
+      const generation = playbackRef.current.currentGeneration;
+      try {
+        await pendingPlayback;
+      } catch (error) {
+        if (generation !== playbackRef.current.currentGeneration) return;
+        stopPlayback();
+        callbacksRef.current.onPlaybackError(error);
+      }
+    };
+
+    const playRange = (startSample: number, endSample: number) => {
+      const pcm = pcmRef.current;
+      if (endSample <= startSample || pcm.length === 0) return;
+      void playTransport(pcm, stateRef.current.sampleRateHz, {
+        kind: "linear",
+        startSample,
+        endSample,
+      });
     };
 
     const togglePlayback = () => {
@@ -357,7 +383,7 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
       }
       const state = stateRef.current;
       if (state.selection) {
-        void playRange(selectionStart(state.selection), selectionEnd(state.selection));
+        playRange(selectionStart(state.selection), selectionEnd(state.selection));
         return;
       }
       const startSample = playbackStartSample(state);
@@ -365,12 +391,12 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
         stateRef.current = { ...state, cursorSample: startSample };
         paintOverlay();
       }
-      void playRange(startSample, state.durationSamples);
+      playRange(startSample, state.durationSamples);
     };
 
     const playFromStart = () => {
       stopPlayback();
-      void playRange(0, stateRef.current.durationSamples);
+      playRange(0, stateRef.current.durationSamples);
     };
 
     const playCutPreview = () => {
@@ -384,25 +410,10 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
       );
       if (!preview) return;
       stopPlayback();
-      playingRef.current = true;
-      callbacksRef.current.onPlayingChange(true);
-      playbackRef.current.setPlaybackRate(playbackRateRef.current);
-      void playbackRef.current.playPcm(
+      void playTransport(
         preview.pcm,
         state.sampleRateHz,
         preview.transport,
-        (sample) => {
-          playheadRef.current = sample;
-          paintOverlay();
-        },
-        () => {
-          playheadRef.current = null;
-          if (playingRef.current) {
-            playingRef.current = false;
-            callbacksRef.current.onPlayingChange(false);
-          }
-          paintOverlay();
-        },
         { cacheOrdinaryBuffer: false },
       );
     };
@@ -520,6 +531,9 @@ export const WaveformEditor = forwardRef<WaveformEditorHandle, WaveformEditorPro
         stateRef.current = result.state;
         paintWaveform();
         publishHasSelection();
+        // The toolbar's Delete button disappears when the selection clears.
+        // Return focus to the editor so Space can play from the new cursor.
+        rootRef.current?.focus();
         await commitEdit(
           { kind: "delete_range", start_sample: result.startSample, end_sample: result.endSample },
           snapshot,

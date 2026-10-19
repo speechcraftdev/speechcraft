@@ -372,7 +372,6 @@ export function mapApiClip(
     transcriptMatchRaw: clip.transcript_match,
     speakerCheckRaw: clip.speaker_check,
     variant: clip.effective_audio_kind ?? "source",
-    tags: clip.reviewer_tags ?? [],
     reasonCodes: (clip.pipeline_findings ?? []).map(findingToCode),
     peaks: [],
     sampleRateHz,

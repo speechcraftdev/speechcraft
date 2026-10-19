@@ -35,6 +35,23 @@ function formatMargin(margin: number): string {
   return `${sign}${margin.toFixed(2)}`;
 }
 
+function ScoreWithMargin({ score, margin }: { score: number | null; margin: number }) {
+  const scoreLabel = formatScore(score);
+  const marginLabel = formatMargin(margin);
+  const roundedMargin = marginLabel.replace(/^\+/, "");
+  const redundant =
+    marginLabel === "—" ||
+    Number(roundedMargin) === 0 ||
+    roundedMargin === scoreLabel;
+
+  return (
+    <>
+      {scoreLabel}
+      {!redundant ? <span className="ml-1 text-[#878787]">({marginLabel})</span> : null}
+    </>
+  );
+}
+
 function ClipPreview({ clip }: { clip: QcClip }) {
   return (
     <div className="min-w-0 space-y-1.5">
@@ -112,12 +129,10 @@ export function RiskiestKeptTable({
                   <ClipPreview clip={clip} />
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-right tabular-nums">
-                  {formatScore(clip.transcriptMatch)}
-                  <span className="ml-1 text-[#878787]">({formatMargin(transcriptMargin)})</span>
+                  <ScoreWithMargin score={clip.transcriptMatch} margin={transcriptMargin} />
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-right tabular-nums">
-                  {formatScore(clip.speakerCheck)}
-                  <span className="ml-1 text-[#878787]">({formatMargin(speakerMargin)})</span>
+                  <ScoreWithMargin score={clip.speakerCheck} margin={speakerMargin} />
                 </TableCell>
               </TableRow>
             ))}
@@ -170,12 +185,10 @@ export function RandomKeptTable({
                   <ClipPreview clip={clip} />
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-right tabular-nums">
-                  {formatScore(clip.transcriptMatch)}
-                  <span className="ml-1 text-[#878787]">({formatMargin(transcriptMargin)})</span>
+                  <ScoreWithMargin score={clip.transcriptMatch} margin={transcriptMargin} />
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-right tabular-nums">
-                  {formatScore(clip.speakerCheck)}
-                  <span className="ml-1 text-[#878787]">({formatMargin(speakerMargin)})</span>
+                  <ScoreWithMargin score={clip.speakerCheck} margin={speakerMargin} />
                 </TableCell>
               </TableRow>
             ))}

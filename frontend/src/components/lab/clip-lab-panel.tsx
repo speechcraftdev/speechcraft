@@ -18,7 +18,7 @@ import {
   WaveformEditor,
   type WaveformEditorHandle,
 } from "./clip-lab-editor/waveform-editor";
-import { type ClipEdit, type LabClip, clipLabDurationSamples, formatClock, formatSeconds } from "./lab-data";
+import { type LabClip, clipLabDurationSamples, formatClock, formatSeconds } from "./lab-data";
 import type { DatasetAudioEditOperation } from "./speechcraft-write-api";
 
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
@@ -30,7 +30,6 @@ type ClipLabPanelProps = {
   canRedo: boolean;
   onAccept: () => void;
   onReject: () => void;
-  onAppendEdit: (edit: ClipEdit) => void;
   onCommitAudioOp: (op: DatasetAudioEditOperation) => Promise<boolean>;
   audioEditInFlight: boolean;
   tryBeginAudioEdit: () => boolean;
@@ -48,7 +47,6 @@ export function ClipLabPanel({
   canRedo,
   onAccept,
   onReject,
-  onAppendEdit,
   onCommitAudioOp,
   audioEditInFlight,
   tryBeginAudioEdit,
@@ -81,15 +79,6 @@ export function ClipLabPanel({
     if (!PLAYBACK_RATES.includes(next as (typeof PLAYBACK_RATES)[number])) return;
     setRate(next);
     editorRef.current?.setPlaybackRate(next);
-  };
-
-  const splitClip = () => {
-    editorRef.current?.stopPlayback();
-    onAppendEdit({ op: "split", startSeconds: Number((duration / 2).toFixed(2)) });
-  };
-  const mergeClip = () => {
-    editorRef.current?.stopPlayback();
-    onAppendEdit({ op: "merge_next" });
   };
 
   const expectedDurationSamples = clipLabDurationSamples(clip);
@@ -142,6 +131,14 @@ export function ClipLabPanel({
             onAutoplayConsumed={onAutoplayConsumed}
             statusRefs={{ selection: selectionReadoutRef, time: timeReadoutRef }}
             onPlayingChange={setIsPlaying}
+            onPlaybackError={(error) => {
+              toast({
+                title: "Playback failed",
+                description: error instanceof Error ? error.message : "The clip could not be played.",
+                variant: "error",
+                duration: 3500,
+              });
+            }}
             onHasSelectionChange={setHasSelection}
             tryBeginAudioEdit={tryBeginAudioEdit}
             endAudioEdit={endAudioEdit}
@@ -214,12 +211,6 @@ export function ClipLabPanel({
 
         <Separator orientation="vertical" className="mx-1 h-5" />
 
-        <Button type="button" variant="ghost" size="sm" className="h-8 text-neutral-200 hover:text-foreground" onClick={splitClip}>
-          Split
-        </Button>
-        <Button type="button" variant="ghost" size="sm" className="h-8 text-neutral-200 hover:text-foreground" onClick={mergeClip}>
-          Merge next
-        </Button>
         {hasSelection ? (
           <Button
             type="button"

@@ -160,7 +160,6 @@ export function mergeClipLabWriteResponse(prev: LabClip, server: DatasetClipLabC
     path: server.path ?? prev.path,
     transcript: server.transcript_override ?? server.transcript ?? prev.transcript,
     originalTranscript: server.original_transcript ?? prev.originalTranscript,
-    tags: server.reviewer_tags ?? prev.tags,
     durationSeconds: server.current_duration_sec ?? prev.durationSeconds,
     durationSamples: server.current_duration_samples ?? prev.durationSamples,
     transcriptConfidence: server.transcript_match ?? prev.transcriptConfidence,

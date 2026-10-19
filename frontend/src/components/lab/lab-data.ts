@@ -45,7 +45,6 @@ export type LabClip = {
   transcriptMatchRaw: number | null;
   speakerCheckRaw: number | null;
   variant: string; // "source" or a model name
-  tags: string[];
   reasonCodes: string[];
   peaks: number[]; // mock waveform envelope, 0..1
   sampleRateHz: number;
@@ -250,7 +249,6 @@ export function createMockClips(count = 42): LabClip[] {
       transcriptMatchRaw: Number((25 + rand() * 70).toFixed(2)),
       speakerCheckRaw: Number((60 + rand() * 39).toFixed(2)),
       variant: "source",
-      tags: [],
       reasonCodes,
       peaks: generatePeaks(id),
       sampleRateHz: 16000,
@@ -311,18 +309,23 @@ export function sortClips(clips: LabClip[], mode: SortMode): LabClip[] {
   }
 }
 
+/** Pick the first unresolved clip in queue order, or the queue's first clip. */
+export function initialReviewClipId(
+  queue: Array<Pick<LabClip, "id" | "status">>,
+): string | null {
+  return queue.find((clip) => clip.status === "unresolved")?.id ?? queue[0]?.id ?? null;
+}
+
 export function filterClips(
   clips: LabClip[],
   search: string,
   statuses: ReviewStatus[],
-  tags: string[],
   buckets: MachineBucket[] = [],
 ): LabClip[] {
   const query = search.trim().toLowerCase();
   return clips.filter((clip) => {
     if (query && !clip.transcript.toLowerCase().includes(query)) return false;
     if (statuses.length > 0 && !statuses.includes(clip.status)) return false;
-    if (tags.length > 0 && !tags.some((tag) => clip.tags.includes(tag))) return false;
     if (buckets.length > 0 && !buckets.includes(clip.machineBucket)) return false;
     return true;
   });
