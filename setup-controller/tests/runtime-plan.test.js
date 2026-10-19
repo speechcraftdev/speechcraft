@@ -50,10 +50,12 @@ test('managed backend passes only the verified ECAPA model root and ONNX path to
       ecapa: { state: 'runtime_ready', path: path.join(modelRoot, 'wespeaker-ecapa-tdnn512-lm') },
     };
     await tasks.startServices({ attemptId: 'ecapa-env-test', signal: new AbortController().signal,
-      componentStatus: { components, runtime_profile: { accelerator: 'cuda' } } });
+      componentStatus: { components, runtime_profile: { accelerator: 'cuda', pyannote_cuda_validated: true, pyannote_device: 'cuda:0' } } });
     assert.equal(environmentVars.SPEECHCRAFT_ECAPA_MODEL_PATH, components.ecapa.path);
     assert.equal(environmentVars.SPEECHCRAFT_ECAPA_ONNX_PATH,
       path.join(components.ecapa.path, 'voxceleb_ECAPA512_LM.onnx'));
+    assert.equal(environmentVars.SPEECHCRAFT_PYANNOTE_DEVICE, 'cuda');
+    assert.equal(environmentVars.SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED, '1');
 
     // A stale or unverified component must not provide a worker model path.
     components.ecapa.state = 'files_verified';
@@ -174,6 +176,9 @@ test('checked-in backend recipe identity is verified and unsupported components 
     assert.match(probe.environment_role, /^(worker|backend|model_manager|worker_cuda_candidate)$/);
     assert.equal(sha(path.resolve(root, probe.helper)), probe.sha256, `trusted helper hash: ${probe.component}`);
   }
+  const cudaProbeOrder = runtimeManifest.runtime_validation.probes.map((probe) => probe.component);
+  assert.ok(cudaProbeOrder.indexOf('cuda') >= 0 && cudaProbeOrder.indexOf('pyannote_cuda') > cudaProbeOrder.indexOf('cuda'),
+    'Community-1 CUDA inference validation follows general CUDA runtime validation');
 });
 
 test('runtime executor reports an explicitly unavailable worker recipe without pretending it was installed', async () => {
@@ -497,6 +502,132 @@ test('a passing CUDA Whisper probe updates the selected runtime device and worke
   assert.equal(context.componentStatus.components.whisper.device, 'NVIDIA RTX 4060');
   assert.equal(context.componentStatus.components.whisper.verification, 'trusted_cpu_and_cuda_inference_probes');
   assert.equal(context.componentStatus.production_ready, false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('Community-1 CUDA inference runs only after general CUDA validation and persists the selected device', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-pyannote-cuda-validation-'));
+  const applicationRoot = path.resolve('..');
+  const helper = path.join(applicationRoot, 'workers/dataset/scripts/runtime_probe.py');
+  const fixture = path.join(applicationRoot, 'workers/dataset/runtime-fixtures/community1-two-voice.wav');
+  const recipe = structuredClone(runtimeManifest);
+  recipe.runtime_validation.probes = [
+    { component: 'cuda', helper: 'workers/dataset/scripts/runtime_probe.py', sha256: sha(helper), environment_role: 'worker_cuda_candidate', fixture: 'speech', arguments: ['cuda'], timeout_ms: 600000 },
+    { component: 'pyannote_cuda', helper: 'workers/dataset/scripts/runtime_probe.py', sha256: sha(helper), environment_role: 'worker', fixture: 'community1_two_voice', arguments: ['pyannote_cuda'], timeout_ms: 600000 },
+  ];
+  const cudaPath = path.join(root, 'environments/worker/cuda');
+  const cpuPath = path.join(root, 'environments/worker/cpu');
+  const calls = [];
+  const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot, runtimeRecipe: recipe,
+    runtimeProbeAudio: fixture,
+    processRunner: async (_python, args, options) => {
+      calls.push(args[args.length - 1]);
+      if (args.at(-1) === 'cuda') return { code: 0, stdout: JSON.stringify({ schema_version: 1, component: 'cuda', success: true,
+        inference_completed: true, identity: 'cuda:GTX 1660', device: 'GTX 1660', actual_execution_device: 'GTX 1660',
+        gpu_detected: true, driver_identification: '535.261.03', torch_cuda_success: true, ctranslate2_cuda_success: true,
+        required_libraries: { cublas: true, cudnn: true, cudart: true }, measurements: { whisper_segments: 1 } }), stderr: '' };
+      assert.equal(options.env.SPEECHCRAFT_PROBE_DEVICE, 'cuda');
+      assert.equal(options.env.SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH, '');
+      return { code: 0, stdout: JSON.stringify({ schema_version: 1, component: 'pyannote_cuda', success: true,
+        inference_completed: true, identity: 'pyannote-community1-cuda:GTX 1660', backend: 'pyannote.audio/torch',
+        device: 'cuda:0', measurements: { gpu_name: 'GTX 1660', cuda_kernel_events: 12, cuda_memory_allocated_bytes: 800000000,
+          cuda_peak_memory_bytes: 1200000000, speaker_count: 2, turn_count: 4 } }), stderr: '' };
+    } });
+  tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
+  tasks.paths = { home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
+  const context = { attemptId: '00000000-0000-4000-8000-000000000142', signal: new AbortController().signal,
+    componentStatus: tasks.initialBootstrapStatus(), onProgress() {},
+    onComponentStatus(value) { context.componentStatus = value; } };
+  context.componentStatus.components.worker_cuda_candidate = { state: 'verified', path: cudaPath, library_paths: [] };
+  context.componentStatus.components.worker_environment = { state: 'verified', path: cpuPath, effective_profile: 'linux-x86_64-cpu' };
+  context.componentStatus.components.pyannote = { state: 'runtime_ready', identity: 'community1', device: 'cpu' };
+  context.componentStatus.runtime_profile = { profile: 'linux-x86_64', workerProfile: 'linux-x86_64-cuda',
+    accelerator: 'cuda', cuda_validated: true, pyannote_cuda_validated: true, pyannote_device: 'cuda:0' };
+  context.componentStatus.host_details = { nvidia_gpus: ['GTX 1660'] };
+  await tasks.validateRuntime(context);
+  assert.deepEqual(calls, ['cuda', 'pyannote_cuda']);
+  assert.equal(context.componentStatus.runtime_profile.pyannote_cuda_validated, true);
+  assert.equal(context.componentStatus.runtime_profile.pyannote_device, 'cuda:0');
+  assert.equal(context.componentStatus.components.pyannote.device, 'cuda:0');
+  assert.equal(context.componentStatus.components.pyannote.cuda_validation.measurements.cuda_kernel_events, 12);
+  assert.equal(context.componentStatus.components.runtime_probes.optional_blocked_components.length, 0);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('failed Community-1 CUDA inference preserves an explicit CPU fallback and diagnostic', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-pyannote-cuda-fallback-'));
+  const applicationRoot = path.resolve('..');
+  const helper = path.join(applicationRoot, 'workers/dataset/scripts/runtime_probe.py');
+  const recipe = structuredClone(runtimeManifest);
+  recipe.runtime_validation.probes = [
+    { component: 'cuda', helper: 'workers/dataset/scripts/runtime_probe.py', sha256: sha(helper), environment_role: 'worker_cuda_candidate', fixture: 'speech', arguments: ['cuda'], timeout_ms: 600000 },
+    { component: 'pyannote_cuda', helper: 'workers/dataset/scripts/runtime_probe.py', sha256: sha(helper), environment_role: 'worker', fixture: 'community1_two_voice', arguments: ['pyannote_cuda'], timeout_ms: 600000 },
+  ];
+  const cpuPath = path.join(root, 'environments/worker/cpu');
+  const cudaPath = path.join(root, 'environments/worker/cuda');
+  const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot, runtimeRecipe: recipe,
+    runtimeProbeAudio: path.join(applicationRoot, 'workers/dataset/runtime-fixtures/community1-two-voice.wav'),
+    processRunner: async (_python, args) => args.at(-1) === 'cuda'
+      ? { code: 0, stdout: JSON.stringify({ schema_version: 1, component: 'cuda', success: true, inference_completed: true,
+        identity: 'cuda:GTX 1660', device: 'GTX 1660', actual_execution_device: 'GTX 1660', gpu_detected: true,
+        driver_identification: '535.261.03', torch_cuda_success: true, ctranslate2_cuda_success: true,
+        required_libraries: { cublas: true, cudnn: true, cudart: true }, measurements: { whisper_segments: 1 } }), stderr: '' }
+      : { code: 1, stdout: JSON.stringify({ schema_version: 1, component: 'pyannote_cuda', success: false,
+        inference_completed: false, error_code: 'cuda_runtime_unavailable', error: 'CUDA inference failed.',
+        diagnostic: 'OutOfMemoryError: CUDA out of memory while loading Community-1.' }), stderr: '' } });
+  tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
+  tasks.paths = { home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
+  const context = { attemptId: '00000000-0000-4000-8000-000000000143', signal: new AbortController().signal,
+    componentStatus: tasks.initialBootstrapStatus(), onProgress() {},
+    onComponentStatus(value) { context.componentStatus = value; } };
+  context.componentStatus.components.worker_cuda_candidate = { state: 'verified', path: cudaPath, library_paths: [] };
+  context.componentStatus.components.worker_environment = { state: 'verified', path: cpuPath, effective_profile: 'linux-x86_64-cpu' };
+  context.componentStatus.components.pyannote = { state: 'runtime_ready', identity: 'community1', device: 'cpu' };
+  context.componentStatus.runtime_profile = { profile: 'linux-x86_64', workerProfile: 'linux-x86_64-cuda',
+    accelerator: 'cuda', cuda_validated: true, pyannote_cuda_validated: true, pyannote_device: 'cuda:0' };
+  context.componentStatus.host_details = { nvidia_gpus: ['GTX 1660'] };
+  await tasks.validateRuntime(context);
+  assert.equal(context.componentStatus.runtime_profile.pyannote_cuda_validated, false);
+  assert.equal(context.componentStatus.runtime_profile.pyannote_device, 'cpu');
+  assert.equal(context.componentStatus.components.pyannote.device, 'cpu');
+  assert.match(context.componentStatus.components.pyannote.cuda_validation.reason, /OutOfMemoryError/);
+  assert.deepEqual(context.componentStatus.components.runtime_probes.optional_blocked_components, ['pyannote_cuda']);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('Community-1 CUDA probe is skipped until the general CUDA probe passes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-pyannote-cuda-order-'));
+  const applicationRoot = path.resolve('..');
+  const helper = path.join(applicationRoot, 'workers/dataset/scripts/runtime_probe.py');
+  const recipe = structuredClone(runtimeManifest);
+  recipe.runtime_validation.probes = [
+    { component: 'cuda', helper: 'workers/dataset/scripts/runtime_probe.py', sha256: sha(helper), environment_role: 'worker_cuda_candidate', fixture: 'speech', arguments: ['cuda'], timeout_ms: 600000 },
+    { component: 'pyannote_cuda', helper: 'workers/dataset/scripts/runtime_probe.py', sha256: sha(helper), environment_role: 'worker', fixture: 'community1_two_voice', arguments: ['pyannote_cuda'], timeout_ms: 600000 },
+  ];
+  const cudaPath = path.join(root, 'environments/worker/cuda');
+  const cpuPath = path.join(root, 'environments/worker/cpu');
+  const calls = [];
+  const tasks = new RuntimeTasks({ dataDirectory: root, applicationRoot, runtimeRecipe: recipe,
+    runtimeProbeAudio: path.join(applicationRoot, 'workers/dataset/runtime-fixtures/community1-two-voice.wav'),
+    processRunner: async (_python, args) => {
+      calls.push(args.at(-1));
+      return { code: 1, stdout: JSON.stringify({ schema_version: 1, component: 'cuda', success: false,
+        inference_completed: false, error_code: 'cuda_runtime_unavailable', error: 'CUDA unavailable.' }), stderr: '' };
+    } });
+  tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
+  tasks.paths = { home: root, uvCache: root, hfHome: root, hfHub: root, hfXet: root, temporary: root };
+  const context = { attemptId: '00000000-0000-4000-8000-000000000144', signal: new AbortController().signal,
+    componentStatus: tasks.initialBootstrapStatus(), onProgress() {},
+    onComponentStatus(value) { context.componentStatus = value; } };
+  context.componentStatus.components.worker_cuda_candidate = { state: 'verified', path: cudaPath, library_paths: [] };
+  context.componentStatus.components.worker_environment = { state: 'verified', path: cpuPath, effective_profile: 'linux-x86_64-cpu' };
+  context.componentStatus.components.pyannote = { state: 'runtime_ready', identity: 'community1', device: 'cpu' };
+  context.componentStatus.host_details = { nvidia_gpus: ['GTX 1660'] };
+  await tasks.validateRuntime(context);
+  assert.deepEqual(calls, ['cuda']);
+  assert.equal(context.componentStatus.runtime_profile.pyannote_cuda_validated, false);
+  assert.equal(context.componentStatus.components.pyannote.cuda_validation.device, 'cpu');
+  assert.match(context.componentStatus.components.pyannote.cuda_validation.reason, /General CUDA/);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

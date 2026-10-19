@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
+import sys
 import tempfile
+import unittest
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import Mock, patch
@@ -11,6 +14,7 @@ from sqlmodel import Session
 
 from app.dataset_runs import (
     create_dataset_run,
+    cancel_dataset_run,
     generate_dataset_qc_scores,
     get_candidate_review_media_bytes,
     get_candidate_review_media_path,
@@ -90,6 +94,28 @@ class DatasetRunTests(TestCase):
         self.assertEqual(config["faster_whisper_beam_size"], 5)
         self.assertEqual(config["slicer"], "VR")
         self.assertNotIn("mfa_dictionary", config)
+
+    @unittest.skipIf(sys.platform == "win32", "owned POSIX process groups are used by Linux/macOS workers")
+    def test_cancel_stops_only_the_recorded_worker_and_persists_cancelled_state(self) -> None:
+        command = [sys.executable, "-c", "import time; time.sleep(60)"]
+        process = subprocess.Popen(command, start_new_session=True)
+        run_root = self.repository.media_root / "dataset-runs/project-1/cancel-run"
+        run_root.mkdir(parents=True)
+        with Session(self.repository.engine) as session:
+            run = ProcessingRun(id="cancel-run", project_id="project-1", artifact_root="dataset-runs/project-1/cancel-run",
+                stage=RfcStage.DIARIZATION, status=ProcessingRunStatus.RUNNING,
+                input_summary={"worker_pid": process.pid, "worker_command": command})
+            session.add(run)
+            session.commit()
+
+        cancelled = cancel_dataset_run(self.repository, "cancel-run", terminate_grace_seconds=1)
+        process.wait(timeout=3)
+        refreshed = refresh_dataset_run(self.repository, "cancel-run")
+
+        self.assertEqual(cancelled.status, ProcessingRunStatus.CANCELLED)
+        self.assertEqual(refreshed.status, ProcessingRunStatus.CANCELLED)
+        self.assertEqual(refreshed.reason_codes, ["dataset_worker_cancelled"])
+        self.assertTrue(json.loads((run_root / "status.json").read_text(encoding="utf-8"))["cancelled"])
 
     def test_repository_migrates_old_processingrun_schema(self) -> None:
         self.repository.close()

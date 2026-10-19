@@ -943,31 +943,109 @@ class SQLiteRepository:
             return self._project_summary(session, batch)
 
     def delete_project(self, project_id: str) -> dict[str, int | str]:
-        with self._session() as session:
-            self._get_batch(session, project_id)
-            recordings = session.exec(
-                select(SourceRecording).where(SourceRecording.batch_id == project_id)
-            ).all()
-            recording_ids = [recording.id for recording in recordings]
-            source_paths = [recording.file_path for recording in recordings]
-            if recording_ids:
-                artifacts = session.exec(
-                    select(SourceRecordingArtifact).where(
-                        SourceRecordingArtifact.source_recording_id.in_(recording_ids)
-                    )
-                ).all()
-                for artifact in artifacts:
-                    original_path = dict(artifact.artifact_metadata or {}).get("original_path")
-                    if isinstance(original_path, str):
-                        source_paths.append(original_path)
-                session.exec(delete(SourceRecordingArtifact).where(SourceRecordingArtifact.source_recording_id.in_(recording_ids)))
-                session.exec(delete(ProcessingJob).where(ProcessingJob.source_recording_id.in_(recording_ids)))
-                session.exec(delete(SourceRecording).where(SourceRecording.id.in_(recording_ids)))
-            session.exec(delete(ImportBatch).where(ImportBatch.id == project_id))
-            session.commit()
+        # Discover the full FK-owned project graph first. This handles RFC run
+        # artifacts and review/export records as well as legacy recordings,
+        # while leaving rows belonging to every other project untouched.
+        from sqlalchemy import select as sa_select
 
-        deleted_file_count = self._delete_managed_media_paths(source_paths)
-        return {"project_id": project_id, "deleted_file_count": deleted_file_count}
+        owned: dict[str, dict[tuple[Any, ...], dict[str, Any]]] = {}
+        tables = list(SQLModel.metadata.sorted_tables)
+        with self.engine.begin() as connection:
+            batch = connection.execute(sa_select(ImportBatch.__table__).where(ImportBatch.id == project_id)).mappings().first()
+            if batch is None:
+                raise KeyError("Project not found")
+            for table in tables:
+                rows = []
+                if table.name == ImportBatch.__tablename__:
+                    rows = [dict(batch)]
+                elif "project_id" in table.c:
+                    rows = [dict(row) for row in connection.execute(sa_select(table).where(table.c.project_id == project_id)).mappings()]
+                if rows:
+                    pk = tuple(column.name for column in table.primary_key.columns)
+                    owned[table.name] = {tuple(row[name] for name in pk): row for row in rows}
+
+            changed = True
+            while changed:
+                changed = False
+                for table in tables:
+                    for foreign_key in table.foreign_keys:
+                        parent = foreign_key.column.table
+                        parent_rows = owned.get(parent.name, {})
+                        if not parent_rows:
+                            continue
+                        parent_key = foreign_key.column.name
+                        parent_values = {row[parent_key] for row in parent_rows.values() if row.get(parent_key) is not None}
+                        if not parent_values:
+                            continue
+                        child_rows = [dict(row) for row in connection.execute(
+                            sa_select(table).where(foreign_key.parent.in_(parent_values))
+                        ).mappings()]
+                        if not child_rows:
+                            continue
+                        pk = tuple(column.name for column in table.primary_key.columns)
+                        target = owned.setdefault(table.name, {})
+                        before = len(target)
+                        target.update({tuple(row[name] for name in pk): row for row in child_rows})
+                        changed |= len(target) != before
+
+            if not owned.get(ImportBatch.__tablename__):
+                raise KeyError("Project not found")
+            active_runs = [row for row in owned.get(ProcessingRun.__tablename__, {}).values()
+                           if getattr(row.get("status"), "value", row.get("status")) == "running"]
+            if active_runs:
+                raise ValueError("Cancel all active dataset processing runs before deleting this project.")
+
+            media_paths: set[str] = set()
+            run_directories: set[str] = set()
+            export_directories: set[str] = set()
+            for table in tables:
+                for row in owned.get(table.name, {}).values():
+                    for column_name, value in row.items():
+                        if isinstance(value, str) and (column_name.endswith("_path") or column_name == "file_path"):
+                            media_paths.add(value)
+                    if table.name == ProcessingRun.__tablename__ and row.get("artifact_root"):
+                        run_directories.add(str(row["artifact_root"]))
+                    if table.name == "exportmanifest" and row.get("output_root"):
+                        export_directories.add(str(row["output_root"]))
+
+            for table in reversed(tables):
+                rows = owned.get(table.name, {})
+                if not rows:
+                    continue
+                pk = tuple(column.name for column in table.primary_key.columns)
+                for key in rows:
+                    conditions = [table.c[name] == value for name, value in zip(pk, key)]
+                    connection.execute(table.delete().where(*conditions))
+
+        retained_paths: set[str] = set()
+        if media_paths:
+            with self.engine.connect() as connection:
+                for table in tables:
+                    for column in table.columns:
+                        if column.name.endswith("_path") or column.name == "file_path":
+                            retained_paths.update(str(row[0]) for row in connection.execute(
+                                sa_select(column).where(column.in_(media_paths))
+                            ).fetchall() if row[0])
+        deleted_file_count = self._delete_managed_media_paths(sorted(media_paths - retained_paths))
+        media_root = self.media_root.resolve()
+        for relative in sorted(run_directories):
+            try:
+                path = (media_root / relative).resolve(strict=False)
+                if path.is_relative_to(media_root) and path != media_root and path.is_dir():
+                    shutil.rmtree(path)
+            except (OSError, RuntimeError, ValueError):
+                continue
+        exports_root = self.exports_root.resolve()
+        for raw in sorted(export_directories):
+            try:
+                candidate = Path(raw).expanduser()
+                path = candidate.resolve(strict=False) if candidate.is_absolute() else (exports_root / candidate).resolve(strict=False)
+                if path.is_relative_to(exports_root) and path != exports_root and path.is_dir():
+                    shutil.rmtree(path)
+            except (OSError, RuntimeError, ValueError):
+                continue
+        return {"project_id": project_id, "deleted_file_count": deleted_file_count,
+                "deleted_processing_runs": len(owned.get(ProcessingRun.__tablename__, {}))}
 
 
     def new_source_recording_id(self) -> str:

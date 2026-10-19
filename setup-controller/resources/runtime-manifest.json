@@ -137,7 +137,7 @@
       {
         "component": "ffmpeg",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
+        "sha256": "4c5c4e6883854163e20b320d86ff9acdf543feac921cac97234da977e255218f",
         "environment_role": "worker",
         "arguments": [
           "ffmpeg"
@@ -148,7 +148,7 @@
       {
         "component": "silero",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
+        "sha256": "4c5c4e6883854163e20b320d86ff9acdf543feac921cac97234da977e255218f",
         "environment_role": "worker",
         "arguments": [
           "silero"
@@ -159,7 +159,7 @@
       {
         "component": "whisper",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
+        "sha256": "4c5c4e6883854163e20b320d86ff9acdf543feac921cac97234da977e255218f",
         "environment_role": "worker",
         "arguments": [
           "whisper"
@@ -170,7 +170,7 @@
       {
         "component": "ecapa",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
+        "sha256": "4c5c4e6883854163e20b320d86ff9acdf543feac921cac97234da977e255218f",
         "environment_role": "worker",
         "arguments": [
           "ecapa"
@@ -181,7 +181,7 @@
       {
         "component": "pyannote",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
+        "sha256": "4c5c4e6883854163e20b320d86ff9acdf543feac921cac97234da977e255218f",
         "environment_role": "worker",
         "arguments": [
           "pyannote"
@@ -192,11 +192,22 @@
       {
         "component": "cuda",
         "helper": "workers/dataset/scripts/runtime_probe.py",
-        "sha256": "632a54c071919fa926d3f14fde0c79a4c2e3a9d15a60f7e3826997dbc227e65a",
+        "sha256": "4c5c4e6883854163e20b320d86ff9acdf543feac921cac97234da977e255218f",
         "environment_role": "worker_cuda_candidate",
         "fixture": "speech",
         "arguments": [
           "cuda"
+        ],
+        "timeout_ms": 600000
+      },
+      {
+        "component": "pyannote_cuda",
+        "helper": "workers/dataset/scripts/runtime_probe.py",
+        "sha256": "4c5c4e6883854163e20b320d86ff9acdf543feac921cac97234da977e255218f",
+        "environment_role": "worker",
+        "fixture": "community1_two_voice",
+        "arguments": [
+          "pyannote_cuda"
         ],
         "timeout_ms": 600000
       }

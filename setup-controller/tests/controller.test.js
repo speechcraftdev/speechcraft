@@ -2,11 +2,23 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
 import { afterEach, test } from 'node:test';
-import { assertTransition } from '../src/controller.js';
+import { assertTransition, serializePublicJob } from '../src/controller.js';
 import { StateStore, StateStoreError } from '../src/state-store.js';
 import { openEvents, readUntilEvent, temporaryController } from './helpers.js';
 
 const active = new Set();
+
+test('public setup status exposes Pyannote CUDA selection and a bounded validation reason', () => {
+  const value = serializePublicJob({ bootstrap_status: { components: { pyannote: { state: 'runtime_ready', device: 'cpu',
+    cuda_validation: { validated: false, device: 'cpu', failure_code: 'cuda_runtime_unavailable',
+      reason: 'CUDA out of memory in Community-1 probe', measurements: { secret: 'never present' } } },
+  }, runtime_profile: { pyannote_cuda_validated: false, pyannote_device: 'cpu' } } });
+  assert.equal(value.bootstrap_status.runtime_profile.pyannote_cuda_validated, false);
+  assert.equal(value.bootstrap_status.runtime_profile.pyannote_device, 'cpu');
+  assert.match(value.bootstrap_status.components.pyannote.cuda_validation.reason, /out of memory/);
+  assert.deepEqual(value.bootstrap_status.components.pyannote.cuda_validation.measurements, {});
+});
+
 afterEach(async () => {
   for (const fixture of active) {
     try { await fixture.app.close(); } catch {}

@@ -40,7 +40,7 @@ const PUBLIC_COMPONENT_NAMES = new Set(['uv', 'managed_python', 'model_manager',
   'worker_cuda_candidate', 'ffmpeg', 'silero', 'whisper', 'ecapa', 'pyannote', 'runtime_probes', 'backend_service', 'dataset_processing']);
 const PUBLIC_COMPONENT_FIELDS = Object.freeze(['identity', 'state', 'verification', 'last_verified_at', 'failure_code',
   'message', 'runtime_ready', 'progress', 'progress_indeterminate', 'device', 'effective_profile', 'release_blockers',
-  'action_required', 'components', 'blocked_components', 'optional_blocked_components', 'inference_completed', 'blockers']);
+  'action_required', 'components', 'blocked_components', 'optional_blocked_components', 'inference_completed', 'blockers', 'cuda_validation']);
 
 function publicComponentField(key, value) {
   if (key === 'blockers') {
@@ -61,6 +61,18 @@ function publicComponentField(key, value) {
     })) : [];
   }
   if (key === 'message') return typeof value === 'string' ? value.slice(0, 320) : null;
+  if (key === 'cuda_validation') return value && typeof value === 'object' ? {
+    validated: value.validated === true,
+    device: typeof value.device === 'string' ? value.device.slice(0, 80) : 'cpu',
+    gpu_name: typeof value.gpu_name === 'string' ? value.gpu_name.slice(0, 120) : null,
+    failure_code: typeof value.failure_code === 'string' && /^[a-z][a-z0-9_]{1,79}$/.test(value.failure_code) ? value.failure_code : null,
+    reason: typeof value.reason === 'string' ? value.reason.slice(0, 240) : null,
+    measurements: value.measurements && typeof value.measurements === 'object'
+      ? Object.fromEntries(['cuda_kernel_events', 'cuda_memory_allocated_bytes', 'cuda_peak_memory_bytes',
+        'cuda_memory_before_bytes', 'turn_count', 'speaker_count', 'recording_duration_seconds']
+        .filter((name) => Number.isFinite(value.measurements[name]))
+        .map((name) => [name, value.measurements[name]])) : {},
+  } : null;
   if (key === 'failure_code') return typeof value === 'string' && /^[A-Z0-9_]{1,80}$/.test(value) ? value : null;
   if (key === 'progress') return sanitizeProgressTelemetry(value);
   return structuredClone(value);
@@ -102,6 +114,8 @@ export function serializePublicJob(job) {
         accelerator: job.bootstrap_status.runtime_profile.accelerator || null,
         cuda_candidate: job.bootstrap_status.runtime_profile.cuda_candidate === true,
         cuda_validated: job.bootstrap_status.runtime_profile.cuda_validated === true,
+        pyannote_cuda_validated: job.bootstrap_status.runtime_profile.pyannote_cuda_validated === true,
+        pyannote_device: job.bootstrap_status.runtime_profile.pyannote_device || 'cpu',
       } : null,
     };
   }

@@ -12,6 +12,7 @@ import { demoEnabled, withDemo } from "@/lib/demo";
 import {
   type SpeakerSample,
   distinctSpeakerIds,
+  cancelRun,
   fetchSpeakers,
   refreshRun,
   saveSpeakerSelection,
@@ -72,6 +73,11 @@ export function VoiceSelection() {
           if (cancelled) return;
           const run = await refreshRun(runId);
           setRunStatus(run.status);
+          if (run.status === "cancelled") {
+            setPhase("error");
+            setError("Processing was cancelled.");
+            return;
+          }
           if (run.status === "failed" || run.status === "rejected") {
             throw new SpeechcraftApiError(0, `Speaker detection ${run.status}.`);
           }
@@ -134,6 +140,21 @@ export function VoiceSelection() {
     }
   };
 
+  const cancelProcessing = async () => {
+    if (!runId || !window.confirm("Stop this dataset's current processing job? Its diagnostic logs will be kept.")) return;
+    setBusy(true);
+    try {
+      const run = await cancelRun(runId);
+      setRunStatus(run.status);
+      setPhase("error");
+      setError(run.status === "cancelled" ? "Processing was cancelled. Diagnostic logs are available in Diagnostics." : `Processing already finished (${run.status}).`);
+    } catch (err) {
+      setError(err instanceof SpeechcraftApiError ? err.detail : "Could not safely stop this processing job.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (phase === "error") {
     return (
       <div className="text-center space-y-2">
@@ -158,6 +179,10 @@ export function VoiceSelection() {
         <div className="mt-10 lg:mt-12 flex items-center justify-center">
           <Spinner size={20} />
         </div>
+        <button type="button" disabled={busy || demo} onClick={() => void cancelProcessing()}
+          className="mt-5 rounded-md border border-black/20 px-3 py-2 text-sm disabled:opacity-50 dark:border-white/20">
+          {busy ? "Stopping…" : "Stop processing"}
+        </button>
       </>
     );
   }

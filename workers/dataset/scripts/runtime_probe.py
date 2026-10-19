@@ -23,6 +23,7 @@ PROBE_FIXTURES = {
     "whisper": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
     "ecapa": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
     "pyannote": ("community1-two-voice.wav", "981721582d5a7524cd8e825d8331d433b9e06a346de76f99855b026ca4216e7d", 768078),
+    "pyannote_cuda": ("community1-two-voice.wav", "981721582d5a7524cd8e825d8331d433b9e06a346de76f99855b026ca4216e7d", 768078),
     "cuda": ("speech.wav", "ecb6f72edf6207010324b8efc314893eea81688d24392c8ee4ad39074fb420cd", 576078),
 }
 
@@ -224,6 +225,48 @@ def run(component: str) -> dict:
                       measurements={"turn_count": len(turns), "speaker_count": speaker_count,
                                     "recording_duration_seconds": round(recording_duration, 4),
                                     "region_contract": "annotation_to_speechcraft_regions"})
+    elif component == "pyannote_cuda":
+        import soundfile as sf
+        import torch
+        from torch.profiler import ProfilerActivity, profile
+        from speechcraft_dataset.diarization import community1_annotation, load_community1_pipeline, run_community1_pipeline
+        import numpy as np
+
+        if not torch.cuda.is_available():
+            raise RuntimeError("PyTorch reports no available CUDA device for Community-1.")
+        snapshot = Path(os.environ.get("SPEECHCRAFT_PYANNOTE_COMMUNITY1_PATH", ""))
+        recording = audio_file("pyannote")
+        samples, rate = sf.read(str(recording), dtype="float32", always_2d=True)
+        ready, reason = __import__("speechcraft_dataset.diarization", fromlist=["community1_snapshot_ready"]).community1_snapshot_ready(snapshot)
+        if not ready:
+            raise RuntimeError(f"model_snapshot_missing: {reason}")
+        device = torch.device("cuda:0")
+        gpu_name = torch.cuda.get_device_name(device)
+        torch.cuda.reset_peak_memory_stats(device)
+        before = torch.cuda.memory_allocated(device)
+        pipeline = load_community1_pipeline(snapshot, str(device))
+        selected = getattr(pipeline, "device", None)
+        if selected is None or torch.device(selected).type != "cuda":
+            raise RuntimeError(f"Community-1 pipeline did not accept CUDA placement (reported {selected!s}).")
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+            annotation = community1_annotation(run_community1_pipeline(pipeline, np.ascontiguousarray(samples.T), int(rate)))
+            torch.cuda.synchronize(device)
+        cuda_events = [event for event in prof.key_averages() if getattr(event, "device_type", None) == torch.profiler.DeviceType.CUDA]
+        if not cuda_events:
+            raise RuntimeError("Community-1 inference completed without any profiled CUDA kernels.")
+        recording_duration = len(samples) / int(rate)
+        turns, speakers = community1_probe_regions(annotation, sample_rate=int(rate), recording_duration=recording_duration)
+        allocated = int(torch.cuda.memory_allocated(device))
+        peak = int(torch.cuda.max_memory_allocated(device))
+        if allocated <= before or peak <= 0:
+            raise RuntimeError("Community-1 inference did not allocate model memory on CUDA.")
+        result.update(identity=f"pyannote-community1-cuda:{gpu_name}", backend=f"pyannote.audio/torch:{torch.__version__}",
+                      device=str(selected), inference_completed=True,
+                      measurements={"turn_count": len(turns), "speaker_count": len(speakers),
+                                    "recording_duration_seconds": round(recording_duration, 4),
+                                    "cuda_kernel_events": len(cuda_events), "cuda_memory_allocated_bytes": allocated,
+                                    "cuda_peak_memory_bytes": peak, "cuda_memory_before_bytes": before,
+                                    "gpu_name": gpu_name, "region_contract": "annotation_to_speechcraft_regions"})
     elif component == "ffmpeg":
         import soundfile as sf
 
@@ -322,7 +365,7 @@ def run(component: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("component", choices=("ffmpeg", "silero", "whisper", "ecapa", "pyannote", "cuda"))
+    parser.add_argument("component", choices=("ffmpeg", "silero", "whisper", "ecapa", "pyannote", "cuda", "pyannote_cuda"))
     args = parser.parse_args()
     try:
         # Third-party inference libraries may print banners; reserve stdout for
@@ -349,7 +392,8 @@ def main() -> int:
         }.get(error_code, f"{args.component} inference probe failed ({type(exc).__name__}); inspect the local controller log.")
         print(json.dumps({"schema_version": 1, "component": args.component, "success": False,
                           "inference_completed": False, "error_code": error_code,
-                          "error": safe_message}, sort_keys=True))
+                          "error": safe_message,
+                          "diagnostic": f"{type(exc).__name__}: {str(exc)[:180]}" if args.component in {"cuda", "pyannote_cuda"} else None}, sort_keys=True))
         return 1
 
 

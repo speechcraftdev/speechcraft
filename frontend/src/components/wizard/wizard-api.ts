@@ -303,6 +303,10 @@ export function refreshRun(runId: string): Promise<DatasetRunView> {
   return sendJson<DatasetRunView>(`/api/dataset-runs/${runId}/refresh`, "POST", {});
 }
 
+export function cancelRun(runId: string): Promise<DatasetRunView> {
+  return sendJson<DatasetRunView>(`/api/dataset-runs/${runId}/cancel`, "POST", {});
+}
+
 export function fetchSpeakers(runId: string): Promise<SpeakerResults> {
   return getJson<SpeakerResults>(`/api/dataset-runs/${runId}/speakers`);
 }

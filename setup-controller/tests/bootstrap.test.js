@@ -234,6 +234,24 @@ test('ordinary installed-runtime recovery requires and binds reuse to the truste
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('an application update rebuilds only the model-manager environment when the trusted wheel changes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-manager-wheel-upgrade-'));
+  const tasks = new BootstrapTasks({ dataDirectory: root });
+  let lookups = 0;
+  let rebuilds = 0;
+  tasks.findInstalledModelManager = async () => {
+    lookups += 1;
+    if (lookups === 1) throw Object.assign(new Error('old trusted wheel'), { code: 'MODEL_MANAGER_WHEEL_HASH_MISMATCH' });
+    return { environmentRoot: '/managed/new-manager', wheel_sha256: 'b'.repeat(64) };
+  };
+  tasks.ensureModelManager = async () => { rebuilds += 1; };
+  const found = await tasks.findOrRepairInstalledModelManager({ attemptId: 'wheel-upgrade', signal: new AbortController().signal });
+  assert.equal(found.environmentRoot, '/managed/new-manager');
+  assert.equal(lookups, 2);
+  assert.equal(rebuilds, 1);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('controller restart reconstructs all installed model paths and retains the prior CUDA selection for revalidation without a wheel', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-full-runtime-recovery-'));
   const firstStore = StateStore.open(root);

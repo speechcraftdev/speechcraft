@@ -41,6 +41,7 @@ export type RuntimeComponent = {
   progress_indeterminate?: boolean;
   device?: string | null;
   effective_profile?: string | null;
+  cuda_validation?: { validated?: boolean; device?: string; gpu_name?: string | null; reason?: string | null } | null;
   release_blockers?: Array<{ code?: string; message?: string }>;
   blockers?: Array<{ component: string; code: string; message: string }>;
 };
@@ -52,7 +53,7 @@ export type SetupStatus = {
   simulated: boolean;
   setup_plan: string | null;
   components: Record<string, RuntimeComponent> | null;
-  runtime_profile: Record<string, unknown> | null;
+  runtime_profile: (Record<string, unknown> & { pyannote_cuda_validated?: boolean; pyannote_device?: string }) | null;
   technical_processing_ready: boolean;
   bootstrap_ready: boolean;
   partial_ready: boolean;

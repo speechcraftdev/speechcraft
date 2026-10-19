@@ -123,6 +123,11 @@ export async function fetchProjects(): Promise<SpeechcraftProject[]> {
   return getJson<SpeechcraftProject[]>("/api/projects");
 }
 
+export async function deleteProject(projectId: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/projects/${projectId}`, { method: "DELETE", headers: { Accept: "application/json" } });
+  if (!res.ok) throw new Error(`Could not delete project (${res.status}).`);
+}
+
 export async function fetchDatasetRuns(projectId: string): Promise<SpeechcraftDatasetRun[]> {
   return getJson<SpeechcraftDatasetRun[]>(`/api/projects/${projectId}/dataset-runs`);
 }

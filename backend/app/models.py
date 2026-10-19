@@ -162,6 +162,7 @@ class ProcessingRunStatus(str, Enum):
     NEEDS_REVIEW = "needs_review"
     REJECTED = "rejected"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class RunArtifactStatus(str, Enum):

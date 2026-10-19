@@ -923,7 +923,7 @@ export class BootstrapTasks {
             verification: 'runtime_probe', last_verified_at: new Date().toISOString(), failure_code: null,
             message: null, path: python });
           try {
-            const manager = await this.findInstalledModelManager(context);
+            const manager = await this.findOrRepairInstalledModelManager(context);
             this.paths.environmentRoot = manager.environmentRoot;
             this.status(context, { model_manager_verified: true, manager_version: manager.version });
             this.setComponent(context, 'model_manager', { state: 'verified', verification: 'installed_wheel_identity_catalog_and_cli',
@@ -1449,6 +1449,20 @@ export class BootstrapTasks {
     throw new BootstrapError('MODEL_MANAGER_ENVIRONMENT_UNAVAILABLE', 'No installed model-manager environment passed its pinned package, wheel, lock, and catalog identity checks. Trusted repair inputs are required to reinstall it.');
   }
 
+  async findOrRepairInstalledModelManager(context) {
+    try {
+      return await this.findInstalledModelManager(context);
+    } catch (error) {
+      // An application update can ship a new trusted model-manager wheel
+      // while preserving the older versioned data directory. Rebuild only
+      // this owned environment from the packaged wheel, then revalidate it.
+      if (!['MODEL_MANAGER_WHEEL_HASH_MISMATCH', 'MODEL_MANAGER_ENVIRONMENT_UNAVAILABLE',
+        'MODEL_MANAGER_ENVIRONMENT_INVALID'].includes(error?.code)) throw error;
+      await this.ensureModelManager(context);
+      return this.findInstalledModelManager(context);
+    }
+  }
+
   async ensureModelManager(context) {
     if (!this.manifest.model_manager.dependency_lock) throw new BootstrapError('DEPENDENCY_LOCK_MISSING', 'The model-manager dependency lock is missing.');
     if (!fs.existsSync(this.requirementsPath) || fs.lstatSync(this.requirementsPath).isSymbolicLink()) {
@@ -1913,6 +1927,14 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     const validated = [];
     const blocked = [];
     const components = context.componentStatus.components || {};
+    if (context.componentStatus.runtime_profile) {
+      this.status(context, { runtime_profile: { ...context.componentStatus.runtime_profile,
+        pyannote_cuda_validated: false, pyannote_device: 'cpu' } });
+    }
+    if (components.pyannote?.state === 'runtime_ready') {
+      this.setComponent(context, 'pyannote', { ...components.pyannote, device: 'cpu',
+        cuda_validation: { validated: false, device: 'cpu', reason: 'Pyannote CUDA validation is running.' } });
+    }
     const managedRoot = path.resolve(this.dataDirectory);
     const managedPath = (candidate) => {
       if (typeof candidate !== 'string' || !candidate) return '';
@@ -1951,6 +1973,15 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     let cudaReport = null;
     let cudaSelected = false;
     for (const probe of probes) {
+      if (probe.component === 'pyannote_cuda' && !cudaSelected) {
+        this.setComponent(context, 'pyannote', { cuda_validation: { validated: false, device: 'cpu',
+          reason: 'General CUDA runtime validation did not pass; Pyannote is using its validated CPU path.' },
+          progress: null, progress_indeterminate: false });
+        this.status(context, { runtime_profile: { ...(context.componentStatus.runtime_profile || {}),
+          pyannote_cuda_validated: false, pyannote_device: 'cpu' } });
+        optionalBlocked.push('pyannote_cuda');
+        continue;
+      }
       if (!/^[a-z][a-z0-9_]*$/.test(probe.component || '') || !/^[a-f0-9]{64}$/.test(probe.sha256 || '')
           || !Number.isSafeInteger(probe.timeout_ms) || probe.timeout_ms < 1000 || probe.timeout_ms > 10 * 60_000
           || !Array.isArray(probe.arguments) || probe.arguments.some((arg) => typeof arg !== 'string' || arg.length > 200)) {
@@ -1968,7 +1999,7 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         if (!safeFixture) {
           this.setComponent(context, probe.component, { state: 'blocked', runtime_ready: false,
             failure_code: 'runtime_probe_fixture_invalid', message: 'A bundled runtime probe fixture is missing or failed its trusted integrity check.' });
-          (probe.component === 'cuda' ? optionalBlocked : blocked).push(probe.component);
+          (['cuda', 'pyannote_cuda'].includes(probe.component) ? optionalBlocked : blocked).push(probe.component);
           continue;
         }
         selectedProbeAudio = fixturePath;
@@ -1978,11 +2009,21 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !trustedFileMatches(helper, probe.sha256)) {
         throw new BootstrapError('RUNTIME_PROBE_INTEGRITY_FAILED', 'A runtime-validation helper is outside the application or failed its trusted digest check.');
       }
-      const modelComponent = ['silero', 'whisper', 'pyannote', 'ecapa'].includes(probe.component);
+      const modelComponent = ['silero', 'whisper', 'pyannote', 'pyannote_cuda', 'ecapa'].includes(probe.component);
+      if (probe.component === 'pyannote_cuda') {
+        const pyannote = context.componentStatus.components.pyannote || {};
+        this.setComponent(context, 'pyannote', { ...pyannote, cuda_validation: { validated: false,
+          device: 'cpu', reason: 'Running Community-1 CUDA inference and device validation.' },
+          progress: { phase: 'running_inference', role: 'diarization_cuda_validation',
+            model_name: 'pyannote Community-1 CUDA', current_filename: null, downloaded_bytes: null,
+            total_bytes: null, bytes_per_second: null, eta_seconds: null, files_completed: null,
+            files_total: null, transfer_indeterminate: true, stalled: false, sampled_at: new Date().toISOString() },
+          progress_indeterminate: true });
+      }
       this.setComponent(context, probe.component, { state: modelComponent ? 'validating_inference' : 'validating',
         failure_code: null, message: null,
-        ...(modelComponent ? { progress: { phase: 'running_inference', role: ({ silero: 'speech_detection', whisper: 'asr', pyannote: 'diarization', ecapa: 'speaker_purity' })[probe.component],
-          model_name: ({ silero: 'Silero VAD', whisper: 'Whisper Large-v3', pyannote: 'pyannote Community-1', ecapa: 'WeSpeaker ECAPA-TDNN512-LM' })[probe.component],
+        ...(modelComponent ? { progress: { phase: 'running_inference', role: ({ silero: 'speech_detection', whisper: 'asr', pyannote: 'diarization', pyannote_cuda: 'diarization_cuda_validation', ecapa: 'speaker_purity' })[probe.component],
+          model_name: ({ silero: 'Silero VAD', whisper: 'Whisper Large-v3', pyannote: 'pyannote Community-1', pyannote_cuda: 'pyannote Community-1 CUDA', ecapa: 'WeSpeaker ECAPA-TDNN512-LM' })[probe.component],
           current_filename: null, downloaded_bytes: null, total_bytes: null, bytes_per_second: null,
           eta_seconds: null, files_completed: null, files_total: null, transfer_indeterminate: true, stalled: false,
           sampled_at: new Date().toISOString() }, progress_indeterminate: true } : {}) });
@@ -1998,10 +2039,16 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         : (components.worker_environment?.state === 'verified' && components.worker_environment.path
             ? path.join(components.worker_environment.path, 'bin', 'python') : null);
       if (!python || !path.resolve(python).startsWith(`${environmentRoot}${path.sep}`)) {
-        if (probe.component === 'cuda') {
-          this.setComponent(context, 'cuda', { state: 'blocked', runtime_ready: false, failure_code: 'cuda_candidate_unavailable',
-            message: 'No verified managed CUDA worker candidate is available; the validated CPU profile remains selected.' });
-          optionalBlocked.push('cuda');
+        if (['cuda', 'pyannote_cuda'].includes(probe.component)) {
+          const component = probe.component;
+          this.setComponent(context, component === 'pyannote_cuda' ? 'pyannote' : 'cuda', component === 'pyannote_cuda'
+            ? { cuda_validation: { validated: false, device: 'cpu', reason: 'No verified managed CUDA worker environment is available.' },
+              progress: null, progress_indeterminate: false }
+            : { state: 'blocked', runtime_ready: false, failure_code: 'cuda_candidate_unavailable',
+              message: 'No verified managed CUDA worker candidate is available; the validated CPU profile remains selected.' });
+          if (component === 'pyannote_cuda') this.status(context, { runtime_profile: {
+            ...(context.componentStatus.runtime_profile || {}), pyannote_cuda_validated: false, pyannote_device: 'cpu' } });
+          optionalBlocked.push(component);
           continue;
         }
         throw new BootstrapError('RUNTIME_PROBE_ENVIRONMENT_UNAVAILABLE', `The managed ${role} environment is not verified for this probe.`);
@@ -2015,7 +2062,7 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         : (cudaSelected ? components.worker_environment?.library_paths : null);
       const pyannoteCudaValidated = context.componentStatus.runtime_profile?.pyannote_cuda_validated === true;
       const probeEnvironment = { ...helperEnvironment, SPEECHCRAFT_RUNTIME_PROBE_AUDIO: selectedProbeAudio,
-        SPEECHCRAFT_PROBE_DEVICE: probe.component === 'cuda' || (probe.component === 'whisper' && cudaSelected)
+        SPEECHCRAFT_PROBE_DEVICE: ['cuda', 'pyannote_cuda'].includes(probe.component) || (probe.component === 'whisper' && cudaSelected)
           || (probe.component === 'pyannote' && pyannoteCudaValidated) ? 'cuda' : 'cpu',
         SPEECHCRAFT_PYANNOTE_DEVICE: pyannoteCudaValidated ? 'cuda' : 'cpu',
         SPEECHCRAFT_PYANNOTE_CUDA_VALIDATED: pyannoteCudaValidated ? '1' : '0',
@@ -2025,8 +2072,17 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       try { result = await this.runProcess(python, ['-I', helper, ...probe.arguments], { ...context, signal },
         { cwd: this.applicationRoot, env: probeEnvironment, allowFailure: true }); }
       catch (error) {
-        if (timer.aborted && !context.signal?.aborted) throw new BootstrapError('RUNTIME_PROBE_TIMEOUT', `The ${probe.component} runtime probe exceeded its trusted time limit.`, { cause: error });
-        throw error;
+        if (context.signal?.aborted) throw error;
+        if (probe.component === 'pyannote_cuda') {
+          result = { code: 1, stdout: JSON.stringify({ schema_version: 1, component: probe.component,
+            success: false, inference_completed: false,
+            error_code: timer.aborted ? 'pyannote_cuda_probe_timeout' : 'pyannote_cuda_probe_failed',
+            error: timer.aborted ? 'Community-1 CUDA validation exceeded its time limit; the validated CPU path remains selected.'
+              : 'Community-1 CUDA validation could not start; the validated CPU path remains selected.',
+            diagnostic: `${error?.name || 'Error'}: ${String(error?.message || error).slice(0, 160)}` }), stderr: '' };
+        } else if (timer.aborted) {
+          throw new BootstrapError('RUNTIME_PROBE_TIMEOUT', `The ${probe.component} runtime probe exceeded its trusted time limit.`, { cause: error });
+        } else throw error;
       }
       let report;
       try { report = JSON.parse(result.stdout); } catch {
@@ -2037,6 +2093,17 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
           || report.inference_completed !== true || typeof report.identity !== 'string' || !report.identity) {
         const code = typeof report.error_code === 'string' && /^[a-z][a-z0-9_]{1,79}$/.test(report.error_code)
           ? report.error_code : 'runtime_probe_failed';
+        if (probe.component === 'pyannote_cuda') {
+          this.setComponent(context, 'pyannote', { cuda_validation: { validated: false, device: 'cpu',
+            failure_code: code, reason: typeof report.diagnostic === 'string' ? report.diagnostic.slice(0, 240)
+              : (typeof report.error === 'string' ? report.error.slice(0, 240) : 'Pyannote CUDA inference validation failed.') },
+            progress: null, progress_indeterminate: false });
+          this.status(context, { runtime_profile: { ...(context.componentStatus.runtime_profile || {}),
+            pyannote_cuda_validated: false, pyannote_device: 'cpu', pyannote_cuda_validation: {
+              validated: false, failure_code: code, diagnostic: typeof report.diagnostic === 'string' ? report.diagnostic.slice(0, 240) : null } } });
+          optionalBlocked.push('pyannote_cuda');
+          continue;
+        }
         this.setComponent(context, probe.component, { state: 'blocked', runtime_ready: false,
           failure_code: code, message: typeof report.error === 'string' ? report.error.slice(0, 320)
             : `The ${probe.component} probe did not confirm successful inference.`,
@@ -2078,6 +2145,17 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
           this.status(context, { runtime_profile: { ...selection, cuda_probe: report }, accelerator: 'cuda' });
         }
       }
+      if (probe.component === 'pyannote_cuda') {
+        const runtimeProfile = context.componentStatus.runtime_profile || {};
+        this.status(context, { runtime_profile: { ...runtimeProfile, pyannote_cuda_validated: true,
+          pyannote_device: typeof report.device === 'string' ? report.device : 'cuda:0',
+          pyannote_cuda_validation: report }, accelerator: runtimeProfile.accelerator || 'cuda' });
+        const pyannote = context.componentStatus.components.pyannote || {};
+        this.setComponent(context, 'pyannote', { ...pyannote, device: report.device || 'cuda:0',
+          verification: 'trusted_cpu_and_cuda_inference_probes', cuda_validation: { validated: true,
+            device: report.device || 'cuda:0', gpu_name: report.measurements?.gpu_name || null,
+            measurements: report.measurements || {} }, progress: null, progress_indeterminate: false });
+      }
       this.setComponent(context, probe.component, { state: 'runtime_ready', identity: report.identity,
         verification: 'trusted_inference_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null,
         runtime_ready: true, progress: null, progress_indeterminate: false,
@@ -2085,9 +2163,10 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       validated.push(probe.component);
     }
     if (!cudaSelected && this.environment?.profile === 'linux-x86_64') {
-      this.status(context, { runtime_profile: selectRuntimeProfile(this.environment, {
+      this.status(context, { runtime_profile: { ...selectRuntimeProfile(this.environment, {
         gpuDetected: context.componentStatus.host_details?.cuda_candidate === true, cudaValidated: false,
-      }), accelerator: 'cpu', cuda_fallback_reason: cudaReport?.error || 'CUDA inference did not pass the trusted runtime probe.' });
+      }), pyannote_cuda_validated: false, pyannote_device: 'cpu' }, accelerator: 'cpu',
+      cuda_fallback_reason: cudaReport?.error || 'CUDA inference did not pass the trusted runtime probe.' });
     }
     this.setComponent(context, 'runtime_probes', { state: blocked.length ? 'blocked' : 'verified',
       verification: 'trusted_inference_probes', components: validated, blocked_components: blocked,

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertLoopbackAddress, chooseDestination, formatFrontendReadyEvent, openDefaultBrowser, parseArgs, parseFrontendReadyEvent, readOrCreateFrontendIdentity, resolveLaunchContext, stopOwned, stopOwnedRecord, verifyFrontendOwnership } from '../src/launcher.js';
+import { assertLoopbackAddress, chooseDestination, formatFrontendReadyEvent, openDefaultBrowser, parseArgs, parseFrontendReadyEvent, readOrCreateFrontendIdentity, resolveLaunchContext, stopOwned, stopOwnedRecord, verifyFrontendOwnership, waitForRestoration } from '../src/launcher.js';
 import { classifyChildStreamLine, createLauncherLog, createLaunchLogSession, formatLaunchAccess, formatRemoteAccessGuidance, isRoutineChildStdout, launchOutputMode, redactLaunchText } from '../src/launch-log.js';
 import { PassThrough } from 'node:stream';
 import { EventEmitter, once } from 'node:events';
@@ -17,6 +17,25 @@ test('fresh and interrupted setup routes to setup; completed onboarding routes t
   assert.equal(chooseDestination(null), '/setup');
   assert.equal(chooseDestination({ completed: false }), '/setup');
   assert.equal(chooseDestination({ completed: true }), '/login');
+});
+
+test('launcher waits through the initial service_start_pending status during real runtime revalidation', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const pending = { components: { backend_service: { state: 'blocked', failure_code: 'service_start_pending' },
+    runtime_probes: { state: 'pending' } } };
+  const ready = { components: { backend_service: { state: 'verified', verification: 'internal_health_identity' },
+    runtime_probes: { state: 'verified' } } };
+  globalThis.fetch = async () => new Response(JSON.stringify(calls++ === 0 ? pending : ready),
+    { status: 200, headers: { 'content-type': 'application/json' } });
+  try {
+    const result = await waitForRestoration({ cookie: 'session=fixture' }, 1000, null, 1);
+    assert.equal(result.ready, true);
+    assert.equal(result.status.components.backend_service.verification, 'internal_health_identity');
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('frontend readiness is a versioned loopback event and never carries secrets', () => {
