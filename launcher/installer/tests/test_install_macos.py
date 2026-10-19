@@ -61,7 +61,7 @@ class MacInstallerSimulationTests(unittest.TestCase):
                     "signing": {"status": "unsigned_development_build", "notarized": False}}
         (app / "application-release-manifest.json").write_text(json.dumps(manifest) + "\n")
         archive = self.assets / f"speechcraft-{version}-macos-arm64.tar.gz"
-        if unsafe:
+        if unsafe and not unsafe.startswith("/"):
             (app / unsafe).parent.mkdir(parents=True, exist_ok=True)
             (app / unsafe).write_text("unsafe")
         if symlink:
