@@ -85,6 +85,18 @@ esac
         os.chmod(self.mockbin / "uname", 0o755)
         (self.mockbin / "id").write_text("#!/bin/sh\n[ \"$1\" = -u ] || exit 2\nprintf '%s\\n' \"${MOCK_UID:-1000}\"\n")
         os.chmod(self.mockbin / "id", 0o755)
+        (self.mockbin / "sed").write_text("""#!/bin/sh
+if [ "${3:-}" = /etc/os-release ] && [ -n "${MOCK_OS_RELEASE_ID:-}${MOCK_OS_RELEASE_VERSION:-}" ]; then
+  case "$2" in
+    s/^ID=//p) printf '%s\\n' "${MOCK_OS_RELEASE_ID:-ubuntu}" ;;
+    s/^VERSION_ID=//p) printf '%s\\n' "${MOCK_OS_RELEASE_VERSION:-24.04}" ;;
+    *) exit 2 ;;
+  esac
+else
+  exec /bin/sed "$@"
+fi
+""")
+        os.chmod(self.mockbin / "sed", 0o755)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -221,7 +233,8 @@ esac
         self.assertFalse(self.curl_log.exists())
 
     def test_wsl2_unsupported_guest_fails_before_any_release_download(self):
-        result = self.run_bootstrap(UNAME_RELEASE="6.6.87.2-microsoft-standard-WSL2")
+        result = self.run_bootstrap(UNAME_RELEASE="6.6.87.2-microsoft-standard-WSL2",
+                                   MOCK_OS_RELEASE_ID="fedora", MOCK_OS_RELEASE_VERSION="42")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('WSL2 guest', result.stderr)
         self.assertFalse(self.curl_log.exists())
