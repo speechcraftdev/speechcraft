@@ -112,14 +112,16 @@ export function IngestDropzone() {
 
   const onDropRejected = ([reject]: FileRejection[]) => {
     if (reject?.errors.find(({ code }) => code === "file-invalid-type")) {
-      toast({ duration: 2500, variant: "error", title: "Only .wav files are supported." });
+      toast({ duration: 2500, variant: "error", title: "Choose WAV, MP3, FLAC, M4A, AAC, OGG, Opus, or AIFF audio." });
     }
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop: (files) => void ingest(files),
     onDropRejected,
-    accept: { "audio/wav": [".wav"], "audio/x-wav": [".wav"] },
+    accept: {
+      "audio/*": [".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aiff", ".aif"],
+    },
     disabled: phase === "uploading" || skipping,
   });
 
@@ -136,7 +138,7 @@ export function IngestDropzone() {
           <Progress value={progress} />
           <div className="flex items-center justify-between text-xs text-[#878787]">
             <span>{progress}%</span>
-            <span>{progress >= 100 ? "Finishing…" : "Streaming to backend"}</span>
+            <span>{progress >= 99 ? "Validating audio…" : "Verified transfer"}</span>
           </div>
         </div>
       </>
@@ -151,7 +153,7 @@ export function IngestDropzone() {
           isDragActive ? "opacity-100" : "opacity-0 pointer-events-none",
         )}
       >
-        <p className="text-sm text-[#878787]">Drop your .wav files here.</p>
+        <p className="text-sm text-[#878787]">Drop supported audio files here.</p>
       </div>
 
       <input {...getInputProps()} id="upload-files" />
@@ -160,10 +162,10 @@ export function IngestDropzone() {
         <h1 className="text-lg lg:text-xl mb-4 font-serif">Ingest your dataset</h1>
         <p className="font-sans text-sm text-[#878787]">
           {phase === "error"
-            ? "Something went wrong. Drag & drop your .wav files to try again."
+            ? "Something went wrong. Drag & drop supported audio files to try again."
             : demo
-              ? "Demo mode — continue with the current project, or upload new .wav recordings."
-              : "Drag & drop or upload your .wav recordings."}
+              ? "Demo mode — continue with the current project, or upload new audio recordings."
+              : "Drag & drop or upload WAV, MP3, FLAC, M4A, AAC, OGG, Opus, or AIFF recordings."}
         </p>
       </div>
 

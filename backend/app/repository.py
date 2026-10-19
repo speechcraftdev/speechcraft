@@ -208,6 +208,32 @@ class SQLiteRepository:
     def close(self) -> None:
         self.engine.dispose()
 
+    def cleanup_orphan_source_files(self) -> int:
+        """Remove promoted upload files left behind if the process crashed before DB commit."""
+        source_root = (self.media_root / "sources").resolve()
+        if not source_root.exists():
+            return 0
+        with self._session() as session:
+            referenced = {
+                Path(recording.file_path).expanduser().resolve(strict=False)
+                for recording in session.exec(select(SourceRecording)).all()
+            }
+            artifacts = session.exec(select(SourceRecordingArtifact)).all()
+            for artifact in artifacts:
+                original = dict(artifact.artifact_metadata or {}).get("original_path")
+                if isinstance(original, str):
+                    referenced.add(Path(original).expanduser().resolve(strict=False))
+        removed = 0
+        for candidate in source_root.iterdir():
+            try:
+                resolved = candidate.resolve(strict=False)
+                if resolved.parent == source_root and resolved not in referenced and candidate.is_file():
+                    candidate.unlink()
+                    removed += 1
+            except (OSError, RuntimeError):
+                continue
+        return removed
+
     def __del__(self) -> None:  # pragma: no cover - best effort cleanup
         try:
             self.close()
@@ -995,20 +1021,37 @@ class SQLiteRepository:
     def new_source_recording_id(self) -> str:
         return self._new_id("source")
 
+    def find_source_recording_for_upload(self, project_id: str, upload_id: str) -> str | None:
+        with self._session() as session:
+            recordings = session.exec(
+                select(SourceRecording).where(SourceRecording.batch_id == project_id)
+            ).all()
+            for recording in recordings:
+                artifact = session.get(SourceRecordingArtifact, recording.id)
+                metadata = dict(artifact.artifact_metadata or {}) if artifact is not None else {}
+                if metadata.get("upload_session_id") == upload_id:
+                    return recording.id
+        return None
+
     def managed_source_recording_path(self, recording_id: str) -> Path:
         return self._managed_media_path("sources", recording_id)
 
     def read_pcm_wav_header(self, path: Path) -> tuple[int, int, int, int]:
         return self._read_pcm_wav_header(path)
 
-    def create_source_recording(self, payload: SourceRecordingCreate) -> SourceRecording:
+    def create_source_recording(
+        self, payload: SourceRecordingCreate, *, artifact_metadata: dict[str, Any] | None = None
+    ) -> SourceRecording:
         with self._session() as session:
             self._get_batch(session, payload.batch_id)
             self._validate_audio_asset(Path(payload.file_path), payload.sample_rate, payload.num_channels, payload.num_samples)
             recording = SourceRecording(**payload.model_dump())
             session.add(recording)
             session.flush()
-            self._ensure_source_recording_artifact(session, recording)
+            artifact = self._ensure_source_recording_artifact(session, recording)
+            if artifact_metadata is not None:
+                artifact.artifact_metadata = artifact_metadata
+                session.add(artifact)
             session.commit()
             session.refresh(recording)
             return recording

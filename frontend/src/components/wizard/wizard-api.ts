@@ -54,46 +54,90 @@ export async function createProject(
 }
 
 /**
- * Stream a single recording into a project, reporting 0..100 upload progress.
- * Uses XHR because fetch has no upload-progress events.
+ * Upload bounded, independently verified chunks. Progress advances only after
+ * the backend has committed each chunk; 100% means validation and conversion
+ * have also completed.
  */
-export function uploadRecording(
+export async function uploadRecording(
   projectId: string,
   file: File,
   onProgress: (pct: number) => void,
 ): Promise<SourceRecording> {
-  const url = `${BASE}/api/projects/${projectId}/source-recordings/upload`;
-  return new Promise((resolve, reject) => {
-    const form = new FormData();
-    form.append("file", file, file.name);
-    const req = new XMLHttpRequest();
-    req.open("POST", url);
-    req.upload.onprogress = (e) => {
-      if (e.lengthComputable && e.total > 0) {
-        onProgress(Math.max(0, Math.min(100, Math.round((e.loaded / e.total) * 100))));
+  const root = `${BASE}/api/projects/${encodeURIComponent(projectId)}/source-recordings/upload-sessions`;
+  const key = `speechcraft-upload:${projectId}:${file.name}:${file.size}:${file.lastModified}`;
+  const clientKey = `${key}:client`;
+  const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
+    const response = await fetch(url, { ...init, headers: { Accept: "application/json", ...init?.headers } });
+    if (!response.ok) throw await parseError(response);
+    return (await response.json()) as T;
+  };
+  const retry = async <T>(operation: () => Promise<T>): Promise<T> => {
+    let last: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try { return await operation(); } catch (error) {
+        last = error;
+        const retryable = !(error instanceof SpeechcraftApiError) || error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500;
+        if (!retryable || attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 400 * 2 ** attempt));
       }
-    };
-    req.onload = () => {
-      let payload: unknown = null;
-      try {
-        payload = req.responseText ? JSON.parse(req.responseText) : null;
-      } catch {
-        payload = null;
-      }
-      if (req.status >= 200 && req.status < 300 && payload) {
-        onProgress(100);
-        resolve(payload as SourceRecording);
-        return;
-      }
-      const detail =
-        payload && typeof payload === "object" && "detail" in payload
-          ? String((payload as { detail?: unknown }).detail)
-          : `Upload failed (${req.status})`;
-      reject(new SpeechcraftApiError(req.status || 0, detail));
-    };
-    req.onerror = () => reject(new SpeechcraftApiError(0, "Network error during upload"));
-    req.send(form);
-  });
+    }
+    throw last;
+  };
+  type UploadStatus = { upload_id: string; chunk_size: number; chunk_count: number; committed_bytes: number; completed_chunks: number[]; completed?: boolean; recording_id?: string | null };
+  let uploadId = "";
+  let clientUploadId = "";
+  try { uploadId = localStorage.getItem(key) || ""; } catch { /* private browsing can disable storage */ }
+  try { clientUploadId = localStorage.getItem(clientKey) || ""; } catch { /* private browsing can disable storage */ }
+  if (!/^[0-9a-f]{32}$/.test(clientUploadId)) {
+    clientUploadId = crypto.randomUUID().replaceAll("-", "");
+    try { localStorage.setItem(clientKey, clientUploadId); } catch { /* request retries still reuse this id */ }
+  }
+  let status: UploadStatus | null = null;
+  if (uploadId) {
+    try { status = await request<UploadStatus>(`${root}/${encodeURIComponent(uploadId)}`); }
+    catch { uploadId = ""; }
+  }
+  if (!uploadId) {
+    status = await retry(() => request<UploadStatus>(root, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, size: file.size, client_upload_id: clientUploadId }),
+    }));
+    uploadId = status.upload_id;
+    try { localStorage.setItem(key, uploadId); } catch { /* resume remains available for this page */ }
+  }
+  if (status?.completed && status.recording_id) {
+    const recording = (await request<SourceRecording[]>(`${BASE}/api/projects/${encodeURIComponent(projectId)}/source-recordings`))
+      .find((item) => item.id === status?.recording_id);
+    if (recording) {
+      try { localStorage.removeItem(key); localStorage.removeItem(clientKey); } catch { /* ignore */ }
+      onProgress(100);
+      return recording;
+    }
+  }
+  const chunkSize = status!.chunk_size;
+  const completed = new Set(status!.completed_chunks);
+  onProgress(Math.min(99, Math.floor((status!.committed_bytes / file.size) * 99)));
+  const url = `${root}/${encodeURIComponent(uploadId)}`;
+  const hash = async (blob: Blob) => {
+    const bytes = await blob.arrayBuffer();
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  };
+  for (let index = 0; index < status!.chunk_count; index++) {
+    if (completed.has(index)) continue;
+    const chunk = file.slice(index * chunkSize, Math.min(file.size, (index + 1) * chunkSize));
+    const digest = await hash(chunk);
+    await retry(() => request<UploadStatus>(`${url}/chunks/${index}`, {
+      method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Chunk-SHA256": digest }, body: chunk,
+    }));
+    completed.add(index);
+    const committed = Math.min(file.size, completed.size * chunkSize);
+    onProgress(Math.min(99, Math.floor((committed / file.size) * 99)));
+  }
+  const recording = await retry(() => request<SourceRecording>(`${url}/finalize`, { method: "POST" }));
+  try { localStorage.removeItem(key); localStorage.removeItem(clientKey); } catch { /* ignore */ }
+  onProgress(100);
+  return recording;
 }
 
 /** Build a url-safe, reasonably-unique project id from a dataset name. */
