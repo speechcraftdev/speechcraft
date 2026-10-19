@@ -12,9 +12,9 @@ Linux x86-64 is the only target of the candidate bootstrap. Model weights are no
 
 ## Public installation status
 
-There is no public installer URL yet. The earlier `v0.1.0` and `v0.1.0-internal.1` candidates remain untouched drafts. The current internal candidate is [`v0.1.0-internal.2`](https://github.com/speechcraftdev/speechcraft/releases/tag/untagged-f2aab91f4ef790a86767), built from source commit `0abf8a9038c5d07ebe579ecc6c48e7eab993f716`. Draft assets require authenticated GitHub access and are not anonymously downloadable. Do not use `curl | sh` from a draft.
+There is no public installer URL yet. The immutable `v0.1.0` tag and `v0.1.0` release candidate already exist, so the next public application version is `v0.1.1`; existing tags and drafts must remain untouched. The current internal candidate is [`v0.1.0-internal.3`](https://github.com/speechcraftdev/speechcraft/releases/tag/untagged-23b5f0acd87ce30ada5d), built from source commit `230cafaba61b670c542c71b053f48a971640dd95`. Draft assets require authenticated GitHub access and are not anonymously downloadable. Do not use `curl | sh` from a draft.
 
-For an authorized test download of the current draft's real GitHub assets, use `gh release download v0.1.0-internal.2 --repo speechcraftdev/speechcraft`. The uploaded bootstrap asset URL is `https://github.com/speechcraftdev/speechcraft/releases/download/untagged-f2aab91f4ef790a86767/install.sh`; draft access is authenticated. This URL is for internal testing only, not a public install entry point.
+For an authorized test download of the current draft's real GitHub assets, use `gh release download v0.1.0-internal.3 --repo speechcraftdev/speechcraft`. The uploaded bootstrap asset URL is `https://github.com/speechcraftdev/speechcraft/releases/download/untagged-23b5f0acd87ce30ada5d/install.sh`; draft access is authenticated. This URL is for internal testing only, not a public install entry point.
 
 After a production release has passed the compliance and publisher-authentication gates, its versioned GitHub bootstrap URL will be:
 
