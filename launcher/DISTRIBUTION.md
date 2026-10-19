@@ -4,7 +4,7 @@
 
 | Platform | Package and installer | Validation | Distribution status |
 | --- | --- | --- | --- |
-| Linux x86-64 | Versioned application tarball; `install-linux.sh` calls the official per-user Python installer. Requires system Python 3.9+ and `curl`. | Existing installed-package smoke covers installation, repeat install, upgrade state preservation, local `/setup`, and operation without global Node/Bun. | Candidate only. Public release is blocked pending FFmpeg acquisition/redistribution review and confirmation that ECAPA attribution and license notices satisfy distribution obligations. |
+| Linux x86-64 | Versioned application tarball; `install-linux.sh` calls the official per-user Python installer. Requires system Python 3.9+ and `curl`. | Installed-package smoke covers installation, repeat install, upgrade state preservation, local `/setup`, and operation without global Node/Bun. The setup page displays ECAPA publisher attribution, pinned revision, and CC BY 4.0 links. | Release-owner publication approval is still required for the scoped FFmpeg delivery question in `setup-controller/resources/FFMPEG-LICENSE-NOTICE.md`. |
 | macOS Apple Silicon | ARM64 application archive and Python installer exist. | Archive cross-build and temporary-home registration were recorded; the Darwin Node binary and application were not run, and the package is unsigned and not notarized. | Development artifact; not production-ready. |
 | Windows x64 | Native PowerShell entry point for a Windows wrapper that dispatches into an existing Ubuntu WSL2 installation. It does not install WSL. | Native Windows and WSL2 acceptance has not been completed. | Development artifact; not production-ready. |
 
@@ -12,25 +12,24 @@ Linux x86-64 is the only target of the candidate bootstrap. Model weights are no
 
 ## Public installation status
 
-There is no public installer URL yet. The immutable `v0.1.0` tag and `v0.1.0` release candidate already exist, so the next public application version is `v0.1.1`; existing tags and drafts must remain untouched. The current internal candidate is [`v0.1.0-internal.3`](https://github.com/speechcraftdev/speechcraft/releases/tag/untagged-23b5f0acd87ce30ada5d), built from source commit `230cafaba61b670c542c71b053f48a971640dd95`. Draft assets require authenticated GitHub access and are not anonymously downloadable. Do not use `curl | sh` from a draft.
+There is no public `v0.1.1` installer until the release-owner issue is closed with the `release-approved` label and a comment from the designated reviewer records `APPROVED_FOR_PUBLIC_TESTING_RELEASE v0.1.1 Linux x86-64 source <full-main-sha>`. The publishing workflow requires that reviewer’s GitHub username and checks the comment matches the exact source being released; the approver must differ from both the issue author and the workflow dispatcher. The immutable `v0.1.0` tag remains untouched. Existing internal drafts remain authenticated-only and must not be used as installer URLs.
 
 For an authorized test download of the current draft's real GitHub assets, use `gh release download v0.1.0-internal.3 --repo speechcraftdev/speechcraft`. The uploaded bootstrap asset URL is `https://github.com/speechcraftdev/speechcraft/releases/download/untagged-23b5f0acd87ce30ada5d/install.sh`; draft access is authenticated. This URL is for internal testing only, not a public install entry point.
 
-After a production release has passed the compliance and publisher-authentication gates, its versioned GitHub bootstrap URL will be:
+After the release-owner approval record exists and the protected publishing workflow completes, the versioned GitHub bootstrap URL is:
 
 ```text
-https://github.com/speechcraftdev/speechcraft/releases/download/<approved-tag>/install.sh
+https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.1/install.sh
 ```
 
-`<approved-tag>` is a placeholder, not a currently working URL. No temporary or custom install domain is configured. The intended convenience command after approval is `curl -fsSL <approved-versioned-bootstrap-url> | sh`; until then, do not advertise that command as available.
+This URL is not working until the public pre-release exists. The intended convenience command is `curl -fsSL https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.1/install.sh | sh`.
 
 ## Bootstrap behavior
 
 For a published Linux release, the versioned bootstrap performs the following:
 
 ```sh
-curl -fsSLo install.sh https://<temporary-host>/install.sh
-sh install.sh
+curl -fsSL https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.1/install.sh | sh
 speechcraft
 ```
 
@@ -52,18 +51,18 @@ node launcher/scripts/generate-bootstrap.mjs \
 
 This validates the real curl bootstrap and package download through private staging. It is not a public installer URL or a production hosting configuration. Generated public bootstraps continue to use HTTPS GitHub release assets and the restricted GitHub redirect allowlist.
 
-The checksum delivered beside an archive is only a consistency check. The generated script pins the archive, metadata, checksum, and official installer bytes, so changes to any downloaded file are detected. However, if the bootstrap itself is fetched from the same release, those pins do not authenticate the publisher independently. The current workflow therefore creates internal draft candidates only and is not production-secure. Before public installation, establish an independent publisher trust anchor and have the bootstrap verify it (for example, a signed build attestation rooted in the reviewed GitHub Actions identity). The release report states this limitation explicitly.
+The public workflow uses GitHub Actions OIDC/Sigstore provenance to attest every release asset, then verifies each attestation against the expected repository workflow before publishing. HTTPS to the official GitHub repository authenticates the bootstrap transport; its embedded pins bind the archive, manifest, checksum, and official installer bytes. Users can independently verify provenance without making GitHub CLI a client installation dependency:
 
 When a release is approved, the safe user flow is to download the *versioned* bootstrap as a file, verify it through the documented independent publisher mechanism, inspect the pinned release identity, then execute it:
 
 ```sh
-curl -fSLo install.sh 'https://github.com/speechcraftdev/speechcraft/releases/download/<approved-tag>/install.sh'
-# Verify install.sh with the independently published signature/attestation instructions.
+curl -fSLo install.sh 'https://github.com/speechcraftdev/speechcraft/releases/download/v0.1.1/install.sh'
+gh attestation verify install.sh --repo speechcraftdev/speechcraft --signer-workflow speechcraftdev/speechcraft/.github/workflows/release-linux.yml
 less install.sh
 sh install.sh
 ```
 
-Do not substitute a moving `latest` URL or treat a checksum beside the archive as publisher authentication.
+GitHub CLI is optional for users who want local provenance verification; ordinary installation does not require it. Do not substitute a moving `latest` URL or treat an adjacent checksum by itself as publisher authentication.
 
 ## Create a draft release
 
@@ -86,9 +85,9 @@ The repository has an active `immutable version tags` ruleset for `refs/tags/v*`
 The exact Linux archive and runtime dependency handoff is recorded in
 [RELEASE-LICENSING-HANDOFF.md](RELEASE-LICENSING-HANDOFF.md).
 
-Creating release infrastructure and uploading a draft are separate from publicly publishing an application. The current model catalog selects the WeSpeaker ECAPA-TDNN512-LM ONNX artifact at a pinned revision and records its publisher-declared CC BY 4.0 license, hash, provenance, and attribution in `packages/model_manager/PROVENANCE.md`. The superseded TitaNet candidate is historical and is not part of active setup or the current package. The Linux application archive contains neither model weights nor a prebuilt FFmpeg binary. Setup can acquire ECAPA weights and a pinned LGPL FFmpeg/FFprobe build at runtime. Public release still requires a documented review of the FFmpeg build's acquisition and redistribution implications and confirmation that the ECAPA license/attribution notices are correctly presented for the actual user download flow. Artifact hashes alone do not establish these permissions. A GitHub prerelease is public once published and does not satisfy this gate.
+The setup page visibly attributes ECAPA to WeSpeaker, links to the pinned model page and CC BY 4.0, and identifies the immutable revision. The Linux application archive contains neither model weights nor a prebuilt FFmpeg binary. Setup downloads ECAPA and the pinned BtbN LGPL FFmpeg/FFprobe build directly from upstream. The remaining release-owner decision is specific to the FFmpeg download path and is quoted with technical evidence in `setup-controller/resources/FFMPEG-LICENSE-NOTICE.md`. The public workflow refuses to run without a closed repository approval issue carrying the `release-approved` label. A GitHub prerelease is public once published and requires that approval record.
 
-Do not publish the draft until FFmpeg runtime acquisition and redistribution obligations have been reviewed and ECAPA's publisher-declared CC BY 4.0 terms and attribution have been checked against the in-product setup flow and included notices. The old TitaNet checkpoint/conversion blocker is superseded; its historical provenance record should remain for audit history. Keep the model manager's existing license and artifact-verification gates intact.
+Keep the model manager's existing license and artifact-verification gates intact. The ECAPA notice has been added to the setup flow. Do not run the public workflow until the release owner records the exact FFmpeg decision required by the notice and handoff. The old TitaNet checkpoint/conversion blocker is superseded; its historical provenance record remains for audit history.
 
 ## Temporary host and later domain move
 

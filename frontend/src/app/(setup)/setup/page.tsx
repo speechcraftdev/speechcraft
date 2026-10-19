@@ -68,6 +68,11 @@ function ModelRow({ model }: { model: ModelState }) {
     </div>
     {message && <p className="mt-2 pl-[22px] text-sm text-[#777]">{message}{model.failure_code && <span className="ml-2 font-mono text-xs">{model.failure_code}</span>}</p>}
     <div className="pl-[22px]"><ProgressDetails progress={model.progress} fallbackName={model.display_name || modelTitles[model.role] || model.role} /></div>
+    {model.role === "speaker_purity" && <div className="mt-3 ml-[22px] rounded-md border border-black/10 bg-black/[0.02] p-3 text-xs leading-5 text-[#666] dark:border-white/10 dark:bg-white/[0.03] dark:text-[#aaa]" aria-label="ECAPA model attribution and license">
+      <p><strong className="font-medium text-[#333] dark:text-[#ddd]">Model attribution:</strong> WeSpeaker ECAPA-TDNN512-LM, published by WeSpeaker. The pinned model file is used unchanged.</p>
+      <p>Model revision: <code className="break-all">a2f3dcb1c8702caccc7a55ceb57f5e8d1842112b</code>.</p>
+      <p>License: <a className="underline underline-offset-2" href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">Creative Commons Attribution 4.0 International (CC BY 4.0)</a>. See the <a className="underline underline-offset-2" href="https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM" target="_blank" rel="noreferrer">WeSpeaker model page</a>.</p>
+    </div>}
     {model.files_verified && !model.runtime_ready && <p className="mt-1 pl-[22px] text-xs text-[#878787]">Files are verified; runtime inference has not passed yet.</p>}
     {model.release_blockers?.map((blocker) => <p key={blocker} className="mt-1 pl-[22px] text-xs text-amber-700 dark:text-amber-400">Release review: {blocker}</p>)}
   </div>;
@@ -80,6 +85,7 @@ function RuntimeRow({ name, component }: { name: string; component: RuntimeCompo
     <div className="flex gap-3"><StatusDot status={label} /><div>
       <p className="font-medium">{name}</p>
       {message && <p className="mt-1 text-sm text-[#777]">{message}</p>}
+      {name === "FFmpeg / FFprobe" && <p className="mt-2 max-w-xl text-xs leading-5 text-[#878787]">SpeechCraft obtains FFmpeg and FFprobe from their upstream source for local processing; these executables are not bundled in the application archive. Linux uses a pinned BtbN LGPL build, while macOS builds from pinned FFmpeg source. See the <a className="underline underline-offset-2" href="https://ffmpeg.org/legal.html" target="_blank" rel="noreferrer">FFmpeg license information</a> and the FFmpeg notice included with SpeechCraft.</p>}
       {component?.failure_code && <p className="mt-1 font-mono text-xs text-[#878787]">{component.failure_code}</p>}
     </div></div><span className="shrink-0 text-sm text-[#777]">{label}</span>
   </div>;
