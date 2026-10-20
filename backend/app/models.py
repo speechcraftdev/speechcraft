@@ -661,6 +661,10 @@ class DatasetRunCreateRequest(SQLModel):
     ] = "candidate_review_clips"
 
 
+class AsrModelEnsureRequest(SQLModel):
+    model: Literal["large-v3", "base"] = "large-v3"
+
+
 class DatasetRunArtifactView(SQLModel):
     id: str
     kind: RunArtifactKind

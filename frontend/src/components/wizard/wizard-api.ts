@@ -193,8 +193,65 @@ export type PreflightResult = {
   ok: boolean;
   error?: string;
   reason_codes?: string[];
+  asr_model?: {
+    ok?: boolean;
+    model?: string;
+    repo_id?: string;
+    error?: string;
+    local_only?: boolean;
+    load_checked?: boolean;
+    [k: string]: unknown;
+  };
+  diarization_model?: {
+    ok?: boolean;
+    error?: string;
+    [k: string]: unknown;
+  };
   [k: string]: unknown;
 };
+
+export type AsrEnsureProgress = {
+  phase?: string | null;
+  role?: string | null;
+  model_name?: string | null;
+  repo_id?: string | null;
+  package_type?: string | null;
+  current_filename?: string | null;
+  downloaded_bytes?: number | null;
+  total_bytes?: number | null;
+  bytes_per_second?: number | null;
+  eta_seconds?: number | null;
+  files_completed?: number | null;
+  files_total?: number | null;
+  transfer_indeterminate?: boolean;
+  indeterminate?: boolean;
+  stalled?: boolean;
+  message?: string | null;
+  sampled_at?: string;
+};
+
+export type AsrEnsureJob = {
+  id: string;
+  model: WhisperModelSize;
+  repo_id: string;
+  package_type: string;
+  phase: string;
+  ok: boolean | null;
+  error: string | null;
+  reason_codes: string[];
+  progress: AsrEnsureProgress;
+};
+
+export type AsrAvailability =
+  | { status: "ready"; model: WhisperModelSize }
+  | {
+      status: "needs_download";
+      model: null;
+      downloadModel: WhisperModelSize;
+      repoId: string;
+      error: string;
+    }
+  | { status: "error"; model: null; error: string };
 
 export type SpeakerSample = {
   sample_id: string;
@@ -251,21 +308,108 @@ export function fetchPreflight(asrModel?: string): Promise<PreflightResult> {
   return getJson<PreflightResult>(`/api/system/preflight${q}`);
 }
 
+function asrRepoId(model: WhisperModelSize): string {
+  return model === "base"
+    ? "Systran/faster-whisper-base"
+    : "Systran/faster-whisper-large-v3";
+}
+
+/** Classify nested preflight ASR result without treating other deps as "needs download". */
+export function classifyAsrModel(
+  preflight: PreflightResult,
+  model: WhisperModelSize,
+): "ready" | "missing" | "unloadable" {
+  const asr = preflight.asr_model;
+  if (!asr || typeof asr !== "object") {
+    // Fall back to top-level only when the worker omitted the nested block.
+    return preflight.ok ? "ready" : "missing";
+  }
+  if (asr.ok === true) return "ready";
+  const err = String(asr.error || preflight.error || "");
+  if (
+    /LocalEntryNotFound|not available locally|SnapshotIncomplete|incomplete|HF_SNAPSHOT|FileNotFoundError/i.test(
+      err,
+    )
+  ) {
+    return "missing";
+  }
+  // Cache miss before a load attempt — preflight uses local_files_only=True.
+  if (asr.local_only === true && asr.load_checked === false) return "missing";
+  if (!err) return "missing";
+  return "unloadable";
+}
+
 /**
  * Resolve the most capable whisper model the hardware can actually load:
- * prefer large-v3, fall back to base, else the run cannot proceed (error).
+ * prefer large-v3, fall back to base. Distinguishes cache-miss (needs download)
+ * from load/hardware failure. Preflight itself does not download.
  */
-export async function resolveWhisperModel(): Promise<
-  { model: WhisperModelSize } | { model: null; error: string }
-> {
+export async function resolveWhisperModel(): Promise<AsrAvailability> {
   const large = await fetchPreflight("large-v3");
-  if (large.ok) return { model: "large-v3" };
+  const largeState = classifyAsrModel(large, "large-v3");
+  if (largeState === "ready") return { status: "ready", model: "large-v3" };
+
   const base = await fetchPreflight("base");
-  if (base.ok) return { model: "base" };
+  const baseState = classifyAsrModel(base, "base");
+  if (baseState === "ready") return { status: "ready", model: "base" };
+
+  if (largeState === "missing") {
+    return {
+      status: "needs_download",
+      model: null,
+      downloadModel: "large-v3",
+      repoId: String(large.asr_model?.repo_id || asrRepoId("large-v3")),
+      error: "Whisper large-v3 is not available locally. Download it to continue.",
+    };
+  }
+  if (baseState === "missing") {
+    return {
+      status: "needs_download",
+      model: null,
+      downloadModel: "base",
+      repoId: String(base.asr_model?.repo_id || asrRepoId("base")),
+      error: "Whisper base is not available locally. Download it to continue.",
+    };
+  }
   return {
+    status: "error",
     model: null,
-    error: base.error || large.error || "No usable Whisper model for this hardware.",
+    error:
+      base.asr_model?.error ||
+      large.asr_model?.error ||
+      base.error ||
+      large.error ||
+      "No usable Whisper model for this hardware.",
   };
+}
+
+export function startAsrEnsure(model: WhisperModelSize): Promise<AsrEnsureJob> {
+  return sendJson<AsrEnsureJob>("/api/system/asr-models/ensure", "POST", { model });
+}
+
+export function fetchAsrEnsure(jobId: string): Promise<AsrEnsureJob> {
+  return getJson<AsrEnsureJob>(`/api/system/asr-models/ensure/${encodeURIComponent(jobId)}`);
+}
+
+export function listDatasetRuns(projectId: string): Promise<DatasetRunView[]> {
+  return getJson<DatasetRunView[]>(`/api/projects/${encodeURIComponent(projectId)}/dataset-runs`);
+}
+
+/** Reuse a pending/active wizard run for this project when present. */
+export async function findReusableWizardRun(
+  projectId: string,
+): Promise<DatasetRunView | null> {
+  const runs = await listDatasetRuns(projectId);
+  const rank: Record<string, number> = {
+    pending: 0,
+    running: 1,
+    needs_review: 2,
+    completed: 3,
+  };
+  const reusable = [...runs]
+    .filter((run) => rank[run.status] !== undefined)
+    .sort((a, b) => (rank[a.status] ?? 99) - (rank[b.status] ?? 99));
+  return reusable[0] ?? null;
 }
 
 /** Create a diarization-mode run (single_speaker=false so we can pick the target). */

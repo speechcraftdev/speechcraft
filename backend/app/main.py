@@ -16,6 +16,7 @@ from .canonical_export import (
     preview_canonical_export,
 )
 from .reference_clip_candidates import mark_dataset_clip_as_reference_candidate
+from .asr_model_ensure import get_asr_ensure, start_asr_ensure
 from .dataset_worker_client import run_dataset_worker_preflight
 from .defaults import resolve_whisper_model
 from .dataset_runs import (
@@ -65,6 +66,7 @@ from .clip_lab_audio_ops import (
 )
 from .native_cliplab import NativeClipLabStore
 from .models import (
+    AsrModelEnsureRequest,
     CanonicalExportPreviewView,
     CanonicalExportSummaryView,
     DatasetClipLabClipView,
@@ -204,6 +206,33 @@ def system_preflight(
         asr_device=asr_device,
         asr_compute_type=asr_compute_type,
     )
+
+
+@app.post("/api/system/asr-models/ensure")
+def ensure_asr_model(payload: AsrModelEnsureRequest) -> dict[str, object]:
+    """Start a consent-gated ASR cache download. Does not invent progress fields."""
+    try:
+        return start_asr_ensure(payload.model)
+    except RuntimeError as exc:
+        if str(exc) == "managed_runtime_use_setup":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "Managed runtime installs models through /setup.",
+                    "reason_codes": ["managed_runtime_use_setup"],
+                },
+            ) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/system/asr-models/ensure/{job_id}")
+def read_asr_model_ensure(job_id: str) -> dict[str, object]:
+    job = get_asr_ensure(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="ASR ensure job not found")
+    return job
 
 
 @app.get("/api/projects/{project_id}/dataset-runs", response_model=list[DatasetRunView])

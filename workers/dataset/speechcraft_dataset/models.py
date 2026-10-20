@@ -7,7 +7,7 @@ import signal
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 
 FASTER_WHISPER_REPOS = {
@@ -135,6 +135,7 @@ def check_asr_model(
     device: str = "cpu",
     compute_type: str = "int8",
     timeout_seconds: int = 120,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     resolved_path = None
     snapshot_path = None
@@ -159,12 +160,62 @@ def check_asr_model(
         try:
             from huggingface_hub import snapshot_download
 
-            with timeout_after(timeout_seconds, "ASR model snapshot check"):
-                snapshot_path = snapshot_download(
-                    repo_id=repo_id,
-                    cache_dir=cache_dir,
-                    local_files_only=local_only,
+            snapshot_kwargs: dict[str, Any] = {
+                "repo_id": repo_id,
+                "cache_dir": cache_dir,
+                "local_files_only": local_only,
+            }
+            # Hub's tqdm hook reports completed files only. Byte totals/speed/ETA
+            # stay unknown — callers must treat transfer as indeterminate.
+            if on_progress is not None and not local_only:
+                import io
+
+                from tqdm.auto import tqdm
+
+                class _FileProgress(tqdm):
+                    """Hub snapshot progress counts completed files, not bytes."""
+
+                    def __init__(self, *args: Any, **kwargs: Any) -> None:
+                        kwargs["disable"] = False
+                        kwargs["file"] = io.StringIO()
+                        super().__init__(*args, **kwargs)
+
+                    def update(self, n: int = 1) -> Any:
+                        result = super().update(n)
+                        on_progress(
+                            {
+                                "phase": "downloading",
+                                "model_name": model,
+                                "repo_id": repo_id,
+                                "downloaded_bytes": None,
+                                "total_bytes": None,
+                                "bytes_per_second": None,
+                                "eta_seconds": None,
+                                "transfer_indeterminate": True,
+                                "files_completed": int(self.n),
+                                "files_total": int(self.total) if self.total is not None else None,
+                            }
+                        )
+                        return result
+
+                snapshot_kwargs["tqdm_class"] = _FileProgress
+                on_progress(
+                    {
+                        "phase": "downloading",
+                        "model_name": model,
+                        "repo_id": repo_id,
+                        "downloaded_bytes": None,
+                        "total_bytes": None,
+                        "bytes_per_second": None,
+                        "eta_seconds": None,
+                        "transfer_indeterminate": True,
+                        "files_completed": None,
+                        "files_total": None,
+                    }
                 )
+
+            with timeout_after(timeout_seconds, "ASR model snapshot check"):
+                snapshot_path = snapshot_download(**snapshot_kwargs)
             result = {
                 "ok": True,
                 "model": model,
