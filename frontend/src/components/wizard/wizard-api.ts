@@ -213,6 +213,16 @@ export type PreflightResult = {
 };
 
 export type AsrEnsureProgress = {
+  operation?: "downloading" | "installing" | "verifying" | "loading" | "checking" | null;
+  artifact_type?: "model" | "python_package" | "runtime" | null;
+  artifact_name?: string | null;
+  progress_mode?: "bytes" | "files" | "indeterminate" | null;
+  transferred_bytes?: number | null;
+  completed_files?: number | null;
+  total_files?: number | null;
+  job_id?: string | null;
+  attempt_id?: string | null;
+  event_revision?: number | null;
   phase?: string | null;
   role?: string | null;
   model_name?: string | null;

@@ -88,14 +88,15 @@ async function readAuthorizationJson(request) {
 }
 
 function publicModels(controller) {
-  const components = controller.status().components || {};
+  const status = controller.status();
+  const components = status.components || {};
   const records = [
     ['silero', 'speech_detection', 'silero-vad-onnx', 'Silero VAD ONNX'],
     ['whisper', 'asr', 'whisper-large-v3', 'Whisper Large-v3'],
     ['ecapa', 'speaker_purity', 'wespeaker-ecapa-tdnn512-lm', 'WeSpeaker ECAPA-TDNN512-LM ONNX'],
     ['pyannote', 'diarization', 'pyannote/speaker-diarization-community-1', 'pyannote Community-1'],
   ];
-  return { schema_version: 1, models: records.map(([key, role, model_id, display_name]) => {
+  return { schema_version: 1, state_revision: status.state_revision, models: records.map(([key, role, model_id, display_name]) => {
     const value = components[key] || {};
     return { role, model_id, display_name, state: value.state || 'pending',
       progress: value.progress || null, files_verified: ['files_verified', 'validating_inference', 'runtime_ready'].includes(value.state),

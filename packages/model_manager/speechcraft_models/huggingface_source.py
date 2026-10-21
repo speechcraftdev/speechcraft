@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import io
 import shutil
 import stat
 import traceback
@@ -170,8 +169,8 @@ def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], to
         raise HuggingFaceAcquisitionError(f"{code}: {message}", transient=transient,
                                           diagnostic=_safe_exception_diagnostic(exc)) from None
 
-    # snapshot_download's supported tqdm hook reports file completion. Byte
-    # values remain unknown rather than fabricating a percentage.
+    # The public snapshot_download hook reports completed files only. It is not
+    # passed to each file transfer, so byte counts, speed, and ETA stay unknown.
     from tqdm.auto import tqdm
     class _FileProgress(tqdm):
         def __init__(self, *args, **kwargs):
@@ -181,12 +180,9 @@ def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], to
         def update(self, n=1):
             result = super().update(n)
             progress({"event": "source_progress", "source": "huggingface",
-                      "state": "downloading", "current_file": None,
-                      "downloaded_bytes": None, "transferred_bytes": None,
-                      "total_bytes": total_bytes,
-                      "transfer_indeterminate": True,
-                      "files_completed": int(self.n),
-                      "files_total": int(self.total) if self.total is not None else None})
+                      "operation": "downloading", "progress_mode": "files",
+                      "current_file": None, "completed_files": int(self.n),
+                      "total_files": int(self.total) if self.total is not None else None})
             return result
 
     try:
@@ -243,19 +239,15 @@ def acquire_public_snapshot(repo_id: str, revision: str, filenames: list[str],
     class _FileProgress(tqdm):
         """Hub snapshot progress counts completed files, not bytes."""
         def __init__(self, *args, **kwargs):
-            kwargs["disable"] = False
-            kwargs["file"] = io.StringIO()
+            kwargs["disable"] = True
             super().__init__(*args, **kwargs)
 
         def update(self, n=1):
             result = super().update(n)
             progress({"event": "source_progress", "source": "huggingface",
-                      "state": "downloading", "current_file": None,
-                      "downloaded_bytes": None, "transferred_bytes": None,
-                      "total_bytes": total_bytes,
-                      "transfer_indeterminate": True,
-                      "files_completed": int(self.n),
-                      "files_total": int(self.total) if self.total is not None else None})
+                      "operation": "downloading", "progress_mode": "files",
+                      "current_file": None, "completed_files": int(self.n),
+                      "total_files": int(self.total) if self.total is not None else None})
             return result
 
     kwargs = {

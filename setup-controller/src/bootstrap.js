@@ -816,9 +816,22 @@ export async function fetchArtifact(url, destination, expected, { signal, onProg
   return result;
 }
 
-function safeProgress(phase, message, current = null, total = null) {
-  return { phase, current, total, percent: current !== null && total !== null && total > 0
-    ? Math.floor(current * 100 / total) : null, message };
+function safeProgress(phase, message, current = null, total = null, identity = {}) {
+  const operation = identity.operation || (phase === 'downloading' ? 'downloading'
+    : phase === 'installing' ? 'installing' : phase === 'verifying' || phase === 'verified' ? 'verifying'
+      : phase === 'running_inference' ? 'loading' : 'checking');
+  const hasBytes = operation === 'downloading' && Number.isSafeInteger(current)
+    && Number.isSafeInteger(total) && total > 0 && current >= 0 && current <= total;
+  return {
+    phase, operation,
+    artifact_name: identity.artifact_name || null,
+    artifact_type: identity.artifact_type || null,
+    progress_mode: hasBytes ? 'bytes' : 'indeterminate',
+    ...(hasBytes ? { transferred_bytes: current, total_bytes: total,
+      current, total, percent: Math.floor(current * 100 / total) } : {}),
+    bytes_per_second: null, eta_seconds: null,
+    message,
+  };
 }
 
 function parseProbe(result, kind, errorCode) {
@@ -1234,11 +1247,14 @@ export class BootstrapTasks {
         fs.unlinkSync(target);
       }
     }
-    this.emit(context, safeProgress('downloading', 'Downloading the pinned Astral uv release artifact.'));
+    this.emit(context, safeProgress('downloading', 'Downloading the pinned Astral uv release artifact.', null, null,
+      { artifact_name: `uv ${this.manifest.uv.version}`, artifact_type: 'runtime' }));
     const transferSampler = new ByteTransferSampler();
     await fetchArtifact(artifact.url, archive, artifact, { signal: context.signal,
       fetchImpl: this.fetchImpl, onProgress: (value) => this.emit(context, {
         ...value,
+        operation: 'downloading', artifact_type: 'runtime', progress_mode: 'bytes',
+        transferred_bytes: value.current, total_bytes: value.total,
         artifact_name: `uv ${this.manifest.uv.version}`,
         ...transferSampler.update(value.current, value.total),
       }) });
@@ -1321,7 +1337,8 @@ export class BootstrapTasks {
     }
     this.requireSpace(pythonArtifact.size_bytes + this.manifest.disk_space.estimated_python_environment_bytes
       + this.manifest.disk_space.safety_margin_bytes);
-    this.emit(context, safeProgress('downloading', `Installing managed CPython ${this.manifest.python.version} from uv's pinned python-build-standalone metadata.`));
+    this.emit(context, safeProgress('installing', `Installing managed CPython ${this.manifest.python.version} from uv's pinned python-build-standalone metadata.`,
+      null, null, { artifact_name: `CPython ${this.manifest.python.version}`, artifact_type: 'runtime' }));
     await this.quarantine(this.paths.pythonRoot, 'invalid-python');
     ensureManagedDirectory(this.dataDirectory, this.paths.pythonRoot);
     await this.runProcess(this.paths.uvExecutable, ['python', 'install', '--no-config', '--managed-python',
@@ -1501,7 +1518,8 @@ export class BootstrapTasks {
     }
     this.requireSpace(this.manifest.disk_space.estimated_model_manager_environment_and_cache_bytes
       + this.manifest.disk_space.safety_margin_bytes);
-    this.emit(context, safeProgress('installing', 'Creating the versioned isolated model-manager Python environment.'));
+    this.emit(context, safeProgress('installing', 'Installing the isolated model-manager environment.', null, null,
+      { artifact_name: 'Installing dependencies', artifact_type: 'python_package' }));
     const env = this.makeEnvironment(this.paths);
     await this.runProcess(this.paths.uvExecutable, ['venv', '--no-config', '--no-project',
       '--python', managedPython, target], context, { env });
@@ -1595,7 +1613,8 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     ensureManagedDirectory(this.dataDirectory, target);
     this.requireSpace(runtimeManifest.disk_space.backend_environment_estimate_bytes + runtimeManifest.disk_space.safety_margin_bytes);
     const env = { ...this.makeEnvironment(this.paths), UV_PROJECT_ENVIRONMENT: target };
-    this.emit(context, safeProgress('installing', 'Installing the backend from its repository lockfile into a versioned managed environment.'));
+    this.emit(context, safeProgress('installing', 'Installing the backend environment from its trusted lockfile.', null, null,
+      { artifact_name: 'Installing dependencies', artifact_type: 'python_package' }));
     await this.runProcess(this.paths.uvExecutable, ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', project], context, { cwd: project, env });
     if (!await this.validateBackendEnvironment(context, target)) throw new BootstrapError('BACKEND_ENVIRONMENT_INVALID', 'The installed backend did not pass its managed-interpreter import probe.');
     this.setComponent(context, 'backend_environment', { state: 'verified', verification: 'lock_identity_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
@@ -1661,7 +1680,8 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     ensureManagedDirectory(this.dataDirectory, target);
     this.requireSpace((recipe.estimated_bytes || 0) + (this.runtimeRecipe.disk_space.safety_margin_bytes || 0));
     const env = { ...this.makeEnvironment(this.paths), UV_PROJECT_ENVIRONMENT: target };
-    this.emit(context, safeProgress('installing', `Installing the trusted ${selection.workerProfile} worker environment.`));
+    this.emit(context, safeProgress('installing', 'Installing the trusted dataset worker environment.', null, null,
+      { artifact_name: 'Installing dependencies', artifact_type: 'python_package' }));
     // Release files are deliberately read-only. uv's local path dependency
     // builds (notably the model manager) create egg-info/build artifacts in
     // their source directories, so stage the already-verified recipe and its
@@ -1682,33 +1702,24 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
 
   async installUngatedModels(context, profile, root, python) {
     for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper'], ['speaker_purity', 'ecapa']]) {
-      const modelName = role === 'asr' ? 'Whisper Large-v3'
-        : role === 'speaker_purity' ? 'WeSpeaker ECAPA-TDNN512-LM' : 'Silero VAD';
       const tracker = new DownloadProgressTracker();
       this.setComponent(context, component, { state: 'downloading', failure_code: null, message: null,
-        progress: null, progress_indeterminate: true,
-        identity: role === 'asr' ? `Whisper Large-v3/${profile.modelPlatform}`
-          : role === 'speaker_purity' ? 'Wespeaker/wespeaker-ecapa-tdnn512-LM@a2f3dcb1c8702caccc7a55ceb57f5e8d1842112b'
-            : 'manifest-pinned Silero ONNX' });
+        progress: null, progress_indeterminate: true, identity: role });
       let result;
       let progressBuffer = '';
       let stallTimer;
       const publish = (telemetry, { force = false } = {}) => {
         if (!telemetry || !tracker.shouldEmit(telemetry, { force })) return;
         const sampled = { ...telemetry, sampled_at: new Date().toISOString() };
-        const phase = sampled.phase;
-        const componentState = phase === 'verifying' ? 'verifying_files'
-          : phase === 'installing' ? 'installing' : 'downloading';
-        const percent = phase === 'downloading' && Number.isSafeInteger(sampled.downloaded_bytes)
-          && Number.isSafeInteger(sampled.total_bytes) && sampled.total_bytes > 0
-          ? Math.max(0, Math.min(100, Math.floor(sampled.downloaded_bytes * 100 / sampled.total_bytes))) : null;
-        const message = sampled.stalled ? `${modelName} download stalled; waiting for network data.`
-          : phase === 'downloading' ? `Downloading ${modelName}.`
-            : phase === 'verifying' ? `Verifying ${modelName} files.` : `Installing ${modelName}.`;
+        const componentState = sampled.operation === 'verifying' ? 'verifying_files'
+          : sampled.operation === 'installing' ? 'installing' : 'downloading';
+        const message = sampled.stalled ? 'Model download stalled; waiting for network data.'
+          : sampled.operation === 'downloading' ? `Downloading ${sampled.artifact_name || 'model'}.`
+            : sampled.operation === 'verifying' ? `Verifying ${sampled.artifact_name || 'model'} files.`
+              : `Installing ${sampled.artifact_name || 'model'}.`;
         this.setComponent(context, component, { state: componentState, failure_code: null, message,
-          progress: sampled, progress_indeterminate: sampled.transfer_indeterminate });
-        this.emit(context, { ...sampled, current: sampled.downloaded_bytes, total: sampled.total_bytes,
-          percent, indeterminate: sampled.transfer_indeterminate, message });
+          progress: sampled, progress_indeterminate: sampled.progress_mode !== 'bytes' });
+        this.emit(context, { ...sampled, message });
       };
       stallTimer = setInterval(() => publish(tracker.stalled(), { force: true }), 1_000);
       try {
@@ -1723,9 +1734,9 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
             for (const line of lines) {
               try {
                 const event = JSON.parse(line);
-                const telemetry = tracker.accept(event, role, modelName);
+                const telemetry = tracker.accept(event, role);
                 if (!telemetry) continue;
-                publish(telemetry, { force: ['downloading', 'source_acquiring', 'file_verified', 'source_file_acquired',
+        publish(telemetry, { force: ['downloading', 'source_acquiring', 'file_verified', 'source_file_acquired',
                   'retrying', 'verifying', 'publishing', 'installed'].includes(event.event) });
               } catch {}
             }
@@ -1741,8 +1752,9 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       }
       let report;
       const latestProgress = context.componentStatus.components?.[component]?.progress;
-      if (latestProgress) this.setComponent(context, component, { state: 'verifying_files', message: `Checking ${modelName} verification results.`,
-        progress: { ...latestProgress, phase: 'verifying', bytes_per_second: null, eta_seconds: null,
+      if (latestProgress) this.setComponent(context, component, { state: 'verifying_files', message: 'Checking model verification results.',
+        progress: { ...latestProgress, phase: 'verifying', operation: 'verifying', progress_mode: 'indeterminate',
+          transferred_bytes: null, total_bytes: null, percent: null, bytes_per_second: null, eta_seconds: null,
           transfer_indeterminate: true, stalled: false, sampled_at: new Date().toISOString() }, progress_indeterminate: true });
       try { report = JSON.parse(result.stdout); } catch {
         this.setComponent(context, component, { state: 'failed', failure_code: 'MODEL_MANAGER_RESPONSE_INVALID',
@@ -1808,16 +1820,12 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       if (!telemetry || !tracker.shouldEmit(telemetry, { force })) return;
       const sampled = { ...telemetry, sampled_at: new Date().toISOString() };
       const phase = sampled.phase;
-      const percent = phase === 'downloading' && Number.isSafeInteger(sampled.downloaded_bytes)
-        && Number.isSafeInteger(sampled.total_bytes) && sampled.total_bytes > 0
-        ? Math.max(0, Math.min(100, Math.floor(sampled.downloaded_bytes * 100 / sampled.total_bytes))) : null;
-      const message = phase === 'downloading' ? 'Downloading the pinned Community-1 snapshot.'
-        : phase === 'verifying' ? 'Verifying Community-1 files.' : 'Installing Community-1.';
+      const message = phase === 'downloading' ? `Downloading ${sampled.artifact_name || 'model'}.`
+        : phase === 'verifying' ? `Verifying ${sampled.artifact_name || 'model'} files.` : `Installing ${sampled.artifact_name || 'model'}.`;
       this.setComponent(context, 'pyannote', { state: phase === 'verifying' ? 'verifying_files'
         : phase === 'installing' ? 'installing' : 'downloading', failure_code: null,
-      message, progress: sampled, progress_indeterminate: sampled.transfer_indeterminate });
-      this.emit(context, { ...sampled, current: sampled.downloaded_bytes, total: sampled.total_bytes,
-        percent, indeterminate: sampled.transfer_indeterminate, message });
+      message, progress: sampled, progress_indeterminate: sampled.progress_mode !== 'bytes' });
+      this.emit(context, { ...sampled, message });
     };
     const credentialBytes = Buffer.isBuffer(context.authorizationToken)
       ? context.authorizationToken : Buffer.from(String(context.authorizationToken), 'utf8');
@@ -1840,14 +1848,15 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
                 message: event.state === 'checking_token' ? 'Checking Hugging Face token identity.'
                   : event.state === 'checking_model_access' ? 'Checking access to the pinned Community-1 repository.'
                     : 'Downloading the pinned Community-1 snapshot.',
-                progress: event.state === 'downloading' ? { phase: 'downloading', role: 'diarization',
-                  model_name: 'pyannote Community-1', current_filename: null, downloaded_bytes: null,
+                progress: event.state === 'downloading' ? { phase: 'downloading', operation: 'downloading', role: 'diarization',
+                  artifact_type: 'model', artifact_name: 'pyannote/speaker-diarization-community-1',
+                  progress_mode: 'indeterminate', current_filename: null, transferred_bytes: null,
                   total_bytes: null, bytes_per_second: null, eta_seconds: null,
-                  files_completed: null, files_total: null, transfer_indeterminate: true, stalled: false,
+                  completed_files: null, total_files: null, transfer_indeterminate: true, stalled: false,
                   sampled_at: new Date().toISOString() } : null, progress_indeterminate: event.state === 'downloading' });
               continue;
             }
-            const telemetry = tracker.accept(event, 'diarization', 'pyannote Community-1');
+            const telemetry = tracker.accept(event, 'diarization');
             if (!telemetry) continue;
             publishGated(telemetry, ['downloading', 'source_acquiring', 'source_file_acquired', 'retrying',
               'verifying', 'publishing', 'installed'].includes(event.event));
@@ -1863,6 +1872,7 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     const gatedProgress = context.componentStatus.components?.pyannote?.progress;
     if (gatedProgress) this.setComponent(context, 'pyannote', { state: 'verifying_files',
       message: 'Checking Community-1 verification results.', progress: { ...gatedProgress, phase: 'verifying',
+        operation: 'verifying', progress_mode: 'indeterminate', transferred_bytes: null, total_bytes: null, percent: null,
         bytes_per_second: null, eta_seconds: null, transfer_indeterminate: true, stalled: false,
         sampled_at: new Date().toISOString() }, progress_indeterminate: true });
     try { gatedReport = JSON.parse(acquired.stdout); }
@@ -2029,18 +2039,18 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         const pyannote = context.componentStatus.components.pyannote || {};
         this.setComponent(context, 'pyannote', { ...pyannote, cuda_validation: { validated: false,
           device: 'cpu', reason: 'Running Community-1 CUDA inference and device validation.' },
-          progress: { phase: 'running_inference', role: 'diarization_cuda_validation',
-            model_name: 'pyannote Community-1 CUDA', current_filename: null, downloaded_bytes: null,
-            total_bytes: null, bytes_per_second: null, eta_seconds: null, files_completed: null,
-            files_total: null, transfer_indeterminate: true, stalled: false, sampled_at: new Date().toISOString() },
+          progress: { phase: 'running_inference', operation: 'loading', role: 'diarization_cuda_validation',
+            artifact_type: 'model', progress_mode: 'indeterminate', current_filename: null, transferred_bytes: null,
+            total_bytes: null, bytes_per_second: null, eta_seconds: null, completed_files: null,
+            total_files: null, transfer_indeterminate: true, stalled: false, sampled_at: new Date().toISOString() },
           progress_indeterminate: true });
       }
       this.setComponent(context, probe.component, { state: modelComponent ? 'validating_inference' : 'validating',
         failure_code: null, message: null,
-        ...(modelComponent ? { progress: { phase: 'running_inference', role: ({ silero: 'speech_detection', whisper: 'asr', pyannote: 'diarization', pyannote_cuda: 'diarization_cuda_validation', ecapa: 'speaker_purity' })[probe.component],
-          model_name: ({ silero: 'Silero VAD', whisper: 'Whisper Large-v3', pyannote: 'pyannote Community-1', pyannote_cuda: 'pyannote Community-1 CUDA', ecapa: 'WeSpeaker ECAPA-TDNN512-LM' })[probe.component],
-          current_filename: null, downloaded_bytes: null, total_bytes: null, bytes_per_second: null,
-          eta_seconds: null, files_completed: null, files_total: null, transfer_indeterminate: true, stalled: false,
+        ...(modelComponent ? { progress: { phase: 'running_inference', operation: 'loading', role: ({ silero: 'speech_detection', whisper: 'asr', pyannote: 'diarization', pyannote_cuda: 'diarization_cuda_validation', ecapa: 'speaker_purity' })[probe.component],
+          artifact_type: 'model', progress_mode: 'indeterminate', current_filename: null, transferred_bytes: null,
+          total_bytes: null, bytes_per_second: null,
+          eta_seconds: null, completed_files: null, total_files: null, transfer_indeterminate: true, stalled: false,
           sampled_at: new Date().toISOString() }, progress_indeterminate: true } : {}) });
       const role = probe.environment_role || 'model_manager';
       if (!['model_manager', 'backend', 'worker', 'worker_cuda_candidate'].includes(role)) throw new BootstrapError('RUNTIME_PROBE_RECIPE_INVALID', 'A runtime probe references an unapproved interpreter role.');

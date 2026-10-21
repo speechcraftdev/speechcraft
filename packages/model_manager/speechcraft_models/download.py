@@ -607,9 +607,7 @@ class _Installer:
                     if file_result['status'] in ('corrupt', 'partial'):
                         self._unlink_hf_file(source_fd, file_result['path'])
                 self.emit('source_acquiring', source='huggingface', attempt=attempt,
-                          files_total=len(artifact['required_files']),
-                          total_bytes=sum(item['size_bytes'] for item in artifact['required_files']),
-                          transferred_bytes=None, current_file=None)
+                          current_file=None)
                 try:
                     event_context = self._event_context.get()
                     files = [item['path'] for item in artifact['required_files']]
@@ -636,13 +634,6 @@ class _Installer:
                     continue
                 report = verify_directory_fd(source_fd, artifact, str(source_path))
                 if report['integrity_verified']:
-                    for index, file in enumerate(artifact['required_files'], start=1):
-                        self.emit('source_file_acquired', source='huggingface',
-                                  path=file['path'], size_bytes=file['size_bytes'],
-                                  downloaded_bytes=None,
-                                  total_bytes=sum(item['size_bytes'] for item in artifact['required_files']),
-                                  transfer_indeterminate=True, files_completed=index,
-                                  files_total=len(artifact['required_files']))
                     return
                 if report['status'] in ('error', 'unsafe'):
                     raise InstallError('unsafe or unreadable Hugging Face download result')
@@ -674,6 +665,9 @@ class _Installer:
 
     def _install(self, role, platform, *, experimental=False):
         model_id, key, artifact = self.resolve(role, platform, experimental=experimental)
+        source = artifact.get('source')
+        artifact_name = source.get('repo_id') if source else artifact['required_files'][0]['path']
+        self._event_context.set({**self._event_context.get(), 'artifact_name': artifact_name, 'artifact_type': 'model'})
         total_bytes = sum(item['size_bytes'] for item in artifact['required_files'])
         previous_context = self._event_context.get()
         self._event_context.set({**previous_context, 'model_total_bytes': total_bytes,
@@ -991,7 +985,12 @@ class _Installer:
                 hasher = durable_hasher.copy()
                 if attempt == self.attempts:
                     raise InstallError(f'transfer failed after {attempt} attempts: {error}')
-                self.emit('retrying', path=file['path'], attempt=attempt, error=error)
+                self.emit('retrying', path=file['path'], attempt=attempt, error=error,
+                          downloaded_bytes=completed_bytes + size,
+                          total_bytes=model_total_bytes or file['size_bytes'],
+                          file_downloaded_bytes=size, file_total_bytes=file['size_bytes'],
+                          transfer_attempt_bytes=0, files_completed=files_completed,
+                          files_total=files_total)
                 time.sleep(min(2, self.retry_delay * 2 ** (attempt - 1)))
         finally:
             os.close(fd)

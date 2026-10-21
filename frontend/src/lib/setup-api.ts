@@ -1,12 +1,22 @@
 export type SetupError = { code: string; message: string };
 export type ProgressTelemetry = {
+  operation?: "downloading" | "installing" | "verifying" | "loading" | "checking" | null;
+  artifact_type?: "model" | "python_package" | "runtime" | null;
+  progress_mode?: "bytes" | "files" | "indeterminate" | null;
+  transferred_bytes?: number | null;
+  total_bytes?: number | null;
+  completed_files?: number | null;
+  total_files?: number | null;
+  percent?: number | null;
+  job_id?: string | null;
+  attempt_id?: string | null;
+  event_revision?: number | null;
   phase?: string | null;
   role?: string | null;
   model_name?: string | null;
   artifact_name?: string | null;
   current_filename?: string | null;
   downloaded_bytes?: number | null;
-  total_bytes?: number | null;
   bytes_per_second?: number | null;
   eta_seconds?: number | null;
   files_completed?: number | null;
@@ -16,7 +26,6 @@ export type ProgressTelemetry = {
   sampled_at?: string;
   current?: number | null;
   total?: number | null;
-  percent?: number | null;
   message?: string | null;
   indeterminate?: boolean;
 };
@@ -74,7 +83,7 @@ export type ModelState = {
   message: string | null;
   release_blockers: string[];
 };
-export type ModelList = { schema_version: number; models: ModelState[] };
+export type ModelList = { schema_version: number; state_revision: number; models: ModelState[] };
 export type SetupSnapshot = {
   controller_status: string;
   state_revision: number;
@@ -216,7 +225,7 @@ export function subscribeSetupEvents(onEvent: (id: number | null, event: string,
             try {
               const parsed = JSON.parse(data) as SetupSnapshot;
               const revision = id ?? parsed.state_revision;
-              if (Number.isSafeInteger(revision) && (lastId === null || revision >= lastId)) {
+              if (Number.isSafeInteger(revision) && (lastId === null || revision > lastId)) {
                 lastId = revision;
                 onEvent(id, event, parsed);
               }

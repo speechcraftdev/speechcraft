@@ -24,7 +24,7 @@ import {
   isLauncherManagedInstallation,
   subscribeSetupEvents,
 } from "@/lib/setup-api";
-import { downloadPercent, setupActionFor, setupFailureCodeFor, setupFailureFor } from "@/lib/model-onboarding.mjs";
+import { downloadPercent, latestProgressForJob, setupActionFor, setupFailureCodeFor, setupFailureFor } from "@/lib/model-onboarding.mjs";
 
 type Phase = "checking" | "needs_authorization" | "access_verified" | "needs_download" | "downloading" | "error";
 type ErrorView = { category: string; message: string; action: "retry" | "verify" };
@@ -65,29 +65,32 @@ function formatEta(seconds: number | null | undefined) {
 }
 
 function setupProgress(status: SetupStatus, models: ModelState[]): ProgressView {
-  const model = models.find((item) => item.progress?.phase === "downloading" || item.state === "downloading")
-    || models.find((item) => item.progress && ["installing", "verifying", "loading"].includes(item.progress.phase || ""));
-  const jobProgress = status.job.progress || null;
-  const progress = model?.progress || jobProgress;
+  const progress = latestProgressForJob(status.job.id, status.job.attempt_id,
+    [status.job.progress, ...models.map((item) => item.progress)]);
   const stage = status.job.stage || "";
-  const modelStage = stage === "install_models" || Boolean(model);
   const packageStage = /install_(model_manager|backend_environment|worker_environment)/.test(stage);
-  const kind = modelStage ? "Model" : packageStage ? "Python package" : "Runtime";
-  const workerProfile = status.runtime_profile?.workerProfile;
+  const kind = progress?.artifact_type === "model" ? "Model"
+    : progress?.artifact_type === "python_package" ? "Python package"
+      : progress?.artifact_type === "runtime" ? "Runtime"
+        : packageStage ? "Python package" : stage === "install_models" ? "Model" : "Runtime";
+  const operation = progress?.operation || "checking";
   const stageArtifact: Record<string, string> = {
     install_uv: `uv ${status.components?.uv?.identity?.replace(/^uv\s+/, "") || "runtime"}`,
     install_python: `CPython ${status.components?.managed_python?.identity?.match(/\d+\.\d+\.\d+/)?.[0] || "runtime"}`,
-    install_model_manager: "Speechcraft model manager",
-    install_backend_environment: "Speechcraft backend packages",
-    install_worker_environment: `${workerProfile === "linux-x86_64-cuda" ? "CUDA" : workerProfile === "linux-x86_64-cpu" ? "CPU" : "Speechcraft"} dataset worker environment`,
-    install_models: "Speechcraft models",
+    install_model_manager: "Installing dependencies",
+    install_backend_environment: "Installing dependencies",
+    install_worker_environment: "Installing dependencies",
+    install_models: "Preparing model",
   };
-  const artifact = progress?.model_name || progress?.artifact_name || model?.display_name
-    || stageArtifact[stage] || "Speechcraft runtime";
-  const downloadingModel = stage === "install_models" && progress?.phase === "downloading";
-  const downloadingRuntime = stage === "install_uv" && progress?.phase === "downloading";
-  const title = downloadingModel ? "Downloading models"
-    : downloadingRuntime ? "Downloading runtime" : "Preparing Speechcraft";
+  const artifact = progress?.artifact_name || stageArtifact[stage]
+    || (operation === "loading" ? "Loading model"
+      : operation === "verifying" ? "Verifying installation"
+        : operation === "installing" && kind === "Python package" ? "Installing dependencies" : "Preparing setup");
+  const title = operation === "downloading" && kind === "Model" ? "Downloading models"
+    : operation === "downloading" && kind === "Runtime" ? "Downloading runtime"
+      : operation === "installing" ? artifact
+        : operation === "verifying" ? "Verifying installation"
+          : operation === "loading" ? "Loading model" : "Preparing Speechcraft";
   return { title, artifact, kind, progress };
 }
 
@@ -127,28 +130,29 @@ function errorFromException(error: unknown, managed: boolean): ErrorView {
 function ProgressScreen({ view }: { view: ProgressView }) {
   const progress = view.progress;
   const percent = downloadPercent(progress);
-  const downloading = progress?.phase === "downloading";
-  const currentBytes = typeof progress?.downloaded_bytes === "number" ? progress.downloaded_bytes
-    : downloading && typeof progress?.current === "number" ? progress.current : null;
-  const totalBytes = typeof progress?.total_bytes === "number" ? progress.total_bytes
-    : downloading && typeof progress?.total === "number" ? progress.total : null;
-  const downloaded = downloading ? formatBytes(currentBytes) : null;
-  const total = downloading ? formatBytes(totalBytes) : null;
-  const fileBasedProgress = downloading && percent !== null
-    && !(typeof progress?.downloaded_bytes === "number" && typeof progress?.total_bytes === "number" && progress.total_bytes > 0)
-    && !(typeof progress?.current === "number" && typeof progress?.total === "number" && progress.total > 0)
-    && Number.isSafeInteger(progress?.files_completed) && Number.isSafeInteger(progress?.files_total)
-    && (progress?.files_total || 0) > 0;
-  const speed = downloading && typeof progress?.bytes_per_second === "number" && progress.bytes_per_second > 0 && !progress.stalled
+  const operation = progress?.operation || "checking";
+  const downloading = operation === "downloading";
+  const measuredBytes = downloading && progress?.progress_mode === "bytes";
+  const currentBytes = measuredBytes && typeof progress?.transferred_bytes === "number" ? progress.transferred_bytes : null;
+  const totalBytes = measuredBytes && typeof progress?.total_bytes === "number" ? progress.total_bytes : null;
+  const downloaded = currentBytes !== null ? formatBytes(currentBytes) : null;
+  const total = totalBytes !== null ? formatBytes(totalBytes) : null;
+  const filesBased = downloading && progress?.progress_mode === "files"
+    && Number.isSafeInteger(progress.completed_files) && Number.isSafeInteger(progress.total_files)
+    && (progress.total_files || 0) > 0;
+  const speed = measuredBytes && typeof progress?.bytes_per_second === "number" && progress.bytes_per_second > 0 && !progress.stalled
     ? `${formatBytes(progress.bytes_per_second)}/s` : null;
-  const eta = downloading && !progress?.stalled ? formatEta(progress?.eta_seconds) : null;
-  const hasTransferSize = currentBytes !== null || totalBytes !== null;
+  const eta = measuredBytes && !progress?.stalled ? formatEta(progress?.eta_seconds) : null;
+  const indeterminateLabel = operation === "installing" ? view.artifact
+    : operation === "verifying" ? "Verifying installation"
+      : operation === "loading" ? "Loading model"
+        : operation === "checking" ? "Preparing Speechcraft" : view.artifact;
   return (
     <>
       <div className="text-center space-y-2">
         <h1 className="text-lg lg:text-xl mb-4 font-serif">{view.title}</h1>
         <p className="font-sans text-sm text-[#878787]">
-          {downloading ? `${view.artifact} is downloading.` : "Speechcraft is installing and verifying the components needed for processing."}
+          {downloading ? `${view.artifact} is downloading.` : indeterminateLabel}
         </p>
       </div>
       <div className="mt-8 space-y-3" aria-live="polite">
@@ -157,29 +161,21 @@ function ProgressScreen({ view }: { view: ProgressView }) {
           <span className="shrink-0 text-xs text-[#878787]">{view.kind}</span>
         </div>
         {progress?.current_filename && downloading ? <p className="truncate text-xs text-[#878787]">{progress.current_filename}</p> : null}
-        <div role="progressbar" aria-label={`${view.artifact} ${fileBasedProgress ? "file download" : downloading ? "download" : "setup"}`}
+        <div role="progressbar" aria-label={`${view.artifact} ${downloading ? "download" : operation}`}
           aria-valuemin={0} aria-valuemax={100} {...(percent === null ? {} : { "aria-valuenow": percent })}
           className="h-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
-          <div className={`h-full bg-foreground/70 ${percent === null ? "speechcraft-progress-indeterminate w-1/3" : "transition-[width]"}`}
-            style={percent === null ? undefined : { width: `${percent}%` }} />
+          <div className={`h-full bg-foreground/70 ${measuredBytes && percent !== null ? "transition-[width]" : "speechcraft-progress-indeterminate w-1/3"}`}
+            style={measuredBytes && percent !== null ? { width: `${percent}%` } : undefined} />
         </div>
-        {downloaded || total ? <div className="flex justify-between gap-3 text-xs text-[#878787]">
-          <span>{downloaded && total ? `${downloaded} / ${total}` : downloaded ? `Received ${downloaded}` : `Total ${total}`}</span>
+        {measuredBytes && downloaded && total ? <div className="flex justify-between gap-3 text-xs text-[#878787]">
+          <span>{downloaded} / {total}</span>
           {percent === null ? null : <span>{percent}%</span>}
         </div> : null}
-        {fileBasedProgress && !downloaded && !total ? <div className="flex justify-between gap-3 text-xs text-[#878787]">
-          <span>{progress?.files_completed} of {progress?.files_total} files</span>
-          <span>{percent}%</span>
-        </div> : null}
-        {percent !== null && !downloaded && !total && !fileBasedProgress ? <p className="text-right text-xs text-[#878787]">{percent}%</p> : null}
+        {filesBased ? <p className="text-xs text-[#878787]">
+          {progress?.completed_files} of {progress?.total_files} files
+        </p> : null}
         {speed || eta ? <p className="text-xs text-[#878787]">
           {[speed ? `Speed ${speed}` : null, eta ? `ETA ${eta}` : null].filter(Boolean).join(" · ")}
-        </p> : null}
-        {downloading && (!speed || !eta) ? <p className="text-xs text-[#878787]">
-          {hasTransferSize ? "Transfer speed and ETA appear once enough data is measured." : "This download does not report byte-level progress."}
-        </p> : null}
-        {!downloading ? <p className="text-xs text-[#878787]">
-          {view.kind === "Python package" ? "The package installer does not report per-package percentage progress for this step." : "This installation step does not report percentage progress."}
         </p> : null}
       </div>
     </>
@@ -203,6 +199,11 @@ export function ModelDownload() {
   const busyRef = useRef(false);
   const finalizingRef = useRef(false);
   const watchingRef = useRef(false);
+  const managedRefreshInFlightRef = useRef<Promise<SetupStatus | null> | null>(null);
+  const managedRefreshPendingRef = useRef(false);
+  const managedRevisionRef = useRef<{ jobId: string | null; attemptId: string | null; revision: number }>({
+    jobId: null, attemptId: null, revision: -1,
+  });
   const setupStopRef = useRef<(() => void) | null>(null);
   const standaloneTimerRef = useRef<number | null>(null);
   const monitorTimerRef = useRef<number | null>(null);
@@ -274,18 +275,48 @@ export function ModelDownload() {
     showFailure(errorView(code, status.job.error?.message || ""));
   }, [stopWatch, verifyFinalBackend, showFailure]);
 
-  const inspectManagedSetup = useCallback(async () => {
-    await setupApi.ensureSession();
-    const [status, list] = await Promise.all([setupApi.status(), setupApi.models()]);
-    await processManagedStatus(status, list.models);
+  const applyManagedSnapshot = useCallback(async (status: SetupStatus, list: Awaited<ReturnType<typeof setupApi.models>>) => {
+    // Status and model rows are fetched separately. If model rows came from a
+    // later revision, discard this mismatched pair and fetch a coherent view.
+    if (list.state_revision > status.state_revision) {
+      managedRefreshPendingRef.current = true;
+      return status;
+    }
+    const revision = status.state_revision;
+    const previous = managedRevisionRef.current;
+    const sameAttempt = previous.jobId === status.job.id && previous.attemptId === (status.job.attempt_id ?? null);
+    if (sameAttempt && revision <= previous.revision) return status;
+    managedRevisionRef.current = { jobId: status.job.id, attemptId: status.job.attempt_id ?? null, revision };
+    const models = list.state_revision === status.state_revision ? list.models : [];
+    await processManagedStatus(status, models);
     return status;
   }, [processManagedStatus]);
 
-  const refreshManagedJob = useCallback(async () => {
-    const [status, list] = await Promise.all([setupApi.status(), setupApi.models()]);
-    await processManagedStatus(status, list.models);
-    return status;
-  }, [processManagedStatus]);
+  const refreshManagedJob = useCallback(() => {
+    if (managedRefreshInFlightRef.current) {
+      managedRefreshPendingRef.current = true;
+      return managedRefreshInFlightRef.current;
+    }
+    const loadLatest = async () => {
+      let latest: SetupStatus | null = null;
+      do {
+        managedRefreshPendingRef.current = false;
+        const [status, list] = await Promise.all([setupApi.status(), setupApi.models()]);
+        latest = await applyManagedSnapshot(status, list);
+      } while (managedRefreshPendingRef.current);
+      return latest;
+    };
+    const inFlight = loadLatest().finally(() => {
+      if (managedRefreshInFlightRef.current === inFlight) managedRefreshInFlightRef.current = null;
+    });
+    managedRefreshInFlightRef.current = inFlight;
+    return inFlight;
+  }, [applyManagedSnapshot]);
+
+  const inspectManagedSetup = useCallback(async () => {
+    await setupApi.ensureSession();
+    return refreshManagedJob();
+  }, [refreshManagedJob]);
 
   const watchManagedJob = useCallback(() => {
     if (watchingRef.current) return;
@@ -319,14 +350,21 @@ export function ModelDownload() {
   const monitorStandaloneJob = useCallback((jobId: string, model: WhisperModelSize) => {
     if (standaloneTimerRef.current !== null) window.clearInterval(standaloneTimerRef.current);
     let consecutiveErrors = 0;
+    let inFlight = false;
+    let latestEventRevision = -1;
     const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const job = await fetchAsrEnsure(jobId);
+        if (job.id !== jobId || (job.progress.job_id && job.progress.job_id !== jobId)
+            || (Number.isSafeInteger(job.progress.event_revision) && job.progress.event_revision! <= latestEventRevision)) return;
+        if (Number.isSafeInteger(job.progress.event_revision)) latestEventRevision = job.progress.event_revision!;
         consecutiveErrors = 0;
         const downloading = job.phase === "queued" || job.phase === "downloading";
         setPhase("downloading");
-        setProgress({ title: downloading ? "Downloading models" : "Preparing models", artifact: job.progress.model_name || job.model,
-          kind: "Model", progress: { ...job.progress, phase: job.progress.phase || job.phase, package_type: job.package_type } });
+        setProgress({ title: downloading ? "Downloading models" : job.progress.operation === "verifying" ? "Verifying installation" : "Preparing Speechcraft",
+          artifact: job.progress.artifact_name || "Preparing model", kind: "Model", progress: job.progress });
         if (job.phase === "complete" && job.ok) {
           if (standaloneTimerRef.current !== null) window.clearInterval(standaloneTimerRef.current);
           standaloneTimerRef.current = null;
@@ -336,8 +374,6 @@ export function ModelDownload() {
           if (standaloneTimerRef.current !== null) window.clearInterval(standaloneTimerRef.current);
           standaloneTimerRef.current = null;
           showFailure(errorView("MODEL_DOWNLOAD_FAILED", job.error || "The Whisper model download failed."));
-        } else if (!downloading && job.phase !== "verifying") {
-          setProgress({ title: job.phase === "downloading" ? "Downloading models" : "Preparing models", artifact: model, kind: "Model", progress: job.progress });
         }
       } catch (failure) {
         consecutiveErrors += 1;
@@ -347,6 +383,8 @@ export function ModelDownload() {
           storeEnsureJobId(model, null);
           showFailure(errorView("MODEL_DOWNLOAD_FAILED", "The previous download job is no longer available. Retry to start a new download."));
         }
+      } finally {
+        inFlight = false;
       }
     };
     void poll();
@@ -413,7 +451,7 @@ export function ModelDownload() {
       setManaged(launcherManaged);
       if (launcherManaged) {
         const status = await inspectManagedSetup();
-        if (status.job.state === "running") watchManagedJob();
+        if (status?.job.state === "running") watchManagedJob();
         return;
       }
       const result = await resolveWhisperModel();

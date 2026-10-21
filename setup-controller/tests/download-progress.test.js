@@ -27,7 +27,7 @@ test('direct transfer uses actual network deltas, excludes resumed bytes, and es
   let now = 0;
   const tracker = new DownloadProgressTracker({ clock: () => now });
   const resumed = tracker.accept({ ...base, event: 'downloading' }, 'asr', 'Whisper Large-v3');
-  assert.equal(resumed.downloaded_bytes, 100, 'resumed bytes remain visible in download progress');
+  assert.equal(resumed.transferred_bytes, 100, 'resumed bytes remain visible in download progress');
   assert.equal(resumed.bytes_per_second, null, 'cached prefix does not count as transfer speed');
   now = 1_000;
   const update = tracker.accept({ ...base, downloaded_bytes: 600, transfer_attempt_bytes: 500 }, 'asr', 'Whisper Large-v3');
@@ -45,10 +45,11 @@ test('unknown total remains byte-indeterminate and never invents an ETA', () => 
   const result = tracker.accept({ ...base, event: 'source_progress', downloaded_bytes: null,
     transferred_bytes: null, transfer_attempt_bytes: null, transfer_indeterminate: true,
     total_bytes: 10_000, files_completed: 3, files_total: 8 }, 'diarization', 'pyannote Community-1');
-  assert.equal(result.downloaded_bytes, null);
-  assert.equal(result.total_bytes, 10_000);
-  assert.equal(result.files_completed, 3);
-  assert.equal(result.files_total, 8);
+  assert.equal(result.progress_mode, 'files');
+  assert.equal(result.transferred_bytes, undefined);
+  assert.equal(result.total_bytes, undefined);
+  assert.equal(result.completed_files, 3);
+  assert.equal(result.total_files, 8);
   assert.equal(result.bytes_per_second, null);
   assert.equal(result.eta_seconds, null);
   assert.equal(result.transfer_indeterminate, true);
@@ -61,9 +62,9 @@ test('known downloaded bytes with unknown total retain size and speed but no per
   now = 1_000;
   const result = tracker.accept({ ...base, downloaded_bytes: 500, total_bytes: null,
     transfer_attempt_bytes: 500 }, 'speech_detection', 'Silero VAD');
-  assert.equal(result.downloaded_bytes, 500);
-  assert.equal(result.total_bytes, null);
-  assert.equal(result.bytes_per_second, 500);
+  assert.equal(result.progress_mode, 'files');
+  assert.equal(result.transferred_bytes, undefined);
+  assert.equal(result.bytes_per_second, null);
   assert.equal(result.eta_seconds, null);
 });
 
@@ -110,11 +111,11 @@ test('completion and phase changes do not retain a download ETA or speed', () =>
   now = 2_000;
   const complete = tracker.accept({ ...base, downloaded_bytes: 1_000, total_bytes: 1_000,
     transfer_attempt_bytes: 1_000 }, 'asr', 'Whisper Large-v3');
-  assert.equal(complete.downloaded_bytes, complete.total_bytes);
+  assert.equal(complete.transferred_bytes, complete.total_bytes);
   const verifying = tracker.accept({ event: 'verifying', total_bytes: 1_000 }, 'asr', 'Whisper Large-v3');
   assert.equal(verifying.phase, 'verifying');
-  assert.equal(verifying.bytes_per_second, null);
-  assert.equal(verifying.eta_seconds, null);
+  assert.equal(verifying.bytes_per_second, undefined);
+  assert.equal(verifying.eta_seconds, undefined);
   tracker.reset();
   assert.equal(tracker.stalled(), null, 'finished or interrupted child processes leave no active speed estimate');
 });
@@ -150,6 +151,72 @@ test('unknown-size progress events are throttled and valid completion emits imme
   assert.equal(tracker.shouldEmit(completed), true, 'genuine completion bypasses the throttle');
 });
 
+test('Hugging Face production progress shape reports file counts without byte percent', () => {
+  const tracker = new DownloadProgressTracker({ clock: () => 0 });
+  const event = tracker.accept({ event: 'source_progress', source: 'huggingface', operation: 'downloading',
+    progress_mode: 'files', current_file: null, completed_files: 2, total_files: 6 }, 'asr',
+  'Systran/faster-whisper-large-v3');
+  assert.equal(event.artifact_name, 'Systran/faster-whisper-large-v3');
+  assert.equal(event.artifact_type, 'model');
+  assert.equal(event.progress_mode, 'files');
+  assert.equal(event.completed_files, 2);
+  assert.equal(event.total_files, 6);
+  assert.equal(Object.hasOwn(event, 'percent'), false, 'file completion is never a byte percentage');
+  const publicEvent = sanitizeProgressTelemetry({ ...event, job_id: 'job-123', attempt_id: 'attempt-2', event_revision: 17 });
+  assert.equal(publicEvent.percent, undefined);
+  assert.equal(publicEvent.progress_mode, 'files');
+  assert.equal(publicEvent.artifact_name, 'Systran/faster-whisper-large-v3');
+  assert.equal(publicEvent.job_id, 'job-123');
+  assert.equal(publicEvent.event_revision, 17);
+});
+
+test('small completed files cannot make a multi-file model appear fully downloaded', () => {
+  const tracker = new DownloadProgressTracker({ clock: () => 0 });
+  const event = tracker.accept({ event: 'source_progress', source: 'huggingface', operation: 'downloading',
+    progress_mode: 'files', completed_files: 5, total_files: 6 }, 'asr', 'Systran/faster-whisper-large-v3');
+  assert.equal(event.progress_mode, 'files');
+  assert.equal(event.completed_files, 5);
+  assert.equal(event.percent, undefined);
+});
+
+test('explicit indeterminate mode is preserved even if incidental file counts exist', () => {
+  const value = sanitizeProgressTelemetry({ operation: 'downloading', progress_mode: 'indeterminate',
+    completed_files: 3, total_files: 4 });
+  assert.equal(value.progress_mode, 'indeterminate');
+  assert.equal(value.completed_files, 3);
+  assert.equal(value.percent, undefined);
+});
+
+test('artifact changes reset speed and percent follows only the current artifact byte counters', () => {
+  let now = 0;
+  const tracker = new DownloadProgressTracker({ clock: () => now });
+  tracker.accept({ ...base, event: 'downloading', downloaded_bytes: 0, total_bytes: 1_000,
+    transfer_attempt_bytes: 0, artifact_name: 'model-A' }, 'asr');
+  now = 1_000;
+  const first = tracker.accept({ ...base, downloaded_bytes: 500, total_bytes: 1_000,
+    transfer_attempt_bytes: 500, artifact_name: 'model-A' }, 'asr');
+  assert.equal(first.percent, 50);
+  assert.equal(first.bytes_per_second, 500);
+  const second = tracker.accept({ ...base, downloaded_bytes: 0, total_bytes: 10_000,
+    transfer_attempt_bytes: 0, artifact_name: 'model-B' }, 'asr');
+  assert.equal(second.percent, 0);
+  assert.equal(second.bytes_per_second, null);
+  assert.equal(second.artifact_name, 'model-B');
+});
+
+test('install and verification events carry operation labels without download measurements', () => {
+  const tracker = new DownloadProgressTracker({ clock: () => 0 });
+  const verifying = tracker.accept({ event: 'verifying', operation: 'verifying' }, 'asr', 'model-A');
+  assert.equal(verifying.operation, 'verifying');
+  assert.equal(verifying.progress_mode, 'indeterminate');
+  assert.equal(verifying.percent, undefined);
+  const installing = sanitizeProgressTelemetry({ operation: 'installing', artifact_type: 'python_package',
+    artifact_name: 'Installing dependencies', transferred_bytes: 500, total_bytes: 1_000 });
+  assert.equal(installing.operation, 'installing');
+  assert.equal(installing.progress_mode, 'indeterminate');
+  assert.equal(installing.percent, undefined);
+});
+
 test('malformed, out-of-order, or secret-bearing progress cannot become public telemetry', () => {
   let now = 0;
   const tracker = new DownloadProgressTracker({ clock: () => now });
@@ -161,11 +228,15 @@ test('malformed, out-of-order, or secret-bearing progress cannot become public t
   assert.equal(safeDisplayFilename('https://host.invalid/signed?token=secret'), null);
   assert.equal(safeDisplayFilename('hf_abcdefghijklmnop1234'), null);
   assert.equal(safeDisplayFilename('../../token.json'), 'token.json');
+  assert.equal(sanitizeProgressTelemetry({ operation: 'downloading', artifact_name: '/tmp/cache/model.bin' }).artifact_name, undefined);
+  assert.equal(sanitizeProgressTelemetry({ operation: 'downloading', artifact_name: 'a'.repeat(64) }).artifact_name, undefined);
+  assert.equal(sanitizeProgressTelemetry({ operation: 'downloading', artifact_name: 'Systran/faster-whisper-large-v3' }).artifact_name,
+    'Systran/faster-whisper-large-v3');
   const safe = sanitizeProgressTelemetry({ ...first, message: 'download https://cdn.invalid/?token=secret hf_abcdefghijklmnop',
     signed_url: 'https://cdn.invalid/?token=secret',
     authorization: 'hf_secret', headers: { authorization: 'secret' } });
   const encoded = JSON.stringify(safe);
   assert.doesNotMatch(encoded, /signed_url|authorization|headers|secret|https?:/i);
   assert.equal(sanitizeProgressTelemetry({ phase: 'downloading', downloaded_bytes: 10_000,
-    total_bytes: 1_000, percent: 900 }).percent, 100);
+    total_bytes: 1_000, percent: 900 }).percent, undefined);
 });

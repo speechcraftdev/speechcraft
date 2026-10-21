@@ -82,19 +82,41 @@ def _apply_progress(job: AsrEnsureJob, payload: dict[str, Any]) -> None:
     phase = payload.get("phase")
     if phase in {"queued", "downloading", "verifying", "complete", "failed"}:
         job.phase = phase  # type: ignore[assignment]
+    operation = {"downloading": "downloading", "verifying": "verifying", "complete": "verifying"}.get(job.phase, "checking")
+    transferred = payload.get("transferred_bytes", payload.get("downloaded_bytes"))
+    total = payload.get("total_bytes")
+    byte_progress = (operation == "downloading" and isinstance(transferred, int) and not isinstance(transferred, bool)
+        and transferred >= 0 and isinstance(total, int) and not isinstance(total, bool) and total > 0
+        and transferred <= total and not payload.get("transfer_indeterminate", False))
+    completed_files = payload.get("completed_files", payload.get("files_completed"))
+    total_files = payload.get("total_files", payload.get("files_total"))
+    file_counts_available = (operation == "downloading"
+        and isinstance(completed_files, int) and not isinstance(completed_files, bool) and completed_files >= 0
+        and isinstance(total_files, int) and not isinstance(total_files, bool) and total_files > 0)
+    event_revision = int(job.progress.get("event_revision", 0)) + 1
     progress = {
         "phase": job.phase,
+        "operation": operation,
+        "artifact_type": "model",
+        "artifact_name": payload.get("repo_id") or job.repo_id,
+        "progress_mode": "bytes" if byte_progress else "files" if file_counts_available else "indeterminate",
+        "job_id": job.id,
+        "event_revision": event_revision,
         "role": "asr",
         "model_name": payload.get("model_name") or job.model,
         "repo_id": payload.get("repo_id") or job.repo_id,
         "package_type": payload.get("package_type") or job.package_type,
         "current_filename": payload.get("current_filename"),
-        "downloaded_bytes": payload.get("downloaded_bytes"),
-        "total_bytes": payload.get("total_bytes"),
-        "bytes_per_second": payload.get("bytes_per_second"),
-        "eta_seconds": payload.get("eta_seconds"),
-        "files_completed": payload.get("files_completed"),
-        "files_total": payload.get("files_total"),
+        "transferred_bytes": transferred if byte_progress else None,
+        "downloaded_bytes": transferred if byte_progress else None,
+        "total_bytes": total if byte_progress else None,
+        "percent": (min(100, transferred * 100 // total) if byte_progress else None),
+        "bytes_per_second": payload.get("bytes_per_second") if byte_progress else None,
+        "eta_seconds": payload.get("eta_seconds") if byte_progress else None,
+        "completed_files": min(completed_files, total_files) if file_counts_available else None,
+        "total_files": total_files if file_counts_available else None,
+        "files_completed": min(completed_files, total_files) if file_counts_available else None,
+        "files_total": total_files if file_counts_available else None,
         "transfer_indeterminate": bool(
             payload.get("transfer_indeterminate", True)
             if job.phase == "downloading"

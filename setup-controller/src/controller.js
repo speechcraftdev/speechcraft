@@ -85,6 +85,14 @@ export function publicComponents(components) {
       .map((key) => [key, publicComponentField(key, value[key])]))]));
 }
 
+function bindProgressIdentity(status, jobId, attemptId, eventRevision) {
+  if (!status || typeof status !== 'object' || !status.components) return status;
+  return { ...status, components: Object.fromEntries(Object.entries(status.components).map(([name, component]) => [name,
+    component?.progress && typeof component.progress === 'object'
+      ? { ...component, progress: { ...component.progress, job_id: jobId, attempt_id: attemptId, event_revision: eventRevision } }
+      : component])) };
+}
+
 export function serializePublicJob(job) {
   if (!job) return null;
   const value = Object.fromEntries(PUBLIC_JOB_FIELDS.filter((key) => job[key] !== undefined)
@@ -443,7 +451,9 @@ export class SetupController {
           onComponentStatus: (status) => {
             const latest = this.store.snapshot().job;
             if (latest?.id !== jobId || latest.attempt_id !== attemptId || !['running', 'completed'].includes(latest.state)) return;
-            this.store.commit((state) => { state.job.bootstrap_status = status; }, 'component_status');
+            const eventRevision = this.store.snapshot().revision + 1;
+            const identified = bindProgressIdentity(status, jobId, attemptId, eventRevision);
+            this.store.commit((state) => { state.job.bootstrap_status = identified; }, 'component_status');
           },
           onChildProcess: (record, phase) => {
             const latest = this.store.snapshot().job;
@@ -465,18 +475,23 @@ export class SetupController {
             const latest = this.store.snapshot().job;
             if (latest?.id !== jobId || latest.attempt_id !== attemptId || latest.state !== 'running') return;
             const execution = this.activeExecution;
-            if (progress?.phase === 'downloading' && Number.isSafeInteger(progress.current)
-                && Number.isSafeInteger(progress.total) && execution?.attemptId === attemptId) {
+            const identified = progress && typeof progress === 'object' ? {
+              ...progress, job_id: jobId, attempt_id: attemptId,
+              event_revision: this.store.snapshot().revision + 1,
+            } : progress;
+            if (identified?.operation === 'downloading' && identified.progress_mode === 'bytes'
+                && Number.isSafeInteger(identified.transferred_bytes)
+                && Number.isSafeInteger(identified.total_bytes) && execution?.attemptId === attemptId) {
               const now = Date.now();
               const previous = execution.lastTransferProgress;
-              const fileChanged = previous && previous.message !== progress.message;
-              if (previous && !fileChanged && progress.current >= previous.current
-                  && progress.current - previous.current < 1024 * 1024 && now - previous.at < 750
-                  && progress.current !== progress.total) return;
-              execution.lastTransferProgress = { current: progress.current, total: progress.total,
-                message: progress.message, at: now };
+              const artifactChanged = previous && previous.artifact_name !== identified.artifact_name;
+              if (previous && !artifactChanged && identified.transferred_bytes >= previous.transferred_bytes
+                  && identified.transferred_bytes - previous.transferred_bytes < 1024 * 1024 && now - previous.at < 750
+                  && identified.transferred_bytes !== identified.total_bytes) return;
+              execution.lastTransferProgress = { transferred_bytes: identified.transferred_bytes,
+                artifact_name: identified.artifact_name, at: now };
             }
-            this.store.commit((state) => { state.job.progress = progress; }, 'task_progress');
+            this.store.commit((state) => { state.job.progress = identified; }, 'task_progress');
           },
           waitForUser: (componentStatus, message = 'Waiting for model authorization.') => {
             const latest = this.store.snapshot().job;

@@ -24,28 +24,19 @@ export function setupActionFor(status, models = []) {
 }
 
 export function downloadPercent(progress) {
-  if (progress?.phase !== "downloading") return null;
-  const indeterminate = progress.transfer_indeterminate || progress.indeterminate;
-  if (!indeterminate) {
-    const bytes = progress.downloaded_bytes;
-    const totalBytes = progress.total_bytes;
-    if (typeof bytes === "number" && typeof totalBytes === "number" && totalBytes > 0) {
-      return Math.max(0, Math.min(100, Math.floor(bytes * 100 / totalBytes)));
-    }
-    const current = progress.current;
-    const total = progress.total;
-    if (typeof current === "number" && typeof total === "number" && total > 0) {
-      return Math.max(0, Math.min(100, Math.floor(current * 100 / total)));
-    }
-  }
-  const filesCompleted = progress.files_completed;
-  const filesTotal = progress.files_total;
-  if (Number.isSafeInteger(filesCompleted) && filesCompleted >= 0
-      && Number.isSafeInteger(filesTotal) && filesTotal > 0) {
-    return Math.max(0, Math.min(100, Math.floor(filesCompleted * 100 / filesTotal)));
-  }
-  return !indeterminate && typeof progress.percent === "number" && Number.isFinite(progress.percent)
-    ? Math.max(0, Math.min(100, progress.percent)) : null;
+  if (progress?.operation !== "downloading" || progress?.progress_mode !== "bytes") return null;
+  if (!Number.isSafeInteger(progress.transferred_bytes) || !Number.isSafeInteger(progress.total_bytes)
+      || progress.total_bytes <= 0 || progress.transferred_bytes > progress.total_bytes) return null;
+  const measuredPercent = Math.floor(progress.transferred_bytes * 100 / progress.total_bytes);
+  return Number.isSafeInteger(progress.percent) && progress.percent === measuredPercent
+    ? progress.percent : null;
+}
+
+export function latestProgressForJob(jobId, attemptId, candidates = []) {
+  return candidates.filter((progress) => progress && progress.job_id === jobId
+    && progress.attempt_id === attemptId)
+    .sort((left, right) => (left.event_revision || 0) - (right.event_revision || 0))
+    .at(-1) || null;
 }
 
 export function setupFailureCodeFor(status) {

@@ -23,11 +23,14 @@ test('model-manager JSON telemetry flows through bootstrap, status, model rows, 
     if (command === 'speech_detection' || command === 'asr') {
       const total = command === 'asr' ? 2_000_000 : 1_000;
       const role = command;
+        const artifactName = command === 'asr' ? 'Systran/faster-whisper-large-v3' : 'silero_vad.onnx';
       const events = [
-        { event: 'downloading', role, path: command === 'asr' ? 'weights/model.bin' : 'silero/model.onnx',
+        { event: 'downloading', role, artifact_name: artifactName, artifact_type: 'model',
+          path: command === 'asr' ? 'weights/model.bin' : 'silero/model.onnx',
           attempt: 1, downloaded_bytes: 0, total_bytes: total, transfer_attempt_bytes: 0,
           files_completed: 0, files_total: 1 },
-        { event: 'progress', role, path: command === 'asr' ? 'weights/model.bin' : 'silero/model.onnx',
+        { event: 'progress', role, artifact_name: artifactName, artifact_type: 'model',
+          path: command === 'asr' ? 'weights/model.bin' : 'silero/model.onnx',
           attempt: 1, downloaded_bytes: Math.floor(total / 2), total_bytes: total,
           transfer_attempt_bytes: Math.floor(total / 2), files_completed: 0, files_total: 1 },
       ];
@@ -62,17 +65,20 @@ test('model-manager JSON telemetry flows through bootstrap, status, model rows, 
     await stream.nextEvent();
     assert.ok((await apiRequest('/setup-api/start', { method: 'POST', body: '{}' })).ok);
     const sileroEvent = await readUntilEvent(stream,
-      (item) => item.data.component_updates?.silero?.progress?.downloaded_bytes === 500, 10_000);
+      (item) => item.data.component_updates?.silero?.progress?.transferred_bytes === 500, 10_000);
     assert.equal(sileroEvent.data.component_updates.silero.progress.current_filename, 'model.onnx');
+    assert.equal(sileroEvent.data.component_updates.silero.progress.artifact_name, 'silero_vad.onnx');
+    assert.equal(sileroEvent.data.component_updates.silero.progress.percent, 50);
     const event = await readUntilEvent(stream,
-      (item) => item.data.component_updates?.whisper?.progress?.downloaded_bytes === 1_000_000, 10_000);
+      (item) => item.data.component_updates?.whisper?.progress?.transferred_bytes === 1_000_000, 10_000);
     assert.equal(event.data.component_updates.whisper.progress.role, 'asr');
     assert.equal(event.data.component_updates.whisper.progress.current_filename, 'model.bin');
+    assert.equal(event.data.component_updates.whisper.progress.artifact_name, 'Systran/faster-whisper-large-v3');
     assert.equal(event.data.component_updates.whisper.progress.total_bytes, 2_000_000);
     const status = await apiRequest('/setup-api/status').then((response) => response.json());
     const models = await apiRequest('/setup-api/models').then((response) => response.json());
-    assert.equal(status.components.whisper.progress.downloaded_bytes, 1_000_000);
-    assert.equal(models.models.find((model) => model.role === 'asr').progress.downloaded_bytes, 1_000_000);
+    assert.equal(status.components.whisper.progress.transferred_bytes, 1_000_000);
+    assert.equal(models.models.find((model) => model.role === 'asr').progress.transferred_bytes, 1_000_000);
     assert.equal(status.components.silero.state, 'files_verified');
     await app.controller.waitForIdle();
     const streamAfterCompletion = await openEvents(base, cookie, { origin: base });
