@@ -4,10 +4,8 @@ export function speechcraftApiBase(): string {
   if (configuredBase) {
     return configuredBase.replace(/\/+$/, "");
   }
-  if (typeof window !== "undefined") {
-    const protocol = window.location.protocol === "https:" ? "https:" : "http:";
-    const host = window.location.hostname || "127.0.0.1";
-    return `${protocol}//${host}:8010`;
-  }
-  return "http://127.0.0.1:8010";
+  // The Next server owns the loopback backend address and proxies it through
+  // /sc-api. Keeping browser requests same-origin also works through SSH and
+  // staging tunnels where the backend port is not exposed to the browser.
+  return "/sc-api";
 }
