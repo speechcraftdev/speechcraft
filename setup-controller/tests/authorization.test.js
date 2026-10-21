@@ -189,6 +189,39 @@ test('token waits ephemerally, is piped to an actual child, and never appears in
   for (const file of filesUnder(f.directory)) assert.equal(fs.readFileSync(file).includes(token), false, path.relative(f.directory, file));
 });
 
+test('preauthorization verifies token and gated repository access before setup starts', async () => {
+  const tasks = gatedTestTasks();
+  const f = await temporaryController({ mode: 'runtime', tasks }); active.add(f);
+  const token = 'hf_SECRET_MARKER_' + 'y'.repeat(24);
+  const originalFetch = globalThis.fetch;
+  const checks = [];
+  try {
+    globalThis.fetch = async (input, init = {}) => {
+      const url = String(input);
+      if (!url.startsWith('https://huggingface.co/')) return originalFetch(input, init);
+      checks.push({ url, method: init.method || 'GET', authorization: init.headers?.authorization });
+      return { ok: true, status: init.method === 'HEAD' ? 302 : 200 };
+    };
+    const response = await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: { token } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { verified: true });
+    assert.equal(checks.length, 2);
+    assert.ok(checks.every((check) => check.authorization === `Bearer ${token}`));
+    assert.equal(checks[0].method, 'GET');
+    assert.equal(checks[1].method, 'HEAD');
+    assert.equal(checks[1].url.includes('3533c8cf8e369892e6b79ff1bf80f7b0286a54ee'), true);
+    assert.equal(JSON.stringify(f.app.store.snapshot()).includes(token), false);
+    assert.equal(f.app.controller.pendingAuthorizationToken.toString('utf8'), token);
+
+    await f.request('/setup-api/start', { method: 'POST', body: {} });
+    await f.app.controller.waitForIdle();
+    assert.equal(tasks.invocation.tokenBuffer.every((byte) => byte === 0), true);
+    assert.equal(JSON.stringify(f.app.store.snapshot()).includes(token), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('duplicate authorization is rejected while a prior authorized operation is active', async () => {
   let entered;
   let release;

@@ -264,6 +264,7 @@ export function ModelDownload() {
   const startedRef = useRef(false);
   const busyRef = useRef(false);
   const setupStopRef = useRef<(() => void) | null>(null);
+  const setupRefreshRef = useRef<Promise<boolean> | null>(null);
 
   const navigateToLogin4 = useCallback(
     (runId: string) => {
@@ -352,52 +353,64 @@ export function ModelDownload() {
     });
 
     const refreshModels = async () => {
-      const list = await setupApi.models();
-      const active = pickActiveSetupModel(list.models);
-      if (active) {
-        const downloading =
-          active.progress?.phase === "downloading" || active.state === "downloading";
-        setPhase(downloading ? "downloading" : "loading");
-        setProgressView({
-          title: downloading ? "Downloading models" : "Loading models",
-          subtitle: downloading
-            ? "Transferring model files…"
-            : "Verifying and initializing installed models…",
-          packageType: active.role === "asr" ? "whisper" : active.role,
-          progress: active.progress
-            ? { ...active.progress, model_name: active.progress.model_name || active.display_name }
-            : {
-                phase: downloading ? "downloading" : "installing",
-                model_name: active.display_name,
-                indeterminate: true,
-              },
-        });
-      }
-      const status = await setupApi.status();
-      const needsAction =
-        status.job.state === "waiting_for_user" ||
-        list.models.some((m) => m.action_required || m.state === "waiting_for_token");
-      if (needsAction) {
-        const pyannoteNeedsAuthorization = list.models.some(
-          (m) => m.role === "diarization" && (m.action_required || m.state === "waiting_for_token"),
-        );
-        if (!pyannoteNeedsAuthorization) {
-          throw new SpeechcraftApiError(0, "A required model needs authorization before setup can continue.");
+      if (setupRefreshRef.current) return setupRefreshRef.current;
+      const refresh = (async () => {
+        const [list, status] = await Promise.all([setupApi.models(), setupApi.status()]);
+        const pyannoteNeedsAuthorization =
+          list.models.some(
+            (m) => m.role === "diarization" && (m.action_required || m.state === "waiting_for_token"),
+          ) || status.components?.pyannote?.state === "waiting_for_token" ||
+          ["HF_TOKEN_INVALID", "HF_MODEL_ACCESS_REQUIRED", "HF_TOKEN_PERMISSION_DENIED", "HF_APPROVAL_PENDING"]
+            .includes(status.job.error?.code || "");
+        const needsAction = status.job.state === "waiting_for_user" ||
+          list.models.some((m) => m.action_required || m.state === "waiting_for_token");
+        // Keep authorization as the stable, higher priority screen even when
+        // stale status or progress events describe an earlier setup phase.
+        if (needsAction) {
+          if (!pyannoteNeedsAuthorization) {
+            throw new SpeechcraftApiError(0, "A required model needs authorization before setup can continue.");
+          }
+          setAuthorizationError(null);
+          setPhase("needs_authorization");
+          return false;
         }
-        setAuthorizationError(null);
-        setPhase("needs_authorization");
-        return false;
+        if (status.job.state === "failed") {
+          throw new SpeechcraftApiError(
+            0,
+            status.job.error?.message || "Model setup failed. Retry after the runtime is repaired.",
+          );
+        }
+        const active = pickActiveSetupModel(list.models);
+        if (active) {
+          const downloading =
+            active.progress?.phase === "downloading" || active.state === "downloading";
+          setPhase(downloading ? "downloading" : "loading");
+          setProgressView({
+            title: downloading ? "Downloading models" : "Loading models",
+            subtitle: downloading
+              ? "Transferring model files…"
+              : "Verifying and initializing installed models…",
+            packageType: active.role === "asr" ? "whisper" : active.role,
+            progress: active.progress
+              ? { ...active.progress, model_name: active.progress.model_name || active.display_name }
+              : {
+                  phase: downloading ? "downloading" : "installing",
+                  model_name: active.display_name,
+                  indeterminate: true,
+                },
+          });
+        }
+        if (status.job.state === "completed" && !status.technical_processing_ready) {
+          throw new SpeechcraftApiError(0, "Required processing components are not ready. Review setup and retry.");
+        }
+        return status.job.state === "completed" && status.technical_processing_ready;
+      })();
+      setupRefreshRef.current = refresh;
+      try {
+        return await refresh;
+      } finally {
+        if (setupRefreshRef.current === refresh) setupRefreshRef.current = null;
       }
-      if (status.job.state === "failed") {
-        throw new SpeechcraftApiError(
-          0,
-          status.job.error?.message || "Model setup failed. Retry after the runtime is repaired.",
-        );
-      }
-      return (
-        status.technical_processing_ready ||
-        list.models.some((m) => m.role === "asr" && (m.runtime_ready || m.files_verified))
-      );
     };
 
     try {
@@ -465,15 +478,44 @@ export function ModelDownload() {
     setSubmitting(true);
     setAuthorizationError(null);
     try {
-      await setupApi.authorizePyannote(token);
-      setHfToken("");
+      const status = await setupApi.status();
+      if (status.job.state === "waiting_for_user") {
+        await setupApi.authorizePyannote(token);
+        setHfToken("");
+        setPhase("downloading");
+        if (setupStopRef.current) return;
+      } else {
+        await setupApi.preauthorizePyannote(token);
+        setHfToken("");
+      }
       setPhase("downloading");
+      setProgressView({
+        title: "Preparing SpeechCraft",
+        subtitle: "Access verified. Setting up required models and components…",
+        packageType: "setup",
+        progress: { phase: "checking", model_name: "SpeechCraft runtime", indeterminate: true },
+      });
+      await waitForSetupModels();
+      const resolved = await resolveWhisperModel();
+      if (resolved.status !== "ready") {
+        throw new SpeechcraftApiError(0, resolved.status === "error"
+          ? resolved.error : "Setup finished, but the model is not ready yet. Retry setup.");
+      }
+      await continueWithModel(resolved.model);
     } catch (err) {
-      setAuthorizationError(err instanceof SetupApiError ? err.message : "Could not verify the Hugging Face token.");
+      if (err instanceof SetupApiError) {
+        setAuthorizationError(err.message);
+      } else if (err instanceof SpeechcraftApiError) {
+        setPhase("error");
+        setError(err.detail);
+      } else {
+        setPhase("error");
+        setError("Could not verify Hugging Face access or prepare the required models.");
+      }
     } finally {
       setSubmitting(false);
     }
-  }, [hfToken, submitting]);
+  }, [hfToken, submitting, waitForSetupModels, continueWithModel]);
 
   const waitForBackendEnsure = useCallback(async (target: WhisperModelSize) => {
     setPhase("downloading");
@@ -566,8 +608,20 @@ export function ModelDownload() {
         resolved = await resolveWhisperModel();
       } catch (err) {
         if (err instanceof SpeechcraftApiError && err.status > 0 && err.status < 500) throw err;
-        await waitForSetupModels();
-        resolved = await resolveWhisperModel();
+        await setupApi.ensureSession();
+        const status = await setupApi.status();
+        if (status.components?.pyannote?.state === "runtime_ready" ||
+            status.components?.pyannote?.state === "files_verified") {
+          await waitForSetupModels();
+          resolved = await resolveWhisperModel();
+        } else if (status.job.state === "running") {
+          await waitForSetupModels();
+          resolved = await resolveWhisperModel();
+        } else {
+          setAuthorizationError(null);
+          setPhase("needs_authorization");
+          return;
+        }
       }
       if (resolved.status === "ready") {
         if (!projectId) {
@@ -585,6 +639,24 @@ export function ModelDownload() {
         return;
       }
       if (resolved.status === "needs_download") {
+        setDownloadTarget({ model: resolved.downloadModel, repoId: resolved.repoId });
+        setModel(resolved.downloadModel);
+        await setupApi.ensureSession();
+        const setupStatus = await setupApi.status();
+        const pyannoteReady = setupStatus.components?.pyannote?.state === "runtime_ready" ||
+          setupStatus.components?.pyannote?.state === "files_verified";
+        if (setupStatus.job.state === "running") {
+          await waitForSetupModels();
+          const after = await resolveWhisperModel();
+          if (after.status === "ready") { await continueWithModel(after.model); return; }
+          throw new SpeechcraftApiError(0, after.status === "error"
+            ? after.error : "Setup finished, but the model is not ready yet.");
+        }
+        if (!pyannoteReady) {
+          setAuthorizationError(null);
+          setPhase("needs_authorization");
+          return;
+        }
         const activeJobId = readEnsureJobId(projectId, resolved.downloadModel);
         if (activeJobId) {
           try {
@@ -746,7 +818,7 @@ export function ModelDownload() {
         <div className="text-center space-y-2">
           <h1 className="text-lg lg:text-xl mb-4 font-serif">Authorize pyannote Community-1</h1>
           <p className="font-sans text-sm text-[#878787]">
-            Accept the model conditions and provide a Hugging Face read token to continue setup. SpeechCraft sends it to the local controller for this installation only.
+            Accept the model conditions and provide a Hugging Face read token. SpeechCraft verifies access first; setup and model downloads start only after it is confirmed.
           </p>
         </div>
         <ol className="mt-5 list-inside list-decimal space-y-2 text-center text-sm text-[#878787]">

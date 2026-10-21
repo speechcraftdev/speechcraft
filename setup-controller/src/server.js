@@ -362,6 +362,12 @@ export async function createSetupController({
       }
       validateHostOrigin(request, { originRequired: true });
       requireCsrf(request, session);
+      if (url.pathname === '/setup-api/models/pyannote/preauthorize') {
+        const token = await readAuthorizationJson(request);
+        await controller.preauthorizeModel('diarization', token);
+        json(response, 200, { verified: true });
+        return;
+      }
       if (url.pathname === '/setup-api/models/pyannote/authorize') {
         const token = await readAuthorizationJson(request);
         const result = controller.authorizeModel('diarization', token);

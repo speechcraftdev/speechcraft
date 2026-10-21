@@ -161,6 +161,8 @@ export class SetupController {
     this.activeExecution = null;
     this.runner = null;
     this.stopping = false;
+    this.pendingAuthorizationToken = null;
+    this.authorizationVerificationActive = false;
     const current = this.store.snapshot().job;
     if (current?.state === 'running' || current?.state === 'cancelling') {
       assertTransition(current.state, 'interrupted');
@@ -186,6 +188,7 @@ export class SetupController {
 
   start() {
     if (this.stopping) throw new ControllerError(503, 'CONTROLLER_STOPPING', 'The setup controller is stopping.');
+    if (this.authorizationVerificationActive) throw new ControllerError(409, 'AUTHORIZATION_VERIFICATION_RUNNING', 'Wait for Hugging Face access verification before starting setup.');
     const current = this.store.snapshot().job;
     if (current) {
       if (current.state === 'running' || current.state === 'waiting_for_user' || current.state === 'cancelling') {
@@ -220,6 +223,7 @@ export class SetupController {
 
   retry() {
     if (this.stopping) throw new ControllerError(503, 'CONTROLLER_STOPPING', 'The setup controller is stopping.');
+    if (this.authorizationVerificationActive) throw new ControllerError(409, 'AUTHORIZATION_VERIFICATION_RUNNING', 'Wait for Hugging Face access verification before retrying setup.');
     if (this.activeExecution) {
       throw new ControllerError(409, 'ATTEMPT_STILL_STOPPING', 'The previous setup attempt has not finished stopping yet.');
     }
@@ -313,7 +317,50 @@ export class SetupController {
     return { job: this.store.snapshot().job, idempotent: false };
   }
 
+  async preauthorizeModel(role, credential) {
+    if (role !== 'diarization') throw new ControllerError(404, 'MODEL_ROLE_NOT_FOUND', 'This setup model role is not available for authorization.');
+    if (this.mode !== 'runtime') throw new ControllerError(409, 'RUNTIME_SETUP_REQUIRED', 'Community-1 authorization is available only during runtime setup.');
+    if (typeof credential !== 'string' || !/^hf_[A-Za-z0-9_-]{16,512}$/.test(credential)) {
+      throw new ControllerError(400, 'HF_TOKEN_INVALID', 'Enter a valid Hugging Face read token.');
+    }
+    if (this.activeExecution) throw new ControllerError(409, 'AUTHORIZATION_ALREADY_RUNNING', 'A setup operation is already running. Wait for its status before submitting a token.');
+    if (this.authorizationVerificationActive) throw new ControllerError(409, 'AUTHORIZATION_VERIFICATION_RUNNING', 'Hugging Face access is already being verified.');
+    if (this.store.snapshot().job?.state === 'waiting_for_user') {
+      throw new ControllerError(409, 'AUTHORIZATION_NOT_REQUESTED', 'This setup attempt is waiting for authorization; resume it through the requested authorization action.');
+    }
+    this.authorizationVerificationActive = true;
+    try {
+      const whoami = await fetch('https://huggingface.co/api/whoami-v2', {
+        headers: { authorization: `Bearer ${credential}` }, cache: 'no-store',
+        signal: AbortSignal.timeout(15_000),
+      }).catch(() => { throw new ControllerError(503, 'HF_NETWORK_ERROR', 'Hugging Face could not verify the token. Check the connection and retry.'); });
+      if (whoami.status === 401 || whoami.status === 403) {
+        throw new ControllerError(400, 'HF_TOKEN_INVALID', 'Hugging Face rejected this token. Check it and submit a valid read token.');
+      }
+      if (!whoami.ok) throw new ControllerError(503, 'HF_NETWORK_ERROR', 'Hugging Face could not verify the token. Check the connection and retry.');
+      const access = await fetch('https://huggingface.co/pyannote/speaker-diarization-community-1/resolve/3533c8cf8e369892e6b79ff1bf80f7b0286a54ee/config.yaml', {
+        method: 'HEAD', headers: { authorization: `Bearer ${credential}` }, cache: 'no-store',
+        redirect: 'manual', signal: AbortSignal.timeout(15_000),
+      }).catch(() => { throw new ControllerError(503, 'HF_NETWORK_ERROR', 'Hugging Face could not verify Community-1 access. Check the connection and retry.'); });
+      if (access.status === 401 || access.status === 403 || access.status === 404) {
+        throw new ControllerError(400, 'HF_MODEL_ACCESS_REQUIRED', 'Accept the Community-1 conditions and confirm account access on Hugging Face, then retry.');
+      }
+      if (![200, 206, 301, 302, 303, 307, 308].includes(access.status)) {
+        throw new ControllerError(503, 'HF_NETWORK_ERROR', 'Hugging Face could not verify Community-1 access. Check the connection and retry.');
+      }
+      this.pendingAuthorizationToken?.fill(0);
+      this.pendingAuthorizationToken = Buffer.from(credential, 'utf8');
+      return { verified: true };
+    } finally {
+      this.authorizationVerificationActive = false;
+    }
+  }
+
   launch({ startStage = null, authorizationToken = null } = {}) {
+    if (!authorizationToken && Buffer.isBuffer(this.pendingAuthorizationToken)) {
+      authorizationToken = this.pendingAuthorizationToken;
+      this.pendingAuthorizationToken = null;
+    }
     const job = this.store.snapshot().job;
     const abort = new AbortController();
     const execution = { jobId: job.id, attemptId: job.attempt_id, abort, promise: null,
@@ -506,6 +553,8 @@ export class SetupController {
 
   async shutdown() {
     this.stopping = true;
+    this.pendingAuthorizationToken?.fill(0);
+    this.pendingAuthorizationToken = null;
     const current = this.store.snapshot().job;
     // Waiting for user is durable idle state, not active work. Preserve it
     // across a graceful restart so the next controller can continue asking

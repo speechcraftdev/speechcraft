@@ -1675,11 +1675,7 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       verification: 'trusted_lock_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
   }
 
-  async installApprovedModels(context) {
-    const profile = selectRuntimeProfile(this.environment);
-    const root = runtimeRoots(this.dataDirectory).models;
-    validateManagedStorage(this.environment, [root, this.paths.hfHome, this.paths.hfHub, this.paths.hfXet, this.paths.temporary]);
-    const python = this.getManagerPython();
+  async installUngatedModels(context, profile, root, python) {
     for (const [role, component] of [['speech_detection', 'silero'], ['asr', 'whisper'], ['speaker_purity', 'ecapa']]) {
       const modelName = role === 'asr' ? 'Whisper Large-v3'
         : role === 'speaker_purity' ? 'WeSpeaker ECAPA-TDNN512-LM' : 'Silero VAD';
@@ -1757,6 +1753,14 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       }
       this.setComponent(context, component, { state: 'files_verified', verification: 'manifest_size_and_sha256', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Files are verified; runtime inference has not been tested.', runtime_ready: false, progress: null, progress_indeterminate: false, path: report.root, report });
     }
+  }
+
+  async installApprovedModels(context) {
+    const profile = selectRuntimeProfile(this.environment);
+    const root = runtimeRoots(this.dataDirectory).models;
+    validateManagedStorage(this.environment, [root, this.paths.hfHome, this.paths.hfHub, this.paths.hfXet, this.paths.temporary]);
+    const python = this.getManagerPython();
+
 
     // Community-1 is the only credential-gated role. Check the local trusted
     // catalog report first, so verified snapshots never require another token.
@@ -1772,6 +1776,7 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         verification: 'complete_manifest_size_sha256_and_exact_tree', last_verified_at: new Date().toISOString(),
         path: localReport.root, report: localReport, runtime_ready: false, failure_code: null,
         message: 'Community-1 files are verified; offline inference validation is pending.' });
+      await this.installUngatedModels(context, profile, root, python);
       return;
     }
     if (!context.authorizationToken) {
@@ -1918,6 +1923,7 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
       path: gatedReport.root, report: gatedReport, runtime_ready: false, failure_code: null,
       message: 'Community-1 files are verified; offline inference validation is pending.', progress: null,
       progress_indeterminate: false });
+    await this.installUngatedModels(context, profile, root, python);
   }
 
   async validateRuntime(context) {

@@ -95,8 +95,11 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
   const runtime = new RuntimeTasks({ dataDirectory: directory, applicationRoot: repositoryRoot,
     processRunner: async (executable, args, options) => {
       const action = args[3]; const role = args[4];
-      if (role !== 'diarization') return { code: 0, stdout: JSON.stringify({ status: 'verified', install_ready: true,
-        integrity_verified: true, root: path.join(directory, 'models', role), role }), stderr: '' };
+      if (role !== 'diarization') {
+        await options.onChildProcess?.({ clear: true, termination_status: 'termination_confirmed' });
+        return { code: 0, stdout: JSON.stringify({ status: 'verified', install_ready: true,
+          integrity_verified: true, root: path.join(directory, 'models', role), role }), stderr: '' };
+      }
       const output = options.onOutput;
       const launched = await runOwnedProcess(executable, ['-c', helper, ...args.slice(3)], { ...options,
         onOutput: (stream, chunk) => {
@@ -127,13 +130,15 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
     const post = (route, body = {}) => fetch(`${base}${route}`, { method: 'POST', headers: {
       origin: base, cookie, 'x-speechcraft-csrf': auth.csrf_token, 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
-    assert.equal((await post('/setup-api/start')).status, 202);
+    const startResponse = await post('/setup-api/start');
+    assert.equal(startResponse.status, 202, JSON.stringify(await startResponse.json()));
     await app.controller.waitForIdle();
     assert.equal(app.store.snapshot().job.state, 'waiting_for_user');
     const secret = 'hf_SECRET_MARKER_fake_hub_123456';
     const authorized = await post('/setup-api/models/pyannote/authorize', { token: secret });
-    assert.equal(authorized.status, 202);
-    assert.equal(JSON.stringify(await authorized.json()).includes(secret), false);
+    const authorizationResult = await authorized.json();
+    assert.equal(authorized.status, 202, JSON.stringify(authorizationResult));
+    assert.equal(JSON.stringify(authorizationResult).includes(secret), false);
     await app.controller.waitForIdle();
     const component = app.store.snapshot().job.bootstrap_status.components.pyannote;
     assert.equal(app.store.snapshot().job.state, 'completed', JSON.stringify({ error: app.store.snapshot().job.error,
@@ -151,7 +156,8 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
     assert.equal(JSON.stringify(publicBodies).includes(secret), false);
     for (const file of filesUnder(directory)) assert.equal(fs.readFileSync(file).includes(secret), false, path.relative(directory, file));
 
-    assert.equal((await post('/setup-api/start')).status, 202);
+    const restarted = await post('/setup-api/start');
+    assert.equal(restarted.status, 202, JSON.stringify(await restarted.json()));
     await app.controller.waitForIdle();
     assert.equal(app.store.snapshot().job.bootstrap_status.components.pyannote.state, 'files_verified');
     assert.equal(app.store.snapshot().job.state, 'completed');

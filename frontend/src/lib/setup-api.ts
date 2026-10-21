@@ -157,6 +157,9 @@ export const setupApi = {
   retry: () => request("retry", { method: "POST", body: "{}" }),
   repair: () => request("repair", { method: "POST", body: "{}" }),
   cancel: () => request("cancel", { method: "POST", body: "{}" }),
+  preauthorizePyannote: (token: string) => request<{ verified: boolean }>("models/pyannote/preauthorize", {
+    method: "POST", body: JSON.stringify({ token }),
+  }),
   authorizePyannote: (token: string) => request("models/pyannote/authorize", {
     method: "POST", body: JSON.stringify({ token }),
   }),

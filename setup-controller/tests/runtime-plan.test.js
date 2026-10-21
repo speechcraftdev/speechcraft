@@ -750,7 +750,7 @@ test('model stage invokes the existing model-manager contract for platform-selec
     componentStatus: tasks.initialBootstrapStatus(), onComponentStatus(value) { this.componentStatus = value; }, onProgress() {} };
   await tasks.run('install_models', context);
   assert.deepEqual(calls.map((args) => args[args.findIndex((value) => value === 'install' || value === 'status') + 1]),
-    ['speech_detection', 'asr', 'speaker_purity', 'diarization']);
+    ['diarization', 'speech_detection', 'asr', 'speaker_purity']);
   assert.ok(calls.every((args) => args.includes('--platform') && args[args.indexOf('--platform') + 1] === 'windows-wsl2'));
   assert.equal(context.componentStatus.components.silero.state, 'files_verified');
   assert.equal(context.componentStatus.components.whisper.state, 'files_verified');
@@ -786,6 +786,8 @@ test('gated controller acquisition uses only the trusted role and sends token th
   await tasks.run('install_models', context);
   const gated = calls.find((call) => call.args.includes('authorize-install'));
   assert.ok(gated);
+  assert.ok(calls.indexOf(gated) < calls.findIndex((call) => call.args.includes('install')),
+    'the token must be checked before any other model install starts');
   assert.equal(gated.args[gated.args.indexOf('authorize-install') + 1], 'diarization');
   assert.equal(gated.args.includes(token), false);
   assert.equal(JSON.stringify(gated.env).includes(token), false);
@@ -794,5 +796,31 @@ test('gated controller acquisition uses only the trusted role and sends token th
   assert.equal(context.componentStatus.components.pyannote.state, 'files_verified');
   assert.equal(context.componentStatus.components.pyannote.runtime_ready, false);
   assert.equal(context.componentStatus.production_ready, false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('missing Community-1 access pauses before starting any model download', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-model-auth-gate-'));
+  const calls = [];
+  let paused = false;
+  const tasks = new RuntimeTasks({ dataDirectory: root, availableBytes: 32 * 1024 ** 3,
+    processRunner: async (_python, args) => {
+      calls.push(args);
+      return { code: 1, stdout: JSON.stringify({ status: 'missing', install_ready: false }), stderr: '' };
+    } });
+  tasks.environment = { profile: 'linux-x86_64', wsl: false, os: 'linux', architecture: 'x86_64' };
+  tasks.paths = { home: root, uvCache: root, hfHome: path.join(root, 'hf'), hfHub: path.join(root, 'hf', 'hub'),
+    hfXet: path.join(root, 'hf', 'xet'), temporary: root, pythonRoot: root };
+  tasks.getManagerPython = () => '/trusted/model-manager/bin/python';
+  const componentStatus = tasks.initialBootstrapStatus();
+  const context = { attemptId: '00000000-0000-4000-8000-000000000103', signal: new AbortController().signal,
+    componentStatus, bootstrapStatus: componentStatus,
+    onComponentStatus(value) { this.componentStatus = value; }, onProgress() {},
+    waitForUser() { paused = true; } };
+  await tasks.run('install_models', context);
+  assert.equal(paused, true);
+  assert.equal(context.componentStatus.components.pyannote.state, 'waiting_for_token');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].includes('install'), false);
   fs.rmSync(root, { recursive: true, force: true });
 });
