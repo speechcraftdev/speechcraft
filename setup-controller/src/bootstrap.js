@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { inspectHost, validateManagedStorage } from './platform.js';
-import { DownloadProgressTracker } from './download-progress.js';
+import { ByteTransferSampler, DownloadProgressTracker } from './download-progress.js';
 import { PRODUCTION_STAGES, assertTrustedBackendRecipe, expectedWorkerMachines, hashMatches, initialComponents, runtimeRoots, runtimeManifest, selectRuntimeProfile } from './runtime-plan.js';
 
 const manifest = JSON.parse(fs.readFileSync(fileURLToPath(new URL('../resources/bootstrap-manifest.json', import.meta.url)), 'utf8'));
@@ -798,9 +798,9 @@ export async function fetchArtifact(url, destination, expected, { signal, onProg
         const { bytesWritten } = await file.write(value, offset, value.byteLength - offset);
         offset += bytesWritten;
       }
-      onProgress?.({ phase: 'downloading', current: bytes, total: announced === expected.size_bytes ? expected.size_bytes : null,
-        percent: announced === expected.size_bytes ? Math.floor(bytes * 100 / expected.size_bytes) : null,
-        message: `Downloading pinned uv artifact (${bytes} bytes received).` });
+      onProgress?.({ phase: 'downloading', current: bytes, total: expected.size_bytes,
+        percent: Math.min(100, Math.floor(bytes * 100 / expected.size_bytes)),
+        message: 'Downloading the pinned uv runtime.', artifact_name: 'uv' });
     }
     await file.sync();
   } catch (error) {
@@ -1235,8 +1235,13 @@ export class BootstrapTasks {
       }
     }
     this.emit(context, safeProgress('downloading', 'Downloading the pinned Astral uv release artifact.'));
+    const transferSampler = new ByteTransferSampler();
     await fetchArtifact(artifact.url, archive, artifact, { signal: context.signal,
-      fetchImpl: this.fetchImpl, onProgress: (value) => this.emit(context, value) });
+      fetchImpl: this.fetchImpl, onProgress: (value) => this.emit(context, {
+        ...value,
+        artifact_name: `uv ${this.manifest.uv.version}`,
+        ...transferSampler.update(value.current, value.total),
+      }) });
     const digest = await hashFile(archive);
     validateArtifactDigest(artifact, digest);
     this.emit(context, safeProgress('verifying', 'Verifying the official uv archive SHA-256 and safe archive inventory.'));

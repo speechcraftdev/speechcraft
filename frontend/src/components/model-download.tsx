@@ -24,7 +24,7 @@ import {
   isLauncherManagedInstallation,
   subscribeSetupEvents,
 } from "@/lib/setup-api";
-import { setupActionFor, setupFailureCodeFor, setupFailureFor } from "@/lib/model-onboarding.mjs";
+import { downloadPercent, setupActionFor, setupFailureCodeFor, setupFailureFor } from "@/lib/model-onboarding.mjs";
 
 type Phase = "checking" | "needs_authorization" | "access_verified" | "needs_download" | "downloading" | "error";
 type ErrorView = { category: string; message: string; action: "retry" | "verify" };
@@ -64,14 +64,6 @@ function formatEta(seconds: number | null | undefined) {
   return rest ? `About ${hours} hr ${rest} min left` : `About ${hours} hr left`;
 }
 
-function progressPercent(progress: ProgressView["progress"]) {
-  if (progress?.phase !== "downloading" || progress?.transfer_indeterminate || progress?.indeterminate) return null;
-  const bytes = progress.downloaded_bytes;
-  const total = progress.total_bytes;
-  if (typeof bytes === "number" && typeof total === "number" && total > 0) return Math.min(100, Math.floor(bytes * 100 / total));
-  return "percent" in progress && typeof progress.percent === "number" ? Math.max(0, Math.min(100, progress.percent)) : null;
-}
-
 function setupProgress(status: SetupStatus, models: ModelState[]): ProgressView {
   const model = models.find((item) => item.progress?.phase === "downloading" || item.state === "downloading")
     || models.find((item) => item.progress && ["installing", "verifying", "loading"].includes(item.progress.phase || ""));
@@ -81,8 +73,21 @@ function setupProgress(status: SetupStatus, models: ModelState[]): ProgressView 
   const modelStage = stage === "install_models" || Boolean(model);
   const packageStage = /install_(model_manager|backend_environment|worker_environment)/.test(stage);
   const kind = modelStage ? "Model" : packageStage ? "Python package" : "Runtime";
-  const artifact = progress?.model_name || model?.display_name || progress?.message || stage.replaceAll("_", " ") || "Speechcraft runtime";
-  const title = progress?.phase === "downloading" ? "Downloading models" : "Preparing models";
+  const workerProfile = status.runtime_profile?.workerProfile;
+  const stageArtifact: Record<string, string> = {
+    install_uv: `uv ${status.components?.uv?.identity?.replace(/^uv\s+/, "") || "runtime"}`,
+    install_python: `CPython ${status.components?.managed_python?.identity?.match(/\d+\.\d+\.\d+/)?.[0] || "runtime"}`,
+    install_model_manager: "Speechcraft model manager",
+    install_backend_environment: "Speechcraft backend packages",
+    install_worker_environment: `${workerProfile === "linux-x86_64-cuda" ? "CUDA" : workerProfile === "linux-x86_64-cpu" ? "CPU" : "Speechcraft"} dataset worker environment`,
+    install_models: "Speechcraft models",
+  };
+  const artifact = progress?.model_name || progress?.artifact_name || model?.display_name
+    || stageArtifact[stage] || "Speechcraft runtime";
+  const downloadingModel = stage === "install_models" && progress?.phase === "downloading";
+  const downloadingRuntime = stage === "install_uv" && progress?.phase === "downloading";
+  const title = downloadingModel ? "Downloading models"
+    : downloadingRuntime ? "Downloading runtime" : "Preparing Speechcraft";
   return { title, artifact, kind, progress };
 }
 
@@ -121,18 +126,30 @@ function errorFromException(error: unknown, managed: boolean): ErrorView {
 
 function ProgressScreen({ view }: { view: ProgressView }) {
   const progress = view.progress;
-  const percent = progressPercent(progress);
+  const percent = downloadPercent(progress);
   const downloading = progress?.phase === "downloading";
-  const downloaded = downloading ? formatBytes(progress?.downloaded_bytes) : null;
-  const total = downloading ? formatBytes(progress?.total_bytes) : null;
+  const currentBytes = typeof progress?.downloaded_bytes === "number" ? progress.downloaded_bytes
+    : downloading && typeof progress?.current === "number" ? progress.current : null;
+  const totalBytes = typeof progress?.total_bytes === "number" ? progress.total_bytes
+    : downloading && typeof progress?.total === "number" ? progress.total : null;
+  const downloaded = downloading ? formatBytes(currentBytes) : null;
+  const total = downloading ? formatBytes(totalBytes) : null;
+  const fileBasedProgress = downloading && percent !== null
+    && !(typeof progress?.downloaded_bytes === "number" && typeof progress?.total_bytes === "number" && progress.total_bytes > 0)
+    && !(typeof progress?.current === "number" && typeof progress?.total === "number" && progress.total > 0)
+    && Number.isSafeInteger(progress?.files_completed) && Number.isSafeInteger(progress?.files_total)
+    && (progress?.files_total || 0) > 0;
   const speed = downloading && typeof progress?.bytes_per_second === "number" && progress.bytes_per_second > 0 && !progress.stalled
     ? `${formatBytes(progress.bytes_per_second)}/s` : null;
   const eta = downloading && !progress?.stalled ? formatEta(progress?.eta_seconds) : null;
+  const hasTransferSize = currentBytes !== null || totalBytes !== null;
   return (
     <>
       <div className="text-center space-y-2">
         <h1 className="text-lg lg:text-xl mb-4 font-serif">{view.title}</h1>
-        <p className="font-sans text-sm text-[#878787]">Speechcraft is preparing the components needed for processing.</p>
+        <p className="font-sans text-sm text-[#878787]">
+          {downloading ? `${view.artifact} is downloading.` : "Speechcraft is installing and verifying the components needed for processing."}
+        </p>
       </div>
       <div className="mt-8 space-y-3" aria-live="polite">
         <div className="flex items-baseline justify-between gap-3 text-sm">
@@ -140,20 +157,30 @@ function ProgressScreen({ view }: { view: ProgressView }) {
           <span className="shrink-0 text-xs text-[#878787]">{view.kind}</span>
         </div>
         {progress?.current_filename && downloading ? <p className="truncate text-xs text-[#878787]">{progress.current_filename}</p> : null}
-        <div role="progressbar" aria-label={`${view.artifact} ${downloading ? "download" : "setup"}`}
+        <div role="progressbar" aria-label={`${view.artifact} ${fileBasedProgress ? "file download" : downloading ? "download" : "setup"}`}
           aria-valuemin={0} aria-valuemax={100} {...(percent === null ? {} : { "aria-valuenow": percent })}
           className="h-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
-          <div className={`h-full bg-foreground/70 ${percent === null ? "w-1/3 animate-pulse" : "transition-[width]"}`}
+          <div className={`h-full bg-foreground/70 ${percent === null ? "speechcraft-progress-indeterminate w-1/3" : "transition-[width]"}`}
             style={percent === null ? undefined : { width: `${percent}%` }} />
         </div>
-        {downloaded ? <div className="flex justify-between gap-3 text-xs text-[#878787]">
-          <span>{total ? `${downloaded} / ${total}` : `Downloaded ${downloaded}`}</span>
+        {downloaded || total ? <div className="flex justify-between gap-3 text-xs text-[#878787]">
+          <span>{downloaded && total ? `${downloaded} / ${total}` : downloaded ? `Received ${downloaded}` : `Total ${total}`}</span>
           {percent === null ? null : <span>{percent}%</span>}
         </div> : null}
-        {downloading ? <div className="flex justify-between gap-3 text-xs text-[#878787]">
-          <span>Speed: {speed || (progress?.stalled ? "Stalled" : "unavailable")}</span>
-          <span>ETA: {eta || "unavailable"}</span>
-        </div> : <p className="text-xs text-[#878787]">Installing and verifying required components…</p>}
+        {fileBasedProgress && !downloaded && !total ? <div className="flex justify-between gap-3 text-xs text-[#878787]">
+          <span>{progress?.files_completed} of {progress?.files_total} files</span>
+          <span>{percent}%</span>
+        </div> : null}
+        {percent !== null && !downloaded && !total && !fileBasedProgress ? <p className="text-right text-xs text-[#878787]">{percent}%</p> : null}
+        {speed || eta ? <p className="text-xs text-[#878787]">
+          {[speed ? `Speed ${speed}` : null, eta ? `ETA ${eta}` : null].filter(Boolean).join(" · ")}
+        </p> : null}
+        {downloading && (!speed || !eta) ? <p className="text-xs text-[#878787]">
+          {hasTransferSize ? "Transfer speed and ETA appear once enough data is measured." : "This download does not report byte-level progress."}
+        </p> : null}
+        {!downloading ? <p className="text-xs text-[#878787]">
+          {view.kind === "Python package" ? "The package installer does not report per-package percentage progress for this step." : "This installation step does not report percentage progress."}
+        </p> : null}
       </div>
     </>
   );

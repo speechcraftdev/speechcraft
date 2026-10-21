@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { setupActionFor, setupFailureCodeFor, setupFailureFor } from "./model-onboarding.mjs";
+import { downloadPercent, setupActionFor, setupFailureCodeFor, setupFailureFor } from "./model-onboarding.mjs";
 
 const base = { job: { state: "idle", error: null }, technical_processing_ready: false, components: { pyannote: { state: "pending" } } };
 
@@ -33,4 +33,16 @@ test("setup errors are categorized with an actionable next step", () => {
   assert.equal(setupFailureFor("MODEL_INITIALIZATION_FAILED").category, "model_initialization");
   assert.equal(setupFailureCodeFor({ job: { state: "failed", stage: "install_models", error: { code: "SETUP_TASK_FAILED" } } }), "MODEL_DOWNLOAD_FAILED");
   assert.equal(setupFailureCodeFor({ job: { state: "completed", stage: "verify_services" }, technical_processing_ready: false }), "PROCESSING_PREREQUISITES_MISSING");
+});
+
+test("download progress uses byte totals and hides percentages for non-transfer or indeterminate steps", () => {
+  assert.equal(downloadPercent({ phase: "downloading", current: 5_000, total: 20_000 }), 25);
+  assert.equal(downloadPercent({ phase: "downloading", downloaded_bytes: 3_000, total_bytes: 4_000 }), 75);
+  assert.equal(downloadPercent({ phase: "downloading", current: 20, total: 10 }), 100);
+  assert.equal(downloadPercent({ phase: "downloading", files_completed: 2, files_total: 8, transfer_indeterminate: true }), 25);
+  assert.equal(downloadPercent({ phase: "downloading", files_completed: 8, files_total: 8 }), 100);
+  assert.equal(downloadPercent({ phase: "installing", current: 3, total: 4, percent: 75 }), null);
+  assert.equal(downloadPercent({ phase: "downloading", current: 3, total: 4, transfer_indeterminate: true }), null);
+  assert.equal(downloadPercent({ phase: "downloading", percent: 45 }), 45);
+  assert.equal(downloadPercent({ phase: "downloading", percent: Number.NaN }), null);
 });

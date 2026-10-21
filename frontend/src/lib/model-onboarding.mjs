@@ -23,6 +23,31 @@ export function setupActionFor(status, models = []) {
   return "verify";
 }
 
+export function downloadPercent(progress) {
+  if (progress?.phase !== "downloading") return null;
+  const indeterminate = progress.transfer_indeterminate || progress.indeterminate;
+  if (!indeterminate) {
+    const bytes = progress.downloaded_bytes;
+    const totalBytes = progress.total_bytes;
+    if (typeof bytes === "number" && typeof totalBytes === "number" && totalBytes > 0) {
+      return Math.max(0, Math.min(100, Math.floor(bytes * 100 / totalBytes)));
+    }
+    const current = progress.current;
+    const total = progress.total;
+    if (typeof current === "number" && typeof total === "number" && total > 0) {
+      return Math.max(0, Math.min(100, Math.floor(current * 100 / total)));
+    }
+  }
+  const filesCompleted = progress.files_completed;
+  const filesTotal = progress.files_total;
+  if (Number.isSafeInteger(filesCompleted) && filesCompleted >= 0
+      && Number.isSafeInteger(filesTotal) && filesTotal > 0) {
+    return Math.max(0, Math.min(100, Math.floor(filesCompleted * 100 / filesTotal)));
+  }
+  return !indeterminate && typeof progress.percent === "number" && Number.isFinite(progress.percent)
+    ? Math.max(0, Math.min(100, progress.percent)) : null;
+}
+
 export function setupFailureCodeFor(status) {
   const job = status?.job || {};
   if (job.state === "completed" && status?.technical_processing_ready !== true) return "PROCESSING_PREREQUISITES_MISSING";

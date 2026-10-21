@@ -3,6 +3,7 @@ export type ProgressTelemetry = {
   phase?: string | null;
   role?: string | null;
   model_name?: string | null;
+  artifact_name?: string | null;
   current_filename?: string | null;
   downloaded_bytes?: number | null;
   total_bytes?: number | null;

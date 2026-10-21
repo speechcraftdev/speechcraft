@@ -1,9 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DownloadProgressTracker, safeDisplayFilename, sanitizeProgressTelemetry } from '../src/download-progress.js';
+import { ByteTransferSampler, DownloadProgressTracker, safeDisplayFilename, sanitizeProgressTelemetry } from '../src/download-progress.js';
 
 const base = { event: 'progress', path: 'weights/model.bin', total_bytes: 1_000, downloaded_bytes: 100,
   transfer_attempt_bytes: 0, attempt: 1, files_completed: 0, files_total: 1 };
+
+test('generic runtime downloads report percentage, measured speed, and ETA from actual bytes', () => {
+  let now = 0;
+  const sampler = new ByteTransferSampler({ clock: () => now });
+  const initial = sampler.update(1_000, 11_000);
+  assert.equal(initial.bytes_per_second, null, 'a single sample does not invent a rate');
+  assert.equal(initial.eta_seconds, null);
+  now = 2_000;
+  const measured = sampler.update(5_000, 11_000);
+  assert.equal(measured.bytes_per_second, 2_000);
+  assert.equal(measured.eta_seconds, 3);
+});
+
+test('generic runtime download telemetry rejects unknown or invalid totals without estimates', () => {
+  const sampler = new ByteTransferSampler({ clock: () => 0 });
+  assert.deepEqual(sampler.update(10, null), { bytes_per_second: null, eta_seconds: null });
+  assert.deepEqual(sampler.update(20, 10), { bytes_per_second: null, eta_seconds: null });
+});
 
 test('direct transfer uses actual network deltas, excludes resumed bytes, and estimates ETA', () => {
   let now = 0;
@@ -107,6 +125,7 @@ test('setup phases survive progress sanitization while unknown phases are omitte
   }
   assert.equal(sanitizeProgressTelemetry({ phase: 'future_setup_step' }).phase, undefined);
   assert.equal(sanitizeProgressTelemetry({ downloaded_bytes: 50 }).phase, undefined);
+  assert.equal(sanitizeProgressTelemetry({ phase: 'downloading', artifact_name: 'uv 0.12.23' }).artifact_name, 'uv 0.12.23');
 });
 
 test('unknown-size progress events are throttled and valid completion emits immediately', () => {

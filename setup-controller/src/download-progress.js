@@ -31,7 +31,7 @@ export function sanitizeProgressTelemetry(value) {
   const result = {};
   if (SETUP_PHASES.has(value.phase)) result.phase = value.phase;
   if (roles.has(value.role)) result.role = value.role;
-  for (const key of ['model_name']) {
+  for (const key of ['model_name', 'artifact_name']) {
     if (typeof value[key] === 'string' && value[key].length <= 100 && !/[\u0000-\u001f\u007f]/.test(value[key])
         && !/https?:|hf_[A-Za-z0-9_-]{16,}/i.test(value[key])) result[key] = value[key];
   }
@@ -75,6 +75,31 @@ function smoothRate(samples, now) {
   if (elapsed < MIN_SAMPLE_MS || delta <= 0) return null;
   const rate = delta * 1000 / elapsed;
   return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
+export class ByteTransferSampler {
+  constructor({ clock = () => performance.now() } = {}) {
+    this.clock = clock;
+    this.samples = [];
+    this.previousBytes = null;
+  }
+
+  update(current, total) {
+    if (byteCount(current) === null || byteCount(total) === null || total <= 0 || current > total) {
+      return { bytes_per_second: null, eta_seconds: null };
+    }
+    const now = this.clock();
+    if (this.previousBytes !== null && current < this.previousBytes) this.samples = [];
+    if (this.previousBytes === null || current > this.previousBytes) this.samples.push({ at: now, bytes: current });
+    this.previousBytes = current;
+    this.samples = this.samples.filter((sample) => now - sample.at <= SAMPLE_WINDOW_MS);
+    const rate = smoothRate(this.samples, now);
+    const remaining = Math.max(0, total - current);
+    return {
+      bytes_per_second: rate,
+      eta_seconds: rate !== null && remaining > 0 ? Math.ceil(remaining / rate) : null,
+    };
+  }
 }
 
 export class DownloadProgressTracker {
