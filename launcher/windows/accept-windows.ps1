@@ -51,7 +51,7 @@ Write-Host @'
 Then confirm, in order:
 1. Get-Command speechcraft resolves to %LOCALAPPDATA%\SpeechCraft\launcher\speechcraft.exe.
 2. speechcraft --help prints the Linux usage text.
-3. speechcraft opens http://127.0.0.1:3002/setup in the default Windows browser.
+3. speechcraft opens http://127.0.0.1:3002/login in the default Windows browser.
 4. The setup page, controller, and backend are reached only through that loopback origin. No public bind and no direct browser call to port 4317.
 5. Complete setup in the browser. Enter a Hugging Face token only in the masked setup field, never as a command argument or environment variable.
 6. Confirm managed Linux Python, FFmpeg, Silero, Whisper Large-v3 CPU, and authorized pyannote Community-1.

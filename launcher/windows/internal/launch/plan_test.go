@@ -92,18 +92,18 @@ func TestPlanRejectsUnsafeArgumentsAndDistros(t *testing.T) {
 }
 
 func TestReadyEventRejectsUntrustedURLs(t *testing.T) {
-	good := `SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/setup","route":"/setup","ready":true}`
+	good := `SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/login","route":"/login","ready":true}`
 	event, ok := ParseReady(good)
-	if !ok || event.Route != "/setup" {
+	if !ok || event.Route != "/login" {
 		t.Fatal(event, ok)
 	}
 	for _, line := range []string{
-		"SpeechCraft is available at http://evil.example/setup",
-		`SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/setup","route":"/setup","ready":false}`,
-		`SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://example.com/setup","route":"/setup","ready":true}`,
-		`SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3001/setup","route":"/setup","ready":true}`,
-		`SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/setup","route":"/setup","ready":true,"token":"secret"}`,
-		`SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://user:pass@127.0.0.1:3002/setup","route":"/setup","ready":true}`,
+		"SpeechCraft is available at http://evil.example/login",
+		`SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/login","route":"/login","ready":false}`,
+		`SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://example.com/login","route":"/login","ready":true}`,
+		`SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3001/login","route":"/login","ready":true}`,
+		`SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/login","route":"/login","ready":true,"token":"secret"}`,
+		`SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://user:pass@127.0.0.1:3002/login","route":"/login","ready":true}`,
 	} {
 		if _, ok := ParseReady(line); ok {
 			t.Fatalf("accepted %s", line)
@@ -162,7 +162,7 @@ func TestDispatchOpensBrowserOnceForReadyFrontend(t *testing.T) {
 	code, err := Run(context.Background(), plan, Deps{
 		Start: func(args []string) (Process, error) {
 			argv = append([]string(nil), args...)
-			return &fakeProc{out: "booting\nSPEECHCRAFT_READY {\"event\":\"frontend_ready\",\"protocol\":1,\"url\":\"http://127.0.0.1:3002/setup\",\"route\":\"/setup\",\"ready\":true}\nSPEECHCRAFT_READY {\"event\":\"frontend_ready\",\"protocol\":1,\"url\":\"http://127.0.0.1:3002/setup\",\"route\":\"/setup\",\"ready\":true}\nSpeechCraft is available at http://127.0.0.1:3002/setup\n", code: 0}, nil
+			return &fakeProc{out: "booting\nSPEECHCRAFT_READY {\"event\":\"frontend_ready\",\"protocol\":1,\"url\":\"http://127.0.0.1:3002/login\",\"route\":\"/login\",\"ready\":true}\nSPEECHCRAFT_READY {\"event\":\"frontend_ready\",\"protocol\":1,\"url\":\"http://127.0.0.1:3002/login\",\"route\":\"/login\",\"ready\":true}\nSpeechCraft is available at http://127.0.0.1:3002/login\n", code: 0}, nil
 		},
 		Probe: func(url string) error { return nil },
 		Open:  func(url string) error { opened = append(opened, url); return nil },
@@ -171,7 +171,7 @@ func TestDispatchOpensBrowserOnceForReadyFrontend(t *testing.T) {
 	if err != nil || code != 0 {
 		t.Fatal(code, err)
 	}
-	if len(opened) != 1 || opened[0] != "http://127.0.0.1:3002/setup" {
+	if len(opened) != 1 || opened[0] != "http://127.0.0.1:3002/login" {
 		t.Fatalf("opened %#v", opened)
 	}
 	if strings.Contains(strings.Join(argv, " "), "bash -c") {
@@ -203,7 +203,7 @@ func TestNoBrowserAndUnreachableFrontendDoNotOpen(t *testing.T) {
 	errOut := &bytes.Buffer{}
 	code, err := Run(context.Background(), launch, Deps{
 		Start: func([]string) (Process, error) {
-			return &fakeProc{out: "SPEECHCRAFT_READY {\"event\":\"frontend_ready\",\"protocol\":1,\"url\":\"http://127.0.0.1:3002/setup\",\"route\":\"/setup\",\"ready\":true}\n", delay: 20 * time.Millisecond}, nil
+			return &fakeProc{out: "SPEECHCRAFT_READY {\"event\":\"frontend_ready\",\"protocol\":1,\"url\":\"http://127.0.0.1:3002/login\",\"route\":\"/login\",\"ready\":true}\n", delay: 20 * time.Millisecond}, nil
 		},
 		Probe: func(string) error { return errors.New("connection refused") },
 		Open:  func(string) error { opened++; return nil },
@@ -223,7 +223,7 @@ func TestNoBrowserAndUnreachableFrontendDoNotOpen(t *testing.T) {
 func TestBrowserOpenFailureLeavesTheGuestRunning(t *testing.T) {
 	plan, _ := Plan(nil, testConfig())
 	errOut := &bytes.Buffer{}
-	proc := &fakeProc{out: "SPEECHCRAFT_READY {\"event\":\"frontend_ready\",\"protocol\":1,\"url\":\"http://127.0.0.1:3002/setup\",\"route\":\"/setup\",\"ready\":true}\nSpeechCraft is available at http://127.0.0.1:3002/setup\n", code: 0}
+	proc := &fakeProc{out: "SPEECHCRAFT_READY {\"event\":\"frontend_ready\",\"protocol\":1,\"url\":\"http://127.0.0.1:3002/login\",\"route\":\"/login\",\"ready\":true}\nSpeechCraft is available at http://127.0.0.1:3002/login\n", code: 0}
 	code, err := Run(context.Background(), plan, Deps{
 		Start: func([]string) (Process, error) { return proc, nil },
 		Probe: func(string) error { return nil },

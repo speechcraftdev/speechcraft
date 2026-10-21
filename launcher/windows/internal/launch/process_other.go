@@ -28,8 +28,6 @@ func (unavailableProcess) Cancel()           {}
 func OpenDefaultBrowser(rawURL string) error {
 	var route string
 	switch rawURL {
-	case "http://127.0.0.1:3002/setup":
-		route = "/setup"
 	case "http://127.0.0.1:3002/login":
 		route = "/login"
 	default:

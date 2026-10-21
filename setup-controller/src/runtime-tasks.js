@@ -625,7 +625,7 @@ export class RuntimeTasks extends BootstrapTasks {
       }
       const code = /^([A-Z][A-Z0-9_]{1,79})$/.test(error?.code || '') ? error.code : 'STARTUP_REVALIDATION_FAILED';
       const message = error instanceof BootstrapError ? error.message.slice(0, 320)
-        : 'Previously installed runtime components could not be revalidated. Open /setup to inspect or repair the installation.';
+        : 'Previously installed runtime components could not be revalidated. Use model onboarding to resolve model readiness.';
       this.setComponent(context, 'backend_service', { state: 'failed', verification: 'startup_revalidation_failed',
         failure_code: code, message });
       return { restored: false, reason: code };

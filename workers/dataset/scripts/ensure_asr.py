@@ -37,7 +37,7 @@ def main() -> int:
                 "event": "result",
                 "ok": False,
                 "model": args.model,
-                "error": "Managed SpeechCraft runtime disables ad-hoc model downloads; use /setup.",
+                "error": "Managed SpeechCraft runtime disables ad-hoc model downloads; use model onboarding.",
                 "reason_codes": ["managed_runtime_use_setup"],
             }
         )

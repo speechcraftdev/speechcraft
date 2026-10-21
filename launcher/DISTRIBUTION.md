@@ -4,11 +4,11 @@
 
 | Platform | Package and installer | Validation | Distribution status |
 | --- | --- | --- | --- |
-| Linux x86-64 | Versioned application tarball; `install-linux.sh` calls the official per-user Python installer. Requires system Python 3.9+ and `curl`. | Installed-package smoke covers installation, repeat install, upgrade state preservation, local `/setup`, and operation without global Node/Bun. The setup page displays ECAPA publisher attribution, pinned revision, and CC BY 4.0 links. | Release-owner publication approval is still required for the scoped FFmpeg delivery question in `setup-controller/resources/FFMPEG-LICENSE-NOTICE.md`. |
+| Linux x86-64 | Versioned application tarball; `install-linux.sh` calls the official per-user Python installer. Requires system Python 3.9+ and `curl`. | Installed-package smoke covers installation, repeat install, upgrade state preservation, local `/login`, and operation without global Node/Bun. Model provenance and integrity are pinned in the model catalog. | Release-owner publication approval is still required for the scoped FFmpeg delivery question in `setup-controller/resources/FFMPEG-LICENSE-NOTICE.md`. |
 | macOS Apple Silicon | ARM64 application archive and Python installer exist. | Archive cross-build and temporary-home registration were recorded; the Darwin Node binary and application were not run, and the package is unsigned and not notarized. | Development artifact; not production-ready. |
 | Windows x64 | Native PowerShell entry point for a Windows wrapper that dispatches into an existing Ubuntu WSL2 installation. It does not install WSL. | Native Windows and WSL2 acceptance has not been completed. | Development artifact; not production-ready. |
 
-Linux x86-64 is the only target of the candidate bootstrap. Model weights are not part of any package. Runtime and model preparation stays in the local `/setup` page. SpeechCraft binds its services to loopback.
+Linux x86-64 is the only target of the candidate bootstrap. Model weights are not part of any package. SpeechCraft starts at `/login`; model preflight and downloads run in the onboarding flow. Services bind to loopback.
 
 ## Public installation status
 
@@ -85,9 +85,9 @@ The repository has an active `immutable version tags` ruleset for `refs/tags/v*`
 The exact Linux archive and runtime dependency handoff is recorded in
 [RELEASE-LICENSING-HANDOFF.md](RELEASE-LICENSING-HANDOFF.md).
 
-The setup page visibly attributes ECAPA to WeSpeaker, links to the pinned model page and CC BY 4.0, and identifies the immutable revision. The Linux application archive contains neither model weights nor a prebuilt FFmpeg binary. Setup downloads ECAPA and the pinned BtbN LGPL FFmpeg/FFprobe build directly from upstream. The remaining release-owner decision is specific to the FFmpeg download path and is quoted with technical evidence in `setup-controller/resources/FFMPEG-LICENSE-NOTICE.md`. The public workflow refuses to run without a closed repository approval issue carrying the `release-approved` label. A GitHub prerelease is public once published and requires that approval record.
+The model catalog records ECAPA's WeSpeaker attribution, pinned model page, CC BY 4.0 license, and immutable revision. The Linux application archive contains neither model weights nor a prebuilt FFmpeg binary. Setup downloads ECAPA and the pinned BtbN LGPL FFmpeg/FFprobe build directly from upstream. The remaining release-owner decision is specific to the FFmpeg download path and is quoted with technical evidence in `setup-controller/resources/FFMPEG-LICENSE-NOTICE.md`. The public workflow refuses to run without a closed repository approval issue carrying the `release-approved` label. A GitHub prerelease is public once published and requires that approval record.
 
-Keep the model manager's existing license and artifact-verification gates intact. The ECAPA notice has been added to the setup flow. Do not run the public workflow until the release owner records the exact FFmpeg decision required by the notice and handoff. The old TitaNet checkpoint/conversion blocker is superseded; its historical provenance record remains for audit history.
+Keep the model manager's existing license and artifact-verification gates intact. Do not run the public workflow until the release owner records the exact FFmpeg decision required by the notice and handoff. The old TitaNet checkpoint/conversion blocker is superseded; its historical provenance record remains for audit history.
 
 ## Temporary host and later domain move
 
@@ -105,6 +105,6 @@ When the project chooses a permanent domain, configure that domain as a custom d
 
 The Linux command installs per-user under `~/.local/share/speechcraft/app` and registers `~/.local/bin/speechcraft`. The official installer uses a versioned releases directory and atomically switches the `current` pointer after verification. Reinstalling the same version is safe; installing a lower version is rejected. Upgrades preserve the separate user data tree, including models, projects, recordings, exported datasets, credentials, and controller state.
 
-After installation, run `speechcraft`, open the local `/setup` page, and follow its runtime preparation flow. Model downloads and gated Hugging Face authorization happen there; the bootstrap never accepts model terms or downloads models. Use `speechcraft status` and `speechcraft stop` to inspect and stop the local services.
+After installation, run `speechcraft`, open `/login`, then continue to the model onboarding flow. Model downloads and gated Hugging Face authorization happen there; the bootstrap never accepts model terms or downloads models. Use `speechcraft status` and `speechcraft stop` to inspect and stop the local services.
 
 To uninstall while preserving user data, run `speechcraft uninstall` from any directory. It stops owned services through the authenticated lifecycle, then removes the verified per-user command and `~/.local/share/speechcraft/app`. It leaves `data`, `setup-controller`, and `models` in place. Add `--yes` when input is not a terminal. `--purge` is a separate confirmation and only deletes those three directories when each one is a real user-owned directory inside `~/.local/share/speechcraft`. The command is Linux-only; macOS and Windows uninstall are not implemented. A source checkout is not an installation and is not removed.

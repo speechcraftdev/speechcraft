@@ -28,13 +28,13 @@ speechcraft stop
 speechcraft uninstall --help
 ```
 
-The first launch serves `/setup`. After the controller records verified onboarding completion, later launches serve `/login`. On a desktop, SpeechCraft asks the platform opener to show that page; a stub or failed opener is not a GUI window. `--no-browser` prints the URL and leaves services running in the terminal. On a headless or SSH server, use a tunnel from the computer where you want the browser. `cozytent` below is only an example SSH alias; use your own alias or `user@host`:
+Every launch serves `/login`, the entry point to model onboarding and recording import. On a desktop, SpeechCraft asks the platform opener to show that page; a stub or failed opener is not a GUI window. `--no-browser` prints the URL and leaves services running in the terminal. On a headless or SSH server, use a tunnel from the computer where you want the browser. `cozytent` below is only an example SSH alias; use your own alias or `user@host`:
 
 ```bash
 ssh -N -L 3002:127.0.0.1:3002 cozytent
 ```
 
-Then visit `http://127.0.0.1:3002/setup` in a browser on that computer. SpeechCraft did not open a browser on the server. Controller, frontend and backend bind only to loopback. `speechcraft stop` authenticates with the controller when available and independently reconciles launcher-owned child process identities, so a crashed frontend does not prevent shutdown. It reports incomplete or uncertain ownership instead of killing an unrelated process. Ctrl+C stops services owned by that terminal; closing the browser does not stop them.
+Then visit `http://127.0.0.1:3002/login` in a browser on that computer. SpeechCraft did not open a browser on the server. Controller, frontend and backend bind only to loopback. `speechcraft stop` authenticates with the controller when available and independently reconciles launcher-owned child process identities, so a crashed frontend does not prevent shutdown. It reports incomplete or uncertain ownership instead of killing an unrelated process. Ctrl+C stops services owned by that terminal; closing the browser does not stop them.
 
 Persistent state, controller credentials, managed runtimes, models, caches, projects, recordings and exports remain under `~/.local/share/speechcraft/`. The installer keeps that tree across upgrades. The controller's own default directory is `~/.local/share/speechcraft/setup-controller` unless `SPEECHCRAFT_SETUP_DATA_DIR`, `XDG_DATA_HOME`, or WSL selects another location. Model files may also live in `~/.local/share/speechcraft/models`. Installing an upgrade creates another versioned application directory and switches `current`; it does not remove user data or prior releases. The installer refuses to replace an unrelated `speechcraft` command and is safe to rerun for an identical release.
 
@@ -82,13 +82,13 @@ On desktop Linux it asks the desktop to open the page after the frontend proves 
 ssh -N -L 3002:127.0.0.1:3002 cozytent
 ```
 
-Then open `http://127.0.0.1:3002/setup` in a browser on that computer. No controller or backend port needs to leave loopback. Press Ctrl+C or send SIGTERM to the launcher to stop the service processes it started. Closing a browser tab leaves services running.
+Then open `http://127.0.0.1:3002/login` in a browser on that computer. No controller or backend port needs to leave loopback. Press Ctrl+C or send SIGTERM to the launcher to stop the service processes it started. Closing a browser tab leaves services running.
 
 ## First launch and later launches
 
-The controller stores a versioned `onboarding` completion record in its atomic state store. It is created only when the real `speechcraft-runtime-v1` plan has passed the controller's technical-readiness evaluator and the supervised backend has passed its private health-identity check. Simulated setup never creates this record. An incomplete, interrupted, failed, or waiting first setup launches `/setup` on each invocation. A matching completed record launches `/login` on subsequent invocations. Corrupt or installation-mismatched state fails closed at controller startup rather than being reset.
+The controller stores a versioned `onboarding` completion record in its atomic state store. It is created only when the real `speechcraft-runtime-v1` plan has passed the controller's technical-readiness evaluator and the supervised backend has passed its private health-identity check. Simulated setup never creates this record. The launcher always opens `/login`; the standalone setup and repair page has been removed.
 
-On an already onboarded install, the launcher establishes a private controller session, requests service restoration through the authenticated API, and polls status using that session. The controller revalidates the installed model-manager package, model inventories, selected worker recipe, managed FFmpeg, and local offline runtime probes, then restores the backend without launching downloads or creating a setup job. A 401 is an immediate authentication failure; the launcher never polls protected status anonymously. The login chain displays a repair notice if current processing health is degraded; `/setup` remains available by direct navigation. Completion is sticky and does not mean current health or public-release approval. FFmpeg redistribution compliance remains a separate release review item; technical readiness is reported independently.
+On an already onboarded install, the launcher establishes a private controller session, requests service restoration through the authenticated API, and polls status using that session. The controller revalidates the installed model-manager package, model inventories, selected worker recipe, managed FFmpeg, and local offline runtime probes, then restores the backend without launching downloads or creating a setup job. A 401 is an immediate authentication failure; the launcher never polls protected status anonymously. Model readiness is checked in the onboarding flow. Completion is sticky and does not mean current health or public-release approval. FFmpeg redistribution compliance remains a separate release review item; technical readiness is reported independently.
 
 The launcher authenticates a reused frontend with a private random challenge identity under the data root (mode 0600). It first checks only public availability, then verifies a nonce HMAC response. It never sends the private identity to an unverified listener. The public installation ID remains diagnostic only.
 
@@ -108,7 +108,7 @@ speechcraft --no-browser
 
 The backend is considered healthy only while the controller reports its current supervised process instance as `verified`. Restart and failure transitions clear previous verification evidence.
 
-The launcher does not install or download anything itself. First-run installation continues through the setup page and setup controller. The controller's runtime setup records completion only after its trusted required checks succeed, including pyannote runtime validation.
+The launcher does not install or download anything itself. First-run model preparation continues through the login onboarding flow and private setup controller API. The controller's runtime setup records completion only after its trusted required checks succeed, including pyannote runtime validation.
 
 ## Source checkout and isolated acceptance
 
@@ -130,9 +130,9 @@ It verifies the loopback page, server-side session bridge, authenticated status/
 
 Service stdout and stderr are read by the launcher and appended to `launcher.log` in the data directory (mode 0600, one rotated generation, 256 KiB each). Routine Next.js banners and controller listening lines stay in that file. Errors are also printed. `--verbose` or `SPEECHCRAFT_LOG_LEVEL=verbose` prints the routine lines too. If the log cannot be opened or written, SpeechCraft still starts and keeps those errors on the terminal. `SPEECHCRAFT_READY` is printed only after the frontend ownership check, and only when stdout is not a terminal or verbose mode is on.
 
-The controller diagnostics endpoint is available in the setup page after session establishment. A port collision is not killed automatically: stop the known owner or choose a later supported launcher configuration in a future release. If shutdown reports uncertain process identity, preserve the data directory and inspect the reported process before retrying. Do not remove controller lock or service ownership records by hand while an owned process may still exist.
+The controller diagnostics endpoint remains available through its authenticated API. A port collision is not killed automatically: stop the known owner or choose a later supported launcher configuration in a future release. If shutdown reports uncertain process identity, preserve the data directory and inspect the reported process before retrying. Do not remove controller lock or service ownership records by hand while an owned process may still exist.
 
-CozyTent first-run/model acceptance requires approved SSH access and a Hugging Face account that has accepted Community-1 conditions. Those credentials must be entered only in the masked setup page; never place them in commands or environment variables.
+CozyTent first-run/model acceptance requires approved SSH access and a Hugging Face account that has accepted Community-1 conditions. Those credentials must be entered only in the masked model authorization flow; never place them in commands or environment variables.
 
 ## Linux package validation
 
@@ -144,4 +144,4 @@ The installed command runs the Node binary inside the versioned application dire
 
 ## Current validation and blockers
 
-Strict frontend typecheck and production build passed in the Linux package build. The installed package smoke test passed in a path containing spaces and from `/tmp`, with a PATH containing no global Node. It verified the default first-run `/setup` route, loopback listeners, session bridge, CSRF-protected setup action, SSE, rejected untrusted Origin, and identity-verified shutdown including a dead frontend. A normal runtime-mode first launch also served `/setup` and reported the four model roles pending. No multi-gigabyte model download or real inference was run. CozyTent access and an authorized Hugging Face account were not available in this environment. Public FFmpeg redistribution clearance remains unresolved. Native macOS and WSL2 are not included in this Linux acceptance.
+Strict frontend typecheck and production build passed in the Linux package build. The installed package smoke test passed in a path containing spaces and from `/tmp`, with a PATH containing no global Node. It verified the default first-run `/login` route, loopback listeners, session bridge, CSRF-protected setup action, SSE, rejected untrusted Origin, and identity-verified shutdown including a dead frontend. A normal runtime-mode first launch also served `/login` and reported the four model roles pending. No multi-gigabyte model download or real inference was run. CozyTent access and an authorized Hugging Face account were not available in this environment. Public FFmpeg redistribution clearance remains unresolved. Native macOS and WSL2 are not included in this Linux acceptance.

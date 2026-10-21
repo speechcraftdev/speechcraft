@@ -41,7 +41,7 @@ controller/proxy bound to remote loopback and configure the forwarded Host and
 Origin explicitly. This proxy handoff still requires launcher integration
 testing.
 
-The temporary Next.js `/setup` page implements this bridge in a server-only
+The Next.js login and model-onboarding flow implements this bridge in a server-only
 `POST /setup-api/session` route. It is disabled unless
 `SPEECHCRAFT_SETUP_SESSION_BRIDGE=1`, an absolute
 `SPEECHCRAFT_SETUP_BOOTSTRAP_FILE`, a loopback
@@ -463,6 +463,6 @@ The controller persists a versioned completion record only after the real
 backend has passed its per-launch identity health check. Simulation and job
 completion alone never set this record. Its identity is tied to the canonical
 controller data directory; corrupt or mismatched state is preserved and fails
-closed. The Linux launcher opens `/setup` until this record exists, then `/login`
-on later launches. Current degraded health does not erase completed onboarding;
-the login chain displays a repair notice and `/setup` remains available manually.
+closed. The Linux launcher opens `/login` on every launch. Current degraded
+health does not erase completed onboarding; model readiness is checked during
+model onboarding. The standalone setup page has been removed.

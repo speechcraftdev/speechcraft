@@ -218,7 +218,7 @@ def ensure_asr_model(payload: AsrModelEnsureRequest) -> dict[str, object]:
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "error": "Managed runtime installs models through /setup.",
+                    "error": "Managed runtime installs models through model onboarding.",
                     "reason_codes": ["managed_runtime_use_setup"],
                 },
             ) from exc

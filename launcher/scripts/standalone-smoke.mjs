@@ -70,7 +70,7 @@ try {
     SPEECHCRAFT_LAUNCHER_INSTALL_ID: 'a'.repeat(64), SPEECHCRAFT_LAUNCHER_PRIVATE_IDENTITY: identity,
     SPEECHCRAFT_BACKEND_URL: 'http://127.0.0.1:8010', NODE_PATH: '' };
   const server = start(node, [path.join(frontend, 'server.js')], frontend, frontendEnvironment);
-  const page = await waitFor(`${url}/setup`);
+  const page = await waitFor(`${url}/login`);
   assert.match(await page.text(), /Preparing SpeechCraft/);
   for (const route of ['/login', '/lab']) assert.equal((await fetch(`${url}${route}`)).status, 200);
   const sessionResponse = await fetch(`${url}/setup-api/session`, { method: 'POST', headers: { origin: url, 'content-type': 'application/json' }, body: '{}' });

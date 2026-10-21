@@ -57,12 +57,12 @@ export function parseArgs(args) {
 
 export const FRONTEND_READY_PROTOCOL = 1;
 
-export function chooseDestination(onboarding) {
-  return onboarding?.completed === true ? '/login' : '/setup';
+export function chooseDestination() {
+  return '/login';
 }
 
 export function formatFrontendReadyEvent({ url, route, ready, owned = false }) {
-  if (route !== '/setup' && route !== '/login') throw new Error('Refusing to publish an untrusted frontend route.');
+  if (route !== '/login') throw new Error('Refusing to publish an untrusted frontend route.');
   if (url !== `http://127.0.0.1:3002${route}`) throw new Error('Refusing to publish an untrusted frontend URL.');
   return `SPEECHCRAFT_READY ${JSON.stringify({
     event: 'frontend_ready', protocol: FRONTEND_READY_PROTOCOL, url, route, ready: ready === true, owned: owned === true,
@@ -74,7 +74,7 @@ export function parseFrontendReadyEvent(line) {
   let payload;
   try { payload = JSON.parse(line.slice('SPEECHCRAFT_READY '.length)); } catch { return null; }
   if (!payload || payload.event !== 'frontend_ready' || payload.protocol !== FRONTEND_READY_PROTOCOL || payload.ready !== true) return null;
-  if ((payload.route !== '/setup' && payload.route !== '/login') || payload.url !== `http://127.0.0.1:3002${payload.route}`) return null;
+  if (payload.route !== '/login' || payload.url !== `http://127.0.0.1:3002${payload.route}`) return null;
   const allowed = new Set(['event', 'protocol', 'url', 'route', 'ready', 'owned']);
   if (Object.keys(payload).some((key) => !allowed.has(key))) return null;
   return { event: payload.event, protocol: payload.protocol, url: payload.url, route: payload.route, ready: true };
@@ -570,11 +570,11 @@ export async function waitForRestoration(session, timeoutMs = RESTORATION_TIMEOU
     const expectedRestorePending = backend?.state === 'blocked'
       && ['service_start_pending', 'BACKEND_RESTART_PENDING'].includes(backend.failure_code);
     if (['failed', 'blocked'].includes(backend?.state) && !expectedRestorePending) return { status: latest, ready: false,
-      warning: backend.message || 'Managed backend restoration is blocked; use /setup to inspect and repair this installation.' };
+      warning: backend.message || 'Managed backend restoration is blocked; see the SpeechCraft launcher log for details.' };
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
   return { status: latest, ready: false,
-    warning: 'Managed service restoration is still pending. SpeechCraft has not confirmed processing readiness; open /setup to inspect status.' };
+    warning: 'Managed service restoration is still pending. SpeechCraft has not confirmed processing readiness; see the launcher log for status.' };
 }
 
 export function ownedChildEnvironment(env, nonce) {
@@ -876,7 +876,8 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     console.log(`SpeechCraft: starting the frontend at http://${LOOPBACK}:${FRONTEND_PORT}`);
     const frontendArgs = preparedFrontend.command === 'standalone'
       ? [preparedFrontend.nextEntry]
-      : [preparedFrontend.nextEntry, preparedFrontend.command, '--hostname', LOOPBACK, '-p', String(FRONTEND_PORT)];
+      : [preparedFrontend.nextEntry, preparedFrontend.command, ...(options.development ? ['--webpack'] : []),
+        '--hostname', LOOPBACK, '-p', String(FRONTEND_PORT)];
     frontendHandle = launch(process.execPath, frontendArgs, { cwd: preparedFrontend.cwd, label: 'Next.js frontend',
       env: { ...common, HOSTNAME: LOOPBACK, PORT: String(FRONTEND_PORT), NODE_ENV: options.development ? 'development' : 'production',
         SPEECHCRAFT_SETUP_SESSION_BRIDGE: '1', SPEECHCRAFT_SETUP_BRIDGE_LOOPBACK_CONFIRMED: '1',
@@ -900,12 +901,9 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
     console.log('SpeechCraft: frontend identity matches this installation');
   }
   const route = chooseDestination(status.onboarding);
-  console.log(route === '/setup'
-    ? 'SpeechCraft: initial setup is incomplete'
-    : 'SpeechCraft: initial setup is already complete');
+  console.log(`SpeechCraft: initial setup is ${status.onboarding?.completed ? 'already complete' : 'incomplete'}`);
   // An already onboarded installation gets an opportunity to restore its
-  // managed backend. If it remains unhealthy, the normal UI still opens and
-  // its repair notice points to /setup; the launcher never starts a download.
+  // managed backend. The launcher never starts a model download.
   if (status.onboarding?.completed) {
     // A user-invoked launch is an explicit restoration retry. RuntimeTasks
     // keeps concurrent requests single-flight and reuses a healthy service.

@@ -175,4 +175,4 @@ fi
 say ''
 say "SpeechCraft $APP_VERSION is installed."
 say 'Open a new terminal to use `speechcraft`, or source the PATH configuration shown by the installer.'
-say 'Model and runtime preparation happens in the local setup page.'
+say 'Model preparation happens in the local SpeechCraft onboarding flow.'

@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { ChainContinueButton } from "@/components/chain-continue-button";
 
 export const metadata: Metadata = {
@@ -22,11 +21,8 @@ export default function Page() {
       </div>
 
       <div className="mt-10 lg:mt-12">
-        <ChainContinueButton href="/login2" />
+        <ChainContinueButton href="/login3" />
       </div>
-      <p className="mt-6 text-center text-xs text-[#878787]">
-        Need to prepare or repair this installation? <Link className="underline underline-offset-4" href="/setup">Manage setup and models</Link>
-      </p>
     </>
   );
 }

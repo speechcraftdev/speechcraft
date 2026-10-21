@@ -124,7 +124,7 @@ def _run_job(job_id: str) -> None:
                 job.phase = "failed"
                 job.ok = False
                 job.error = (
-                    "Managed SpeechCraft runtime disables ad-hoc model downloads; open /setup to install models."
+                    "Managed SpeechCraft runtime disables ad-hoc model downloads; use model onboarding to install models."
                 )
                 job.reason_codes = ["managed_runtime_use_setup"]
                 _apply_progress(

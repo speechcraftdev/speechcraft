@@ -81,12 +81,12 @@ try {
   output = [];
   app.stdout.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
   app.stderr.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
-  await waitFor('http://127.0.0.1:3002/setup');
+  await waitFor('http://127.0.0.1:3002/login');
   const urlDeadline = Date.now() + 2_000;
   while (!output.join('').includes('SpeechCraft is available at') && Date.now() < urlDeadline) await new Promise((resolve) => setTimeout(resolve, 20));
   const runtimeText = output.join('');
-  assert.match(runtimeText, /SpeechCraft is available at http:\/\/127\.0\.0\.1:3002\/setup/);
-  assert.match(runtimeText, /SPEECHCRAFT_READY \{"event":"frontend_ready","protocol":1,"url":"http:\/\/127\.0\.0\.1:3002\/setup","route":"\/setup","ready":true/);
+  assert.match(runtimeText, /SpeechCraft is available at http:\/\/127\.0\.0\.1:3002\/login/);
+  assert.match(runtimeText, /SPEECHCRAFT_READY \{"event":"frontend_ready","protocol":1,"url":"http:\/\/127\.0\.0\.1:3002\/login","route":"\/login","ready":true/);
   assert.match(runtimeText, /--no-browser/);
   assert.match(runtimeText, /ssh -N -L 3002:127\.0\.0\.1:3002 cozytent/);
   assert.match(runtimeText, /example SSH alias/);
@@ -116,10 +116,10 @@ try {
   output = [];
   app.stdout.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
   app.stderr.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
-  await waitFor('http://127.0.0.1:3002/setup');
+  await waitFor('http://127.0.0.1:3002/login');
   const browserDeadline = Date.now() + 2_000;
   while (!fs.existsSync(browserLog) && Date.now() < browserDeadline) await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(fs.readFileSync(browserLog, 'utf8').trim(), 'http://127.0.0.1:3002/setup',
+  assert.equal(fs.readFileSync(browserLog, 'utf8').trim(), 'http://127.0.0.1:3002/login',
     'the installed launch invokes the stub opener with the setup URL; this does not start a GUI');
   const browserText = output.join('');
   assert.match(browserText, /asked this desktop to open/);
@@ -159,7 +159,7 @@ try {
     origin: 'http://attacker.invalid', 'content-type': 'application/json',
   }, body: '{}' });
   assert.equal(rejected.status, 403);
-  const pageHtml = await (await fetch('http://127.0.0.1:3002/setup')).text();
+  const pageHtml = await (await fetch('http://127.0.0.1:3002/login')).text();
   const assetPath = pageHtml.match(/\/_next\/static\/[^"']+\.(?:css|js)/)?.[0];
   assert.ok(assetPath, 'standalone page references a packaged static asset');
   assert.equal((await fetch(`http://127.0.0.1:3002${assetPath}`)).status, 200);
@@ -207,7 +207,7 @@ try {
   run(command, ['stop', '--data-dir', data]);
   if (app.exitCode === null && app.signalCode === null) await cleanExit;
   app = null;
-  assert.equal((await fetch('http://127.0.0.1:3002/setup').catch(() => null)), null);
+  assert.equal((await fetch('http://127.0.0.1:3002/login').catch(() => null)), null);
 
   // Create onboarding completion through the packaged controller's real
   // readiness evaluator, using explicit controlled fixture evidence.
@@ -259,7 +259,7 @@ try {
   // while creating a replacement frontend.
   const crashData = `${data}-front-crash`;
   app = start(crashData);
-  await waitFor('http://127.0.0.1:3002/setup');
+  await waitFor('http://127.0.0.1:3002/login');
   const crashRecords = JSON.parse(fs.readFileSync(path.join(crashData, 'launcher.processes.json'), 'utf8')).records;
   const controllerRecord = crashRecords.find((record) => record.label === 'setup controller');
   const frontendRecord = crashRecords.find((record) => record.label === 'Next.js frontend');
@@ -274,7 +274,7 @@ try {
   output = [];
   app.stdout.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
   app.stderr.setEncoding('utf8').on('data', (chunk) => output.push(chunk));
-  await waitFor('http://127.0.0.1:3002/setup');
+  await waitFor('http://127.0.0.1:3002/login');
   const recoveredRecords = JSON.parse(fs.readFileSync(path.join(crashData, 'launcher.processes.json'), 'utf8')).records;
   const recoveredController = recoveredRecords.find((record) => record.label === 'setup controller');
   const recoveredFrontend = recoveredRecords.find((record) => record.label === 'Next.js frontend');
@@ -298,7 +298,7 @@ try {
   // owned frontend process.
   const controllerCrashData = `${data}-controller-crash`;
   app = start(controllerCrashData);
-  await waitFor('http://127.0.0.1:3002/setup');
+  await waitFor('http://127.0.0.1:3002/login');
   const controllerCrashRecords = JSON.parse(fs.readFileSync(path.join(controllerCrashData, 'launcher.processes.json'), 'utf8')).records;
   const deadController = controllerCrashRecords.find((record) => record.label === 'setup controller');
   const liveFrontend = controllerCrashRecords.find((record) => record.label === 'Next.js frontend');

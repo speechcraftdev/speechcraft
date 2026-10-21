@@ -44,7 +44,7 @@ func ParseReady(line string) (ReadyEvent, bool) {
 
 func ValidateFrontendURL(rawURL, route string) error {
 	switch route {
-	case "/setup", "/login":
+	case "/login":
 	default:
 		return errors.New("untrusted frontend route")
 	}

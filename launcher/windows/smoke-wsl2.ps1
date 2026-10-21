@@ -35,11 +35,11 @@ try {
     $ready = $false
     while ([DateTime]::UtcNow -lt $deadline) {
         try {
-            $response = Invoke-WebRequest -Uri 'http://127.0.0.1:3002/setup' -TimeoutSec 4
+            $response = Invoke-WebRequest -Uri 'http://127.0.0.1:3002/login' -TimeoutSec 4
             if ($response.StatusCode -eq 200) { $ready = $true; break }
         } catch { Start-Sleep -Seconds 2 }
     }
-    if (-not $ready) { throw 'Windows could not reach the WSL-hosted setup UI at http://127.0.0.1:3002/setup within two minutes.' }
+    if (-not $ready) { throw 'Windows could not reach the WSL-hosted setup UI at http://127.0.0.1:3002/login within two minutes.' }
 
     Invoke-Wsl 'set -euo pipefail; speechcraft status'
     Invoke-Wsl 'set -euo pipefail; speechcraft stop'
@@ -48,7 +48,7 @@ try {
     $restarted = $false
     while ([DateTime]::UtcNow -lt $deadline) {
         try {
-            $response = Invoke-WebRequest -Uri 'http://127.0.0.1:3002/setup' -TimeoutSec 4
+            $response = Invoke-WebRequest -Uri 'http://127.0.0.1:3002/login' -TimeoutSec 4
             if ($response.StatusCode -eq 200) { $restarted = $true; break }
         } catch { Start-Sleep -Seconds 2 }
     }

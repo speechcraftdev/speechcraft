@@ -92,12 +92,12 @@ ready=0
 for _ in $(seq 1 180); do
   if ! kill -0 "$app_pid" 2>/dev/null; then cat "$root/launch.log" >&2; exit 1; fi
   if curl -fsS http://127.0.0.1:4317/setup-api/health >"$root/controller-health" 2>/dev/null \
-      && curl -fsS http://127.0.0.1:3002/setup >"$root/setup.html" 2>/dev/null; then ready=1; break; fi
+      && curl -fsS http://127.0.0.1:3002/login >"$root/login.html" 2>/dev/null; then ready=1; break; fi
   sleep 1
 done
 if [[ $ready != 1 ]]; then cat "$root/launch.log" >&2; find "$HOME/Library/Application Support/SpeechCraft/setup-controller" -type f -print >&2 2>/dev/null || true; exit 1; fi
 grep -q '"status":"ok"' "$root/controller-health"
-grep -q '<html' "$root/setup.html"
+grep -q '<html' "$root/login.html"
 "$wrapper" status --json >"$root/status.json"
 "$installed/runtime/node" -e 'const x=require(process.argv[1]); if(!x.running||x.frontend!=="verified") process.exit(1)' "$root/status.json"
 
@@ -106,7 +106,7 @@ if ! "$wrapper" stop >"$root/stop.log" 2>&1; then diagnose_processes; exit 1; fi
 stopped=0
 for _ in $(seq 1 30); do
   if ! curl -fsS http://127.0.0.1:4317/setup-api/health >/dev/null 2>&1 \
-      && ! curl -fsS http://127.0.0.1:3002/setup >/dev/null 2>&1; then stopped=1; break; fi
+      && ! curl -fsS http://127.0.0.1:3002/login >/dev/null 2>&1; then stopped=1; break; fi
   sleep 1
 done
 [[ $stopped == 1 ]] || { cat "$root/stop.log" >&2; echo 'owned services remained live after stop' >&2; exit 1; }
@@ -115,7 +115,7 @@ wait "$app_pid" || true; app_pid=
 ready=0
 for _ in $(seq 1 180); do
   if ! kill -0 "$app_pid" 2>/dev/null; then cat "$root/restart.log" >&2; exit 1; fi
-  if curl -fsS http://127.0.0.1:4317/setup-api/health >/dev/null 2>&1 && curl -fsS http://127.0.0.1:3002/setup >/dev/null 2>&1; then ready=1; break; fi
+  if curl -fsS http://127.0.0.1:4317/setup-api/health >/dev/null 2>&1 && curl -fsS http://127.0.0.1:3002/login >/dev/null 2>&1; then ready=1; break; fi
   sleep 1
 done
 [[ $ready == 1 ]] || { cat "$root/restart.log" >&2; exit 1; }

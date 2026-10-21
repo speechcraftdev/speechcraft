@@ -45,15 +45,15 @@ launcher_pid=$!
 ready=false
 i=0
 while [ "$i" -lt 60 ]; do
-  if grep -Fq 'http://127.0.0.1:3002/setup' "$browser_log" 2>/dev/null \
-    && curl --netrc-file /dev/null -fsS http://127.0.0.1:3002/setup > "$work/setup.html" 2>/dev/null \
-    && grep -q 'Preparing SpeechCraft' "$work/setup.html"; then
+  if grep -Fq 'http://127.0.0.1:3002/login' "$browser_log" 2>/dev/null \
+    && curl --netrc-file /dev/null -fsS http://127.0.0.1:3002/login > "$work/login.html" 2>/dev/null \
+    && grep -q 'Train better voice models.' "$work/login.html"; then
     ready=true
     break
   fi
   i=$((i + 1))
   sleep 1
 done
-[ "$ready" = true ] || { cat "$work/speechcraft.log" >&2; printf 'Frontend did not open and serve the first-run setup page.\n' >&2; exit 1; }
+[ "$ready" = true ] || { cat "$work/speechcraft.log" >&2; printf 'Frontend did not open and serve the login page.\n' >&2; exit 1; }
 "$HOME/.local/bin/speechcraft" stop
-printf 'Public Linux install smoke passed: anonymous release download, isolated per-user install, speechcraft first launch opened /setup, and the setup page rendered over loopback.\n'
+printf 'Public Linux install smoke passed: anonymous release download, isolated per-user install, speechcraft first launch opened /login, and the login page rendered over loopback.\n'

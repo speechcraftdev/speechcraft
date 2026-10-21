@@ -114,9 +114,9 @@ async function waitFor(url, predicate, timeout = 50_000) {
 try {
   console.log('integration: starting launcher');
   child = startLauncher();
-  const page = await waitFor(`${origin}/setup`, (response) => response.ok);
+  const page = await waitFor(`${origin}/login`, (response) => response.ok);
   console.log('integration: frontend ready');
-  assert.match(await page.text(), /Preparing SpeechCraft/);
+  assert.match(await page.text(), /Train better voice models\./);
   const healthResponse = await get(`${origin}/api/speechcraft-launcher/health`);
   const health = await healthResponse.json();
   assert.equal(healthResponse.status, 200);
@@ -176,7 +176,7 @@ try {
   const [exitCode] = await once(second, 'exit');
   console.log('integration: duplicate launch reused existing instance');
   assert.equal(exitCode, 0);
-  assert.equal((await get(`${origin}/setup`)).status, 200);
+  assert.equal((await get(`${origin}/login`)).status, 200);
   assert.equal(childOutput.includes(bootstrap), false);
   await stopLauncher();
 
@@ -192,7 +192,7 @@ try {
   while (Date.now() < urlDeadline && !launchedUrls.some((value) => value.endsWith('/login'))) await delay(100);
   assert.ok(launchedUrls.some((value) => value.endsWith('/login')),
     `a valid durable completion record routes to SpeechCraft after restart (URLs: ${launchedUrls.join(', ')}; output: ${childOutput.slice(-1000)})`);
-  assert.equal((await get(`${origin}/setup`)).status, 200, 'setup remains directly accessible after completion');
+  assert.equal((await get(`${origin}/login`)).status, 200, 'setup remains directly accessible after completion');
   const renewedSessionResponse = await fetch(`${origin}/setup-api/session`, { method: 'POST', headers: {
     host: '127.0.0.1:3002', origin, 'content-type': 'application/json',
   }, body: '{}' });

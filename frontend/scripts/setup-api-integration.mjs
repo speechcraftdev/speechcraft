@@ -118,7 +118,7 @@ try {
     SPEECHCRAFT_SETUP_BOOTSTRAP_FILE: bootstrapFile,
     SPEECHCRAFT_SETUP_ALLOWED_APP_ORIGINS: `${appOrigin},http://localhost:3002` };
   const next = launch(process.execPath, [path.join(frontend, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '-p', '3002'], frontend, nextEnv);
-  await waitFor(`${appOrigin}/setup`);
+  await waitFor(`${appOrigin}/login`);
 
   const initial = await request('/setup-api/session');
   assert.equal(initial.status, 401, 'the page begins without an established controller session');
@@ -242,7 +242,7 @@ try {
   const recovered = await request('/setup-api/status', { cookie: recoveredCookie });
   assert.equal((await recovered.json()).job.state, 'completed', 'durable setup state survives controller restart');
 
-  await waitFor('http://localhost:3002/setup');
+  await waitFor('http://localhost:3002/login');
   const localSession = await request('/setup-api/session', { method: 'POST', target: 'http://localhost:3002',
     origin: 'http://localhost:3002', body: {} });
   assert.equal(localSession.status, 201, 'the explicitly allowlisted localhost origin can establish its host-only session');

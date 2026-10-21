@@ -15,8 +15,8 @@ import { persistLauncherOwnership } from '../src/launcher.js';
 import { REQUIRED_RUNTIME_FILES, validateRuntimeInventory } from '../src/package-inventory.js';
 
 test('fresh and interrupted setup routes to setup; completed onboarding routes to the application', () => {
-  assert.equal(chooseDestination(null), '/setup');
-  assert.equal(chooseDestination({ completed: false }), '/setup');
+  assert.equal(chooseDestination(null), '/login');
+  assert.equal(chooseDestination({ completed: false }), '/login');
   assert.equal(chooseDestination({ completed: true }), '/login');
 });
 
@@ -40,15 +40,15 @@ test('launcher waits through the initial service_start_pending status during rea
 });
 
 test('frontend readiness is a versioned loopback event and never carries secrets', () => {
-  const line = formatFrontendReadyEvent({ url: 'http://127.0.0.1:3002/setup', route: '/setup', ready: true });
-  assert.equal(parseFrontendReadyEvent(line).route, '/setup');
+  const line = formatFrontendReadyEvent({ url: 'http://127.0.0.1:3002/login', route: '/login', ready: true });
+  assert.equal(parseFrontendReadyEvent(line).route, '/login');
   assert.equal(parseFrontendReadyEvent(formatFrontendReadyEvent({ url: 'http://127.0.0.1:3002/login', route: '/login', ready: true })).url,
     'http://127.0.0.1:3002/login');
-  assert.equal(parseFrontendReadyEvent('SpeechCraft is available at http://127.0.0.1:3002/setup'), null);
-  assert.equal(parseFrontendReadyEvent('SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/setup","route":"/setup","ready":false}'), null);
-  assert.equal(parseFrontendReadyEvent('SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://example.com/setup","route":"/setup","ready":true}'), null);
-  assert.equal(parseFrontendReadyEvent('SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/setup","route":"/setup","ready":true,"token":"secret"}'), null);
-  assert.throws(() => formatFrontendReadyEvent({ url: 'http://127.0.0.1:4317/setup-api', route: '/setup', ready: true }), /untrusted frontend URL/);
+  assert.equal(parseFrontendReadyEvent('SpeechCraft is available at http://127.0.0.1:3002/login'), null);
+  assert.equal(parseFrontendReadyEvent('SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/login","route":"/login","ready":false}'), null);
+  assert.equal(parseFrontendReadyEvent('SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://example.com/login","route":"/login","ready":true}'), null);
+  assert.equal(parseFrontendReadyEvent('SPEECHCRAFT_READY {"event":"frontend_ready","protocol":1,"url":"http://127.0.0.1:3002/login","route":"/login","ready":true,"token":"secret"}'), null);
+  assert.throws(() => formatFrontendReadyEvent({ url: 'http://127.0.0.1:4317/setup-api', route: '/login', ready: true }), /untrusted frontend URL/);
   assert.doesNotMatch(line, /token|cookie|csrf|bootstrap/i);
 });
 
@@ -77,12 +77,12 @@ test('browser opener selects safe platform-native commands and avoids headless a
     queueMicrotask(() => child.emit('spawn'));
     return child;
   };
-  assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/setup', { platform: 'linux', env: {}, spawnImpl }), false);
+  assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/login', { platform: 'linux', env: {}, spawnImpl }), false);
   assert.equal(calls.length, 0);
   assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/login', { platform: 'darwin', env: {}, spawnImpl }), true);
   assert.equal(calls[0].command, 'open');
   assert.equal(calls[0].options.shell, false);
-  assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/setup', { platform: 'linux', wsl: true, env: {}, spawnImpl }), true);
+  assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/login', { platform: 'linux', wsl: true, env: {}, spawnImpl }), true);
   assert.equal(calls[1].command, 'wslview');
   await assert.rejects(openDefaultBrowser('http://example.com', { platform: 'darwin', env: {}, spawnImpl }), /non-SpeechCraft local URL/);
 });
@@ -95,11 +95,11 @@ test('WSL browser opener safely falls back to Windows and leaves URL guidance wh
     queueMicrotask(() => child.emit(command === 'wslview' ? 'error' : 'spawn', new Error('not found')));
     return child;
   };
-  assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/setup', {
+  assert.equal(await openDefaultBrowser('http://127.0.0.1:3002/login', {
     platform: 'linux', wsl: true, env: {}, spawnImpl: fallbackSpawn,
   }), true);
   assert.deepEqual(calls.map(({ command }) => command), ['wslview', 'cmd.exe']);
-  assert.deepEqual(calls[1].args, ['/c', 'start', '', 'http://127.0.0.1:3002/setup']);
+  assert.deepEqual(calls[1].args, ['/c', 'start', '', 'http://127.0.0.1:3002/login']);
   assert.equal(calls[1].options.shell, false);
   assert.equal(calls[1].options.detached, true);
 
@@ -363,7 +363,7 @@ test('default launch output hides routine service banners and explains a remote 
   assert.equal(launchOutputMode({ verbose: true, stdoutIsTTY: true }).emitReadyEvent, true);
   assert.equal(launchOutputMode({ env: { SPEECHCRAFT_LOG_LEVEL: 'debug' }, stdoutIsTTY: true }).verbose, true);
   const guidance = formatLaunchAccess({
-    url: 'http://127.0.0.1:3002/setup',
+    url: 'http://127.0.0.1:3002/login',
     opened: false,
     env: { SSH_CONNECTION: '1', DISPLAY: '', WAYLAND_DISPLAY: '' },
   });
@@ -372,15 +372,15 @@ test('default launch output hides routine service banners and explains a remote 
   assert.match(guidance, /example SSH alias/);
   assert.match(guidance, /127\.0\.0\.1 only/);
   assert.doesNotMatch(guidance, /user@cozytent-host|0\.0\.0\.0|browser was opened on the server/);
-  const opened = formatLaunchAccess({ url: 'http://127.0.0.1:3002/setup', opened: true, env: { DISPLAY: ':0' } });
+  const opened = formatLaunchAccess({ url: 'http://127.0.0.1:3002/login', opened: true, env: { DISPLAY: ':0' } });
   assert.match(opened, /asked this desktop to open/);
   assert.match(opened, /does not prove a window appeared/);
   assert.doesNotMatch(opened, /cozytent/);
-  const localFailure = formatLaunchAccess({ url: 'http://127.0.0.1:3002/setup', opened: false, env: { DISPLAY: ':0' } });
+  const localFailure = formatLaunchAccess({ url: 'http://127.0.0.1:3002/login', opened: false, env: { DISPLAY: ':0' } });
   assert.match(localFailure, /could not open a desktop browser/);
   assert.doesNotMatch(localFailure, /cozytent|ssh -N/);
   const skipped = formatLaunchAccess({
-    url: 'http://127.0.0.1:3002/setup', opened: false, browserRequested: false, env: { SSH_CONNECTION: '203.0.113.4 1 127.0.0.1 22' },
+    url: 'http://127.0.0.1:3002/login', opened: false, browserRequested: false, env: { SSH_CONNECTION: '203.0.113.4 1 127.0.0.1 22' },
   });
   assert.match(skipped, /--no-browser/);
   assert.match(skipped, /example SSH alias/);
