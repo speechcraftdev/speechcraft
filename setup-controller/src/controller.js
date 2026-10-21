@@ -162,6 +162,9 @@ export class SetupController {
     this.runner = null;
     this.stopping = false;
     this.pendingAuthorizationToken = null;
+    this.pendingAuthorizationExpiresAt = 0;
+    this.pendingAuthorizationSessionId = null;
+    this.pendingAuthorizationTimer = null;
     this.authorizationVerificationActive = false;
     const current = this.store.snapshot().job;
     if (current?.state === 'running' || current?.state === 'cancelling') {
@@ -186,13 +189,36 @@ export class SetupController {
       : { current: 0, total: 2, percent: 0, message };
   }
 
-  start() {
+  start(sessionId = null) {
     if (this.stopping) throw new ControllerError(503, 'CONTROLLER_STOPPING', 'The setup controller is stopping.');
     if (this.authorizationVerificationActive) throw new ControllerError(409, 'AUTHORIZATION_VERIFICATION_RUNNING', 'Wait for Hugging Face access verification before starting setup.');
     const current = this.store.snapshot().job;
     if (current) {
-      if (current.state === 'running' || current.state === 'waiting_for_user' || current.state === 'cancelling') {
+      if (current.state === 'running' || current.state === 'cancelling') {
         return { job: current, idempotent: true };
+      }
+      if (current.state === 'waiting_for_user') {
+        const authorizationToken = this.takePendingAuthorization(sessionId);
+        if (!authorizationToken) return { job: current, idempotent: true };
+        const attemptId = randomUUID();
+        const stage = this.stages.includes('install_worker_environment') ? 'install_worker_environment' : current.stage;
+        assertTransition('waiting_for_user', 'running');
+        this.store.commit((state) => {
+          const job = state.job;
+          job.state = 'running';
+          job.stage = stage;
+          job.task_id = this.taskId(stage);
+          job.attempt_id = attemptId;
+          job.attempt_count += 1;
+          job.started_at = new Date().toISOString();
+          job.completed_at = null;
+          job.error = null;
+          job.progress = this.initialProgress(stage, 'Access verified. Resuming model setup.');
+          const component = job.bootstrap_status?.components?.pyannote;
+          if (component) Object.assign(component, { state: 'checking_token', failure_code: null, message: null });
+        }, 'verified_model_setup_resumed');
+        this.launch({ startStage: stage, authorizationToken });
+        return { job: this.store.snapshot().job, idempotent: false };
       }
       if (current.child_process || current.termination_status === 'termination_uncertain') {
         throw new ControllerError(409, 'PROCESS_RECONCILIATION_REQUIRED',
@@ -217,11 +243,11 @@ export class SetupController {
     };
     assertTransition(current?.state || 'idle', job.state);
     this.store.commit((state) => { state.job = job; }, 'job_started');
-    this.launch();
+    this.launch({ authorizationToken: this.takePendingAuthorization(sessionId) });
     return { job: this.store.snapshot().job, idempotent: false };
   }
 
-  retry() {
+  retry(sessionId = null) {
     if (this.stopping) throw new ControllerError(503, 'CONTROLLER_STOPPING', 'The setup controller is stopping.');
     if (this.authorizationVerificationActive) throw new ControllerError(409, 'AUTHORIZATION_VERIFICATION_RUNNING', 'Wait for Hugging Face access verification before retrying setup.');
     if (this.activeExecution) {
@@ -258,7 +284,7 @@ export class SetupController {
       // In particular, an interrupted gated acquisition must be able to tell
       // the user that its ephemeral credential was discarded.
     }, 'job_retried');
-    this.launch();
+    this.launch({ authorizationToken: this.takePendingAuthorization(sessionId) });
     return { job: this.store.snapshot().job, idempotent: false };
   }
 
@@ -286,43 +312,7 @@ export class SetupController {
     return { job: this.store.snapshot().job, idempotent: false };
   }
 
-  authorizeModel(role, credential) {
-    if (role !== 'diarization') throw new ControllerError(404, 'MODEL_ROLE_NOT_FOUND', 'This setup model role is not available for authorization.');
-    if (this.mode !== 'runtime') throw new ControllerError(409, 'RUNTIME_SETUP_REQUIRED', 'Community-1 authorization is available only during runtime setup.');
-    if (typeof credential !== 'string' || !/^hf_[A-Za-z0-9_-]{16,512}$/.test(credential)) {
-      throw new ControllerError(400, 'HF_TOKEN_INVALID', 'Enter a valid Hugging Face read token.');
-    }
-    if (this.activeExecution) throw new ControllerError(409, 'AUTHORIZATION_ALREADY_RUNNING', 'A setup operation is still stopping or running. Wait for its status before submitting a token.');
-    const current = this.store.snapshot().job;
-    if (!current || current.mode !== 'runtime' || current.stage !== 'install_models' || current.state !== 'waiting_for_user') {
-      if (current?.bootstrap_status?.components?.pyannote?.state === 'runtime_ready') {
-        return { job: current, idempotent: true };
-      }
-      throw new ControllerError(409, 'AUTHORIZATION_NOT_REQUESTED', 'Start or resume setup and wait until Community-1 requests authorization.');
-    }
-    assertTransition('waiting_for_user', 'running');
-    const attemptId = randomUUID();
-    this.store.commit((state) => {
-      const job = state.job;
-      job.state = 'running';
-      job.attempt_id = attemptId;
-      job.attempt_count += 1;
-      job.completed_at = null;
-      job.error = null;
-      job.progress = this.initialProgress('install_models', 'Checking Community-1 access.');
-      const component = job.bootstrap_status?.components?.pyannote;
-      if (component) Object.assign(component, { state: 'checking_token', failure_code: null, message: null });
-    }, 'model_authorization_started');
-    // The controller may have restarted while waiting for this credential.
-    // Startup recovery deliberately clears runtime readiness claims, including
-    // worker_environment. Re-run the last prerequisite stage before model
-    // acquisition so validate_runtime cannot mistake a reset status for a
-    // verified managed worker.
-    this.launch({ startStage: 'install_worker_environment', authorizationToken: Buffer.from(credential, 'utf8') });
-    return { job: this.store.snapshot().job, idempotent: false };
-  }
-
-  async preauthorizeModel(role, credential) {
+  async preauthorizeModel(role, credential, sessionId = null) {
     if (role !== 'diarization') throw new ControllerError(404, 'MODEL_ROLE_NOT_FOUND', 'This setup model role is not available for authorization.');
     if (this.mode !== 'runtime') throw new ControllerError(409, 'RUNTIME_SETUP_REQUIRED', 'Community-1 authorization is available only during runtime setup.');
     if (typeof credential !== 'string' || !/^hf_[A-Za-z0-9_-]{16,512}$/.test(credential)) {
@@ -330,9 +320,7 @@ export class SetupController {
     }
     if (this.activeExecution) throw new ControllerError(409, 'AUTHORIZATION_ALREADY_RUNNING', 'A setup operation is already running. Wait for its status before submitting a token.');
     if (this.authorizationVerificationActive) throw new ControllerError(409, 'AUTHORIZATION_VERIFICATION_RUNNING', 'Hugging Face access is already being verified.');
-    if (this.store.snapshot().job?.state === 'waiting_for_user') {
-      throw new ControllerError(409, 'AUTHORIZATION_NOT_REQUESTED', 'This setup attempt is waiting for authorization; resume it through the requested authorization action.');
-    }
+    this.clearPendingAuthorization();
     this.authorizationVerificationActive = true;
     try {
       const whoami = await fetch('https://huggingface.co/api/whoami-v2', {
@@ -353,8 +341,11 @@ export class SetupController {
       if (![200, 206, 301, 302, 303, 307, 308].includes(access.status)) {
         throw new ControllerError(503, 'HF_NETWORK_ERROR', 'Hugging Face could not verify Community-1 access. Check the connection and retry.');
       }
-      this.pendingAuthorizationToken?.fill(0);
       this.pendingAuthorizationToken = Buffer.from(credential, 'utf8');
+      this.pendingAuthorizationExpiresAt = Date.now() + 5 * 60_000;
+      this.pendingAuthorizationSessionId = sessionId;
+      this.pendingAuthorizationTimer = setTimeout(() => this.clearPendingAuthorization(), 5 * 60_000);
+      this.pendingAuthorizationTimer.unref?.();
       return { verified: true };
     } finally {
       this.authorizationVerificationActive = false;
@@ -362,10 +353,6 @@ export class SetupController {
   }
 
   launch({ startStage = null, authorizationToken = null } = {}) {
-    if (!authorizationToken && Buffer.isBuffer(this.pendingAuthorizationToken)) {
-      authorizationToken = this.pendingAuthorizationToken;
-      this.pendingAuthorizationToken = null;
-    }
     const job = this.store.snapshot().job;
     const abort = new AbortController();
     const execution = { jobId: job.id, attemptId: job.attempt_id, abort, promise: null,
@@ -384,6 +371,31 @@ export class SetupController {
   isCurrentAttempt(jobId, attemptId) {
     const latest = this.store.snapshot().job;
     return latest?.id === jobId && latest.attempt_id === attemptId;
+  }
+
+  clearPendingAuthorization() {
+    if (this.pendingAuthorizationTimer) clearTimeout(this.pendingAuthorizationTimer);
+    this.pendingAuthorizationTimer = null;
+    this.pendingAuthorizationToken?.fill(0);
+    this.pendingAuthorizationToken = null;
+    this.pendingAuthorizationExpiresAt = 0;
+    this.pendingAuthorizationSessionId = null;
+  }
+
+  takePendingAuthorization(sessionId = null) {
+    if (!Buffer.isBuffer(this.pendingAuthorizationToken)) return null;
+    if (Date.now() >= this.pendingAuthorizationExpiresAt) {
+      this.clearPendingAuthorization();
+      return null;
+    }
+    if (!sessionId || this.pendingAuthorizationSessionId !== sessionId) return null;
+    const token = this.pendingAuthorizationToken;
+    this.pendingAuthorizationToken = null;
+    this.pendingAuthorizationExpiresAt = 0;
+    this.pendingAuthorizationSessionId = null;
+    if (this.pendingAuthorizationTimer) clearTimeout(this.pendingAuthorizationTimer);
+    this.pendingAuthorizationTimer = null;
+    return token;
   }
 
   finishCancelled(jobId, attemptId) {
@@ -558,8 +570,7 @@ export class SetupController {
 
   async shutdown() {
     this.stopping = true;
-    this.pendingAuthorizationToken?.fill(0);
-    this.pendingAuthorizationToken = null;
+    this.clearPendingAuthorization();
     const current = this.store.snapshot().job;
     // Waiting for user is durable idle state, not active work. Preserve it
     // across a graceful restart so the next controller can continue asking

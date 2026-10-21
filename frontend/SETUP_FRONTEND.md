@@ -29,8 +29,11 @@ The private launcher bridge keeps the bootstrap credential server-side. Keep
 the controller on loopback and preserve the existing Host, Origin, cookie, and
 CSRF checks. Do not place controller credentials in `NEXT_PUBLIC_*` variables.
 
-The Community-1 authorization flow posts the token only to
-`/setup-api/models/pyannote/authorize`; it does not persist the value. Error
-messages are selected by stable error code and never echo the submitted token.
+The Community-1 verification flow posts the token only to
+`/setup-api/models/pyannote/preauthorize`; Verify checks access and never starts
+setup. The controller keeps the verified token in memory, bound to the current
+setup session for at most five minutes. The explicit Download Models action
+starts or resumes setup and consumes that token. Refresh or controller restart
+returns the user to verification because credentials are never persisted.
 
 See [setup-controller/API.md](../setup-controller/API.md) for the API schema.

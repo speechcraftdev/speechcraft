@@ -134,14 +134,15 @@ require another token when its exact local snapshot remains valid. The last
 selected CUDA worker environment is checked and its CUDA probe rerun before it
 can be selected again; a verified CPU env remains the fallback.
 
-The current authenticated API accepts the token only at
-`POST /setup-api/models/pyannote/authorize`, requires same-origin and CSRF
-checks, and scopes it to the active setup attempt. The credential is piped to
-the fixed model-manager helper only after durable process ownership is
+The authenticated `POST /setup-api/models/pyannote/preauthorize` endpoint
+checks token identity and access without starting a setup attempt. It binds the
+verified credential to the setup session in memory for at most five minutes.
+Only the explicit `/start` or `/repair` action consumes it. The credential is
+piped to the fixed model-manager helper only after durable process ownership is
 established. It is not written to state, argv, environment, logs, events,
-diagnostics, or temporary files. A controller restart during acquisition
-discards the token and asks for it again; a complete verified local snapshot
-does not require reauthorization.
+diagnostics, or temporary files. A controller restart discards the token and
+asks for verification again; a complete verified local snapshot does not
+require reauthorization.
 
 ## Profile validation status
 

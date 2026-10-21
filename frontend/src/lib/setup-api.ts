@@ -151,6 +151,11 @@ async function request<T>(route: string, init: RequestInit = {}, retrySession = 
 
 export const setupApi = {
   ensureSession: ensureSetupSession,
+  health: async (signal?: AbortSignal) => {
+    const response = await fetch("/setup-api/health", { credentials: "same-origin", cache: "no-store", signal });
+    if (!response.ok) throw await responseError(response);
+    return response.json() as Promise<{ status: string; controller_status?: string }>;
+  },
   status: (signal?: AbortSignal) => request<SetupStatus>("status", { signal }),
   models: (signal?: AbortSignal) => request<ModelList>("models", { signal }),
   start: () => request("start", { method: "POST", body: "{}" }),
@@ -160,10 +165,16 @@ export const setupApi = {
   preauthorizePyannote: (token: string) => request<{ verified: boolean }>("models/pyannote/preauthorize", {
     method: "POST", body: JSON.stringify({ token }),
   }),
-  authorizePyannote: (token: string) => request("models/pyannote/authorize", {
-    method: "POST", body: JSON.stringify({ token }),
-  }),
 };
+
+export async function isLauncherManagedInstallation(signal?: AbortSignal): Promise<boolean> {
+  try {
+    const response = await fetch("/api/speechcraft-launcher/health", { cache: "no-store", signal });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
 
 export function subscribeSetupEvents(onEvent: (id: number | null, event: string, data: SetupSnapshot) => void,
   onReconnect: () => void, onError: () => void) {

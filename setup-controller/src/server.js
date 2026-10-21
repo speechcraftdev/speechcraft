@@ -364,36 +364,25 @@ export async function createSetupController({
       requireCsrf(request, session);
       if (url.pathname === '/setup-api/models/pyannote/preauthorize') {
         const token = await readAuthorizationJson(request);
-        await controller.preauthorizeModel('diarization', token);
+        await controller.preauthorizeModel('diarization', token, session.id);
         json(response, 200, { verified: true });
-        return;
-      }
-      if (url.pathname === '/setup-api/models/pyannote/authorize') {
-        const token = await readAuthorizationJson(request);
-        const result = controller.authorizeModel('diarization', token);
-        const job = result.job;
-        json(response, result.idempotent ? 200 : 202, {
-          job: serializePublicJob(job), state: job.state, job_id: job.id, stage: job.stage, attempt_id: job.attempt_id,
-          idempotent: result.idempotent, state_revision: store.snapshot().revision,
-          component: publicModels(controller).models.find((model) => model.role === 'diarization'),
-        });
         return;
       }
       await readJson(request);
       if (url.pathname === '/setup-api/start') {
-        const result = controller.start();
+        const result = controller.start(session.id);
         json(response, result.idempotent ? 200 : 202, publicMutation(result, store.snapshot().revision));
         return;
       }
       if (url.pathname === '/setup-api/retry') {
-        const result = controller.retry();
+        const result = controller.retry(session.id);
         json(response, 202, publicMutation(result, store.snapshot().revision));
         return;
       }
       if (url.pathname === '/setup-api/repair') {
         const current = store.snapshot().job;
         const result = current && ['failed', 'cancelled', 'interrupted'].includes(current.state)
-          ? controller.retry() : controller.start();
+          ? controller.retry(session.id) : controller.start(session.id);
         json(response, result.idempotent ? 200 : 202, publicMutation(result, store.snapshot().revision));
         return;
       }

@@ -38,9 +38,10 @@ The runtime plan invokes `python -m speechcraft_models install` for Silero and
 the platform-selected Whisper Large-v3 artifact. During `install_models`, it
 also checks the pinned Community-1 inventory. If no complete verified snapshot
 exists, setup pauses in `waiting_for_user`. After accepting the model
-conditions, the user submits a Hugging Face read token through the authenticated
-`POST /setup-api/models/pyannote/authorize` endpoint. Token identity and gated
-repository access are checked separately. The controller passes the token to
+conditions, the user verifies a Hugging Face read token through the authenticated
+`POST /setup-api/models/pyannote/preauthorize` endpoint. Verification checks
+token identity and gated repository access without starting setup. After the
+user explicitly starts setup, the controller passes the session-bound token to
 the fixed model-manager helper over stdin and discards it when the attempt ends;
 it is not stored in state, events, logs, argv, environment, or temporary files.
 An already verified snapshot is reused without another token. The persistent
@@ -277,7 +278,7 @@ For a live smoke test, use a Hugging Face account that has accepted the current
 Community-1 conditions and a read token. Start the runtime controller with an
 isolated data directory as above, establish its session using the developer
 session steps below, and `POST /setup-api/start`. Wait until status reports
-`waiting_for_user` at `install_models`. Submit the token without putting it in
+`waiting_for_user` at `install_models`. Verify the token without putting it in
 shell history, argv, or environment:
 
 ```bash
@@ -288,12 +289,15 @@ printf '{"token":"%s"}' "$HF_TOKEN" | curl --fail-with-body -sS \
   -H "X-SpeechCraft-CSRF: $CSRF" \
   -H 'Content-Type: application/json' \
   --data-binary @- \
-  http://127.0.0.1:4317/setup-api/models/pyannote/authorize
+  http://127.0.0.1:4317/setup-api/models/pyannote/preauthorize
 unset HF_TOKEN
 ```
 
 `read` does not echo the token, and Bash's `printf` is a builtin. The token is
-sent only in the request body. Poll `GET /setup-api/status` or observe SSE until
+sent only in the request body and kept in memory for up to five minutes, bound
+to the verifying setup session. Then explicitly call `/setup-api/start` or
+`/setup-api/repair`; the verified token is consumed only by that session.
+Poll `GET /setup-api/status` or observe SSE until
 the Community-1 file verification and offline inference probe finish. Success
 requires `components.pyannote.state == "runtime_ready"`; file verification
 alone is insufficient. Then stop and restart the controller with the same data

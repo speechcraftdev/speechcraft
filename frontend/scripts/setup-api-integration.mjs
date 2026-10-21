@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
@@ -11,10 +12,25 @@ const frontend = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const root = path.resolve(frontend, '..');
 const controllerEntry = path.join(root, 'setup-controller/src/server.js');
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-setup-ui-e2e-'));
-const controllerOrigin = 'http://127.0.0.1:4317';
-const appOrigin = 'http://127.0.0.1:3002';
-const allowedHosts = '127.0.0.1:4317,localhost:4317,127.0.0.1:3002,localhost:3002';
-const allowedOrigins = `${controllerOrigin},http://localhost:4317,${appOrigin},http://localhost:3002`;
+async function availablePort() {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const { port } = server.address();
+  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return port;
+}
+const configuredController = new URL(process.env.SPEECHCRAFT_SETUP_CONTROLLER_URL || 'http://127.0.0.1:4317');
+const controllerPort = Number(configuredController.port || 4317);
+const appPort = await availablePort();
+const controllerOrigin = `http://127.0.0.1:${controllerPort}`;
+const appOrigin = `http://127.0.0.1:${appPort}`;
+const localhostControllerOrigin = `http://localhost:${controllerPort}`;
+const localhostAppOrigin = `http://localhost:${appPort}`;
+const allowedHosts = `127.0.0.1:${controllerPort},localhost:${controllerPort},127.0.0.1:${appPort},localhost:${appPort}`;
+const allowedOrigins = `${controllerOrigin},${localhostControllerOrigin},${appOrigin},${localhostAppOrigin}`;
 const children = new Set();
 if (!fs.existsSync(path.join(frontend, '.next/BUILD_ID'))) {
   throw new Error('Build the frontend with `npm run build` before running setup API integration tests.');
@@ -107,7 +123,7 @@ assert.deepEqual(queuedParser('id: 5\ndata: a\n\nid: 6\ndata: b\n\n'),
 try {
   const commonEnv = { ...process.env, SPEECHCRAFT_SETUP_ALLOWED_HOSTS: allowedHosts,
     SPEECHCRAFT_SETUP_ALLOWED_ORIGINS: allowedOrigins };
-  let controller = launch(process.execPath, [controllerEntry, '--data-dir', dataDir, '--port', '4317', '--step-delay-ms', '100'], root, commonEnv);
+  let controller = launch(process.execPath, [controllerEntry, '--data-dir', dataDir, '--port', String(controllerPort), '--step-delay-ms', '100'], root, commonEnv);
   const listening = await waitFor(`${controllerOrigin}/setup-api/health`);
   assert.equal((await listening.json()).status, 'ok');
   const bootstrapFile = path.join(dataDir, 'bootstrap.token');
@@ -116,8 +132,8 @@ try {
     SPEECHCRAFT_SETUP_BRIDGE_LOOPBACK_CONFIRMED: '1',
     SPEECHCRAFT_SETUP_CONTROLLER_URL: controllerOrigin,
     SPEECHCRAFT_SETUP_BOOTSTRAP_FILE: bootstrapFile,
-    SPEECHCRAFT_SETUP_ALLOWED_APP_ORIGINS: `${appOrigin},http://localhost:3002` };
-  const next = launch(process.execPath, [path.join(frontend, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '-p', '3002'], frontend, nextEnv);
+    SPEECHCRAFT_SETUP_ALLOWED_APP_ORIGINS: `${appOrigin},${localhostAppOrigin}` };
+  const next = launch(process.execPath, [path.join(frontend, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '-p', String(appPort)], frontend, nextEnv);
   await waitFor(`${appOrigin}/login`);
 
   const initial = await request('/setup-api/session');
@@ -157,8 +173,8 @@ try {
   const cookie = setCookie.split(';', 1)[0];
 
   const statusResponse = await request('/setup-api/status', { cookie });
-  assert.equal(statusResponse.status, 200, 'same-origin rewrite reaches the authenticated controller');
   const statusText = await statusResponse.text();
+  assert.equal(statusResponse.status, 200, `same-origin rewrite reaches the authenticated controller: ${statusText}`);
   assert.equal(statusText.includes(hiddenBootstrap), false);
   assert.equal(JSON.parse(statusText).mode, 'simulated');
   const modelsResponse = await request('/setup-api/models', { cookie });
@@ -232,7 +248,7 @@ try {
   assert.equal(unavailable.status, 503,
     'the session bridge fails safely when the controller is stopped');
   assert.equal((await unavailable.text()).includes(hiddenBootstrap), false);
-  controller = launch(process.execPath, [controllerEntry, '--data-dir', dataDir, '--port', '4317', '--step-delay-ms', '100'], root, commonEnv);
+  controller = launch(process.execPath, [controllerEntry, '--data-dir', dataDir, '--port', String(controllerPort), '--step-delay-ms', '100'], root, commonEnv);
   await waitFor(`${controllerOrigin}/setup-api/health`);
   const expired = await request('/setup-api/session', { cookie });
   assert.equal(expired.status, 401, 'controller restart invalidates the in-memory session');
@@ -242,13 +258,13 @@ try {
   const recovered = await request('/setup-api/status', { cookie: recoveredCookie });
   assert.equal((await recovered.json()).job.state, 'completed', 'durable setup state survives controller restart');
 
-  await waitFor('http://localhost:3002/login');
-  const localSession = await request('/setup-api/session', { method: 'POST', target: 'http://localhost:3002',
-    origin: 'http://localhost:3002', body: {} });
+  await waitFor(`${localhostAppOrigin}/login`);
+  const localSession = await request('/setup-api/session', { method: 'POST', target: localhostAppOrigin,
+    origin: localhostAppOrigin, body: {} });
   assert.equal(localSession.status, 201, 'the explicitly allowlisted localhost origin can establish its host-only session');
   const localCookie = localSession.headers.get('set-cookie').split(';', 1)[0];
-  const localStatus = await request('/setup-api/status', { target: 'http://localhost:3002',
-    origin: 'http://localhost:3002', cookie: localCookie });
+  const localStatus = await request('/setup-api/status', { target: localhostAppOrigin,
+    origin: localhostAppOrigin, cookie: localCookie });
   assert.equal(localStatus.status, 200);
 
   const secretText = `${controller.output()}\n${next.output()}`;

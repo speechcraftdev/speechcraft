@@ -295,49 +295,49 @@ and Community-1; it excludes local credential material and file-level reports.
 }
 ```
 
-### `POST /setup-api/models/pyannote/authorize`
+### `POST /setup-api/models/pyannote/preauthorize`
 
 Requires the session cookie, allowed Host and Origin, JSON content type, and
 `X-SpeechCraft-CSRF`. It accepts only `{"token":"hf_…"}` in a body no larger
 than 4 KiB. Query-string credentials, unknown fields, duplicate fields, escaped
 tokens, and malformed token shapes are rejected. The response never reflects
-the credential.
+the credential. This request verifies token identity and access to the exact
+pinned Community-1 file. It does not create or resume a setup job.
 
 ```http
-POST /setup-api/models/pyannote/authorize
+POST /setup-api/models/pyannote/preauthorize
 Content-Type: application/json
-Origin: http://127.0.0.1:4317
+Origin: http://127.0.0.1:3002
 Cookie: speechcraft_setup=…
 X-SpeechCraft-CSRF: …
 
 {"token":"hf_example_token_value_not_real"}
 ```
 
-Returns `202` when the same runtime setup job begins an authorization attempt,
-or `200` if the component is already runtime-ready. Concurrent token operations
-return `409 AUTHORIZATION_ALREADY_RUNNING`. The caller should observe `/status`
-or `/events`; it should not wait for the download in the HTTP request.
+Returns `200 {"verified":true}`. The verified credential is held in controller
+memory, bound to the authenticated session, and zeroed after five minutes or
+when consumed. A controller restart discards it; the UI must verify again.
+
+`POST /setup-api/start` or `/setup-api/repair` is the explicit user-consent
+action that starts or resumes setup and consumes a verified credential from
+that same session. If the job is waiting for authorization but the credential
+is absent or expired, setup remains waiting. If the job is already running,
+start is idempotent and returns the existing job so a refreshed UI can reconnect.
+The caller should observe `/status` or `/events`; it should not wait for the
+download in the HTTP request.
 
 ```json
 {
-  "state": "running",
-  "job_id": "a676d84c-341a-4eae-9bd7-8b71dd149647",
-  "stage": "install_models",
-  "attempt_id": "953f50e6-ec29-4fe9-a5b6-0d0b15d8ed8c",
-  "idempotent": false,
-  "state_revision": 24,
-  "component": { "role": "diarization", "state": "checking_token" }
+  "verified": true
 }
 ```
 
-The controller accepts the token only while the existing runtime setup job is
-`waiting_for_user` at `install_models`. It scopes the credential to that
-attempt, sends it to the fixed manager helper over stdin, and releases the
-reference when the attempt exits. It is absent from job state, event history,
-SSE, diagnostics, logs, subprocess argv/environment, and temporary files. The
-helper checks token identity separately from access to the exact pinned gated
-repository and required file, downloads only the trusted inventory, and
-verifies every file before publication. Public models remain unauthenticated.
+When setup consumes the credential, the controller sends it to the fixed
+manager helper over stdin and releases the reference when the attempt exits.
+It is absent from job state, event history, SSE, diagnostics, logs, subprocess
+argv/environment, and temporary files. The helper rechecks access, downloads
+only the trusted inventory, and verifies every file before publication. Public
+models remain unauthenticated.
 
 An invalid token or missing accepted model access returns the job to
 `waiting_for_user` with a safe action message. Network/integrity failures are

@@ -90,6 +90,7 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
   const helper = pythonShim(catalog, payloads, cache);
   const hubProgress = [];
   let hubStdout = '';
+  let originalFetch = null;
   const actualPython = spawnSync(python, ['--version'], { encoding: 'utf8' });
   assert.equal(actualPython.status, 0, `Python is required for this boundary test: ${actualPython.stderr}`);
   const runtime = new RuntimeTasks({ dataDirectory: directory, applicationRoot: repositoryRoot,
@@ -135,7 +136,15 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
     await app.controller.waitForIdle();
     assert.equal(app.store.snapshot().job.state, 'waiting_for_user');
     const secret = 'hf_SECRET_MARKER_fake_hub_123456';
-    const authorized = await post('/setup-api/models/pyannote/authorize', { token: secret });
+    originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init = {}) => String(input).startsWith('https://huggingface.co/')
+      ? { ok: true, status: init.method === 'HEAD' ? 302 : 200 }
+      : originalFetch(input, init);
+    const verified = await post('/setup-api/models/pyannote/preauthorize', { token: secret });
+    assert.equal(verified.status, 200);
+    assert.deepEqual(await verified.json(), { verified: true });
+    assert.equal(app.store.snapshot().job.state, 'waiting_for_user', 'token verification alone does not resume gated model acquisition');
+    const authorized = await post('/setup-api/start');
     const authorizationResult = await authorized.json();
     assert.equal(authorized.status, 202, JSON.stringify(authorizationResult));
     assert.equal(JSON.stringify(authorizationResult).includes(secret), false);
@@ -161,7 +170,9 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
     await app.controller.waitForIdle();
     assert.equal(app.store.snapshot().job.bootstrap_status.components.pyannote.state, 'files_verified');
     assert.equal(app.store.snapshot().job.state, 'completed');
+    globalThis.fetch = originalFetch;
   } finally {
+    if (originalFetch) globalThis.fetch = originalFetch;
     await app?.close().catch(() => {});
     fs.rmSync(directory, { recursive: true, force: true });
   }

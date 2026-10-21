@@ -11,6 +11,7 @@
     "test:wizard-plan": "node --test tests/processing-plan.test.mjs",
     "test:qc-score-display": "node --test tests/qc-score-display.test.mjs",
     "test:setup-api": "node scripts/setup-api-integration.mjs",
+    "test:setup-onboarding": "node --test src/lib/model-onboarding.test.mjs src/components/wizard/model-resolution.test.mjs",
     "test:launcher": "node --test ../launcher/tests/launcher.test.js && node ../launcher/scripts/integration.mjs"
   },
   "dependencies": {

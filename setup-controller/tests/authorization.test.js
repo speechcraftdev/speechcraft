@@ -84,14 +84,17 @@ test('authorization API is session/CSRF/origin protected and only accepts one to
   const tasks = gatedTestTasks();
   const f = await temporaryController({ mode: 'runtime', tasks }); active.add(f);
   assert.equal((await fetch(`${f.base}/setup-api/models`)).status, 401);
-  assert.equal((await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: { token: 'hf_' + 'a'.repeat(24) }, csrf: '' })).status, 403);
-  assert.equal((await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: { token: 'hf_' + 'a'.repeat(24) }, originValue: 'https://attacker.invalid' })).status, 403);
-  assert.equal((await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: { token: 'bad' } })).status, 400);
-  assert.equal((await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: { token: 'hf_' + 'a'.repeat(24), extra: 'x' } })).status, 400);
-  assert.equal((await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: '{"token":"hf_' + 'a'.repeat(24) + '","token":"hf_' + 'b'.repeat(24) + '"}' })).status, 400);
-  assert.equal((await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: {} })).status, 400);
-  assert.equal((await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: `{"token":"hf_${'a'.repeat(5000)}"}` })).status, 413);
-  assert.equal((await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: '{' })).status, 400);
+  const tokenBody = { token: 'hf_' + 'a'.repeat(24) };
+  assert.equal((await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: tokenBody, csrf: '' })).status, 403);
+  assert.equal((await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: tokenBody, originValue: 'https://attacker.invalid' })).status, 403);
+  assert.equal((await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: { token: 'bad' } })).status, 400);
+  assert.equal((await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: { ...tokenBody, extra: 'x' } })).status, 400);
+  assert.equal((await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: '{"token":"hf_' + 'a'.repeat(24) + '","token":"hf_' + 'b'.repeat(24) + '"}' })).status, 400);
+  assert.equal((await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: {} })).status, 400);
+  assert.equal((await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: `{"token":"hf_${'a'.repeat(5000)}"}` })).status, 413);
+  assert.equal((await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: '{' })).status, 400);
+  assert.equal((await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: tokenBody })).status, 400,
+    'raw credentials cannot be submitted to an endpoint that starts setup');
   const models = await f.request('/setup-api/models').then((r) => r.json());
   assert.equal(models.models.find((item) => item.role === 'diarization').model_id, 'pyannote/speaker-diarization-community-1');
   await f.app.close();
@@ -153,17 +156,44 @@ test('a waiting Community-1 authorization survives controller restart without re
   await f.app.controller.waitForIdle();
   const before = f.app.store.snapshot().job;
   assert.equal(before.state, 'waiting_for_user');
+  const originalFetch = globalThis.fetch;
+  const previouslyVerifiedToken = 'hf_SECRET_MARKER_before_restart_' + 'a'.repeat(24);
+  try {
+    globalThis.fetch = async (input, init = {}) => String(input).startsWith('https://huggingface.co/')
+      ? { ok: true, status: init.method === 'HEAD' ? 302 : 200 }
+      : originalFetch(input, init);
+    const verified = await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: { token: previouslyVerifiedToken } });
+    assert.equal(verified.status, 200);
+    assert.equal(f.app.store.snapshot().job.state, 'waiting_for_user');
+  } finally { globalThis.fetch = originalFetch; }
   await f.app.close();
   assert.equal(f.app.store.snapshot().job.state, 'waiting_for_user', 'graceful stop must preserve waiting state');
 
+  const restartedTasks = gatedTestTasks();
   const restarted = await createSetupController({ dataDirectory: f.directory, port: 0,
-    mode: 'runtime', tasks: gatedTestTasks() });
+    mode: 'runtime', tasks: restartedTasks });
   f.app = restarted;
+  const restartedBase = `http://127.0.0.1:${restarted.port}`;
   const after = restarted.store.snapshot().job;
   assert.equal(after.id, before.id);
   assert.equal(after.state, 'waiting_for_user');
   assert.equal(after.bootstrap_status.components.pyannote.state, 'waiting_for_token');
   assert.equal(JSON.stringify(after).includes('hf_SECRET_MARKER_'), false);
+  assert.equal(restarted.controller.pendingAuthorizationToken, null, 'restart discards the ephemeral verified credential');
+  const bootstrap = fs.readFileSync(restarted.bootstrapPath, 'utf8').trim();
+  const restartedOrigin = restartedBase;
+  const sessionResponse = await fetch(`${restartedBase}/setup-api/session`, { method: 'POST', headers: {
+    origin: restartedOrigin, authorization: `Bearer ${bootstrap}`, 'content-type': 'application/json',
+  }, body: '{}' });
+  assert.equal(sessionResponse.status, 201);
+  const session = await sessionResponse.json();
+  const cookie = sessionResponse.headers.get('set-cookie').split(';', 1)[0];
+  const request = (route, body) => fetch(`${restartedBase}${route}`, { method: 'POST', headers: {
+    origin: restartedOrigin, cookie, 'x-speechcraft-csrf': session.csrf_token, 'content-type': 'application/json',
+  }, body: JSON.stringify(body) });
+  const noCredential = await request('/setup-api/start', {});
+  assert.equal(noCredential.status, 200);
+  assert.equal(restartedTasks.calls, 0, 'a stale success screen cannot silently resume setup after restart');
 });
 
 test('token waits ephemerally, is piped to an actual child, and never appears in persistent/public state', async () => {
@@ -175,10 +205,21 @@ test('token waits ephemerally, is piped to an actual child, and never appears in
   let status = await f.request('/setup-api/status').then((r) => r.json());
   assert.equal(status.job.state, 'waiting_for_user');
   assert.equal(status.components.pyannote.state, 'waiting_for_token');
-  const response = await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: { token } });
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (input, init = {}) => String(input).startsWith('https://huggingface.co/')
+      ? { ok: true, status: init.method === 'HEAD' ? 302 : 200 }
+      : originalFetch(input, init);
+    const verified = await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: { token } });
+    assert.equal(verified.status, 200);
+    assert.deepEqual(await verified.json(), { verified: true });
+    assert.equal(f.app.store.snapshot().job.state, 'waiting_for_user', 'Verify does not resume or start setup');
+    assert.equal(tasks.calls, 2, 'Verify does not install packages or download models');
+  } finally { globalThis.fetch = originalFetch; }
+  const response = await f.request('/setup-api/start', { method: 'POST', body: {} });
   assert.equal(response.status, 202);
   const result = await response.json();
-  assert.equal(result.state, 'running');
+  assert.equal(result.job.state, 'running');
   assert.equal(JSON.stringify(result).includes(token), false);
   await f.app.controller.waitForIdle();
   status = await f.request('/setup-api/status').then((r) => r.json());
@@ -220,6 +261,8 @@ test('preauthorization verifies token and gated repository access before setup s
     assert.equal(checks[1].url.includes('3533c8cf8e369892e6b79ff1bf80f7b0286a54ee'), true);
     assert.equal(JSON.stringify(f.app.store.snapshot()).includes(token), false);
     assert.equal(f.app.controller.pendingAuthorizationToken.toString('utf8'), token);
+    assert.equal(f.app.store.snapshot().job, null, 'Verify creates no setup job');
+    assert.equal(tasks.calls, 0, 'Verify does not install packages or download models');
 
     await f.request('/setup-api/start', { method: 'POST', body: {} });
     await f.app.controller.waitForIdle();
@@ -230,7 +273,72 @@ test('preauthorization verifies token and gated repository access before setup s
   }
 });
 
-test('duplicate authorization is rejected while a prior authorized operation is active', async () => {
+test('invalid token, unaccepted model conditions, and network failures are actionable without starting setup', async () => {
+  const tasks = gatedTestTasks();
+  const f = await temporaryController({ mode: 'runtime', tasks }); active.add(f);
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (input, init = {}) => {
+      if (!String(input).startsWith('https://huggingface.co/')) return originalFetch(input, init);
+      if (String(input).includes('whoami')) return new Response('', { status: 401 });
+      return new Response('', { status: init.method === 'HEAD' ? 403 : 200 });
+    };
+    let response = await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: { token: 'hf_' + 'i'.repeat(24) } });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, 'HF_TOKEN_INVALID');
+
+    globalThis.fetch = async (input, init = {}) => {
+      if (!String(input).startsWith('https://huggingface.co/')) return originalFetch(input, init);
+      return new Response('', { status: init.method === 'HEAD' ? 403 : 200 });
+    };
+    response = await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: { token: 'hf_' + 'c'.repeat(24) } });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, 'HF_MODEL_ACCESS_REQUIRED');
+
+    globalThis.fetch = async (input, init = {}) => {
+      if (!String(input).startsWith('https://huggingface.co/')) return originalFetch(input, init);
+      throw new TypeError('network down');
+    };
+    response = await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: { token: 'hf_' + 'n'.repeat(24) } });
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).error.code, 'HF_NETWORK_ERROR');
+    assert.equal(f.app.store.snapshot().job, null);
+    assert.equal(tasks.calls, 0, 'verification failures never start package installation or model acquisition');
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('a verified credential can be consumed only by the verifying setup session', async () => {
+  const tasks = gatedTestTasks();
+  const f = await temporaryController({ mode: 'runtime', tasks }); active.add(f);
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (input, init = {}) => String(input).startsWith('https://huggingface.co/')
+      ? { ok: true, status: init.method === 'HEAD' ? 302 : 200 }
+      : originalFetch(input, init);
+    const token = 'hf_SECRET_MARKER_session_' + 's'.repeat(24);
+    assert.equal((await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: { token } })).status, 200);
+    const bootstrap = fs.readFileSync(f.app.bootstrapPath, 'utf8').trim();
+    const otherSession = await fetch(`${f.base}/setup-api/session`, { method: 'POST', headers: {
+      origin: f.origin, authorization: `Bearer ${bootstrap}`, 'content-type': 'application/json',
+    }, body: '{}' });
+    const other = await otherSession.json();
+    const otherCookie = otherSession.headers.get('set-cookie').split(';', 1)[0];
+    const stolenStart = await fetch(`${f.base}/setup-api/start`, { method: 'POST', headers: {
+      origin: f.origin, cookie: otherCookie, 'x-speechcraft-csrf': other.csrf_token, 'content-type': 'application/json',
+    }, body: '{}' });
+    assert.equal(stolenStart.status, 202);
+    await f.app.controller.waitForIdle();
+    assert.equal(f.app.store.snapshot().job.state, 'waiting_for_user');
+    assert.equal(tasks.invocation, null, 'the second session cannot consume or start with the verified token');
+    assert.equal(f.app.controller.pendingAuthorizationToken.toString('utf8'), token);
+    const ownerStart = await f.request('/setup-api/start', { method: 'POST', body: {} });
+    assert.equal(ownerStart.status, 202);
+    await f.app.controller.waitForIdle();
+    assert.equal(f.app.store.snapshot().job.state, 'completed');
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('duplicate Download Models requests resume a waiting job exactly once', async () => {
   let entered;
   let release;
   const inChild = new Promise((resolve) => { entered = resolve; });
@@ -240,14 +348,22 @@ test('duplicate authorization is rejected while a prior authorized operation is 
   await f.request('/setup-api/start', { method: 'POST', body: {} });
   await f.app.controller.waitForIdle();
   const token = 'hf_' + 'z'.repeat(30);
-  const first = await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: { token } });
-  assert.equal(first.status, 202);
-  await inChild;
-  const second = await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: { token } });
-  assert.equal(second.status, 409);
-  assert.equal((await second.json()).error.code, 'AUTHORIZATION_ALREADY_RUNNING');
-  release();
-  await f.app.controller.waitForIdle();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => String(input).startsWith('https://huggingface.co/')
+    ? { ok: true, status: init.method === 'HEAD' ? 302 : 200 }
+    : originalFetch(input, init);
+  try {
+    const verified = await f.request('/setup-api/models/pyannote/preauthorize', { method: 'POST', body: { token } });
+    assert.equal(verified.status, 200);
+    const first = await f.request('/setup-api/start', { method: 'POST', body: {} });
+    assert.equal(first.status, 202);
+    await inChild;
+    const second = await f.request('/setup-api/start', { method: 'POST', body: {} });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).idempotent, true);
+    release();
+    await f.app.controller.waitForIdle();
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test('all status, mutation, diagnostics, model, and SSE responses sanitize private job fields', async () => {
@@ -283,14 +399,11 @@ test('all status, mutation, diagnostics, model, and SSE responses sanitize priva
   bodies.push(await (await f.request('/setup-api/retry', { method: 'POST', body: {} })).json());
   await f.app.controller.waitForIdle();
   const authToken = 'hf_' + 'serializerSecret'.repeat(2);
-  const authResponse = await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: { token: authToken } });
-  bodies.push(await authResponse.json());
-  await f.app.controller.waitForIdle();
+  assert.equal((await f.request('/setup-api/models/pyannote/authorize', { method: 'POST', body: { token: authToken } })).status, 400);
   const serialized = JSON.stringify({ snapshot: snapshot.data, bodies });
   for (const secret of [marker, authToken, 'private-process-nonce', 'private-process-identity', 'private-owner-nonce']) {
     assert.equal(serialized.includes(secret), false, `public API leaked ${secret}`);
   }
   assert.equal(Object.hasOwn(bodies[0].components, 'private_process_identity'), false);
   assert.equal(snapshot.data.job.id, f.app.store.snapshot().job.id);
-  assert.equal(authResponse.status, 202);
 });

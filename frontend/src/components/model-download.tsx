@@ -1,6 +1,5 @@
 "use client";
 
-import { Icons } from "@midday/ui/icons";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { Spinner } from "@midday/ui/spinner";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -11,88 +10,37 @@ import {
   type AsrEnsureProgress,
   type AsrAvailability,
   type WhisperModelSize,
-  createDatasetRun,
   fetchAsrEnsure,
-  findReusableWizardRun,
   resolveWhisperModel,
   startAsrEnsure,
-  startRun,
 } from "./wizard/wizard-api";
 import { demoEnabled, withDemo } from "@/lib/demo";
 import {
   type ModelState,
   type ProgressTelemetry,
   SetupApiError,
+  type SetupStatus,
   setupApi,
+  isLauncherManagedInstallation,
   subscribeSetupEvents,
 } from "@/lib/setup-api";
+import { setupActionFor, setupFailureCodeFor, setupFailureFor } from "@/lib/model-onboarding.mjs";
 
-type Phase =
-  | "checking"
-  | "needs_download"
-  | "needs_authorization"
-  | "downloading"
-  | "loading"
-  | "starting"
-  | "error";
+type Phase = "checking" | "needs_authorization" | "access_verified" | "needs_download" | "downloading" | "error";
+type ErrorView = { category: string; message: string; action: "retry" | "verify" };
+type ProgressView = { title: string; artifact: string; kind: "Model" | "Python package" | "Runtime"; progress: ProgressTelemetry | AsrEnsureProgress | null };
 
-type ProgressView = {
-  title: string;
-  subtitle: string;
-  packageType?: string | null;
-  progress: ProgressTelemetry | AsrEnsureProgress | null;
-};
+const ENSURE_JOB_PREFIX = "speechcraft-login3-ensure:";
 
-function runStorageKey(projectId: string) {
-  return `speechcraft-login3-run:${projectId}`;
+function ensureStorageKey(model: WhisperModelSize) { return `${ENSURE_JOB_PREFIX}${model}`; }
+function readEnsureJobId(model: WhisperModelSize) {
+  try { return localStorage.getItem(ensureStorageKey(model)); } catch { return null; }
 }
-
-function attemptStorageKey(projectId: string) {
-  return `speechcraft-login3-attempt:${projectId}`;
-}
-
-function getWizardAttemptId(projectId: string) {
-  const key = attemptStorageKey(projectId);
+function storeEnsureJobId(model: WhisperModelSize, id: string | null) {
   try {
-    const current = localStorage.getItem(key);
-    if (current) return current;
-    const created = `login3:${projectId}:${crypto.randomUUID()}`;
-    localStorage.setItem(key, created);
-    return created;
-  } catch {
-    try {
-      const current = sessionStorage.getItem(key);
-      if (current) return current;
-      const created = `login3:${projectId}:${crypto.randomUUID()}`;
-      sessionStorage.setItem(key, created);
-      return created;
-    } catch {
-      return `login3:${projectId}`;
-    }
-  }
-}
-
-function ensureStorageKey(projectId: string | null, model: WhisperModelSize) {
-  return `speechcraft-login3-ensure:${projectId || "pre-import"}:${model}`;
-}
-
-function readEnsureJobId(projectId: string | null, model: WhisperModelSize): string | null {
-  try { return localStorage.getItem(ensureStorageKey(projectId, model)); } catch { return null; }
-}
-
-function storeEnsureJobId(projectId: string | null, model: WhisperModelSize, jobId: string | null) {
-  try {
-    if (jobId) localStorage.setItem(ensureStorageKey(projectId, model), jobId);
-    else localStorage.removeItem(ensureStorageKey(projectId, model));
-  } catch { /* storage may be unavailable */ }
-}
-
-function storeRunId(projectId: string, runId: string) {
-  try {
-    localStorage.setItem(runStorageKey(projectId), runId);
-  } catch {
-    /* private browsing */
-  }
+    if (id) localStorage.setItem(ensureStorageKey(model), id);
+    else localStorage.removeItem(ensureStorageKey(model));
+  } catch { /* optional recovery hint only */ }
 }
 
 function formatBytes(value: number | null | undefined) {
@@ -100,149 +48,115 @@ function formatBytes(value: number | null | undefined) {
   if (value < 1_000) return `${Math.round(value)} B`;
   const units = ["KB", "MB", "GB", "TB"];
   let amount = value;
-  let unit = -1;
-  do {
-    amount /= 1_000;
-    unit += 1;
-  } while (amount >= 1_000 && unit < units.length - 1);
-  return `${amount.toFixed(amount >= 100 ? 0 : amount >= 10 ? 1 : 2)} ${units[unit]}`;
+  let index = -1;
+  do { amount /= 1_000; index += 1; } while (amount >= 1_000 && index < units.length - 1);
+  return `${amount.toFixed(amount >= 100 ? 0 : amount >= 10 ? 1 : 2)} ${units[index]}`;
 }
 
-function formatDuration(seconds: number | null | undefined) {
+function formatEta(seconds: number | null | undefined) {
   if (!Number.isSafeInteger(seconds) || seconds! < 0) return null;
   if (seconds === 0) return "Less than a second";
   if (seconds! < 60) return `About ${seconds} sec left`;
   const minutes = Math.ceil(seconds! / 60);
   if (minutes < 60) return `About ${minutes} min left`;
   const hours = Math.floor(minutes / 60);
-  const remainder = minutes % 60;
-  return remainder ? `About ${hours} hr ${remainder} min left` : `About ${hours} hr left`;
+  const rest = minutes % 60;
+  return rest ? `About ${hours} hr ${rest} min left` : `About ${hours} hr left`;
 }
 
-function RestrainedProgress({ view }: { view: ProgressView }) {
-  const progress = view.progress;
-  const phase = progress?.phase || null;
-  const isDownload = phase === "downloading";
-  const downloadedBytes = progress?.downloaded_bytes ?? null;
-  const totalBytes = progress?.total_bytes ?? null;
-  const downloaded = formatBytes(downloadedBytes);
-  const total = formatBytes(totalBytes);
-  const calculatedPercent =
-    typeof downloadedBytes === "number" && typeof totalBytes === "number" && totalBytes > 0
-      ? Math.floor((downloadedBytes * 100) / totalBytes)
-      : null;
-  const reportedPercent =
-    progress && "percent" in progress && typeof progress.percent === "number"
-      ? progress.percent
-      : null;
-  const percent =
-    isDownload &&
-    downloaded &&
-    total &&
-    (calculatedPercent !== null || reportedPercent !== null) &&
-    !progress?.transfer_indeterminate &&
-    !progress?.indeterminate
-      ? Math.max(0, Math.min(100, calculatedPercent ?? reportedPercent ?? 0))
-      : null;
-  const speed =
-    isDownload &&
-    !progress?.transfer_indeterminate &&
-    !progress?.indeterminate &&
-    !progress?.stalled &&
-    typeof progress?.bytes_per_second === "number" &&
-    progress.bytes_per_second > 0
-      ? `${formatBytes(progress.bytes_per_second)}/s`
-      : null;
-  const eta =
-    isDownload && !progress?.transfer_indeterminate && !progress?.indeterminate && !progress?.stalled
-      ? formatDuration(progress?.eta_seconds)
-      : null;
-  const label = progress?.model_name || view.title;
-  const packageType =
-    (progress && "package_type" in progress ? progress.package_type : null) || view.packageType;
-  const fileCount =
-    isDownload &&
-    Number.isSafeInteger(progress?.files_completed) &&
-    Number.isSafeInteger(progress?.files_total)
-      ? `${progress?.files_completed} / ${progress?.files_total} files`
-      : null;
+function progressPercent(progress: ProgressView["progress"]) {
+  if (progress?.phase !== "downloading" || progress?.transfer_indeterminate || progress?.indeterminate) return null;
+  const bytes = progress.downloaded_bytes;
+  const total = progress.total_bytes;
+  if (typeof bytes === "number" && typeof total === "number" && total > 0) return Math.min(100, Math.floor(bytes * 100 / total));
+  return "percent" in progress && typeof progress.percent === "number" ? Math.max(0, Math.min(100, progress.percent)) : null;
+}
 
+function setupProgress(status: SetupStatus, models: ModelState[]): ProgressView {
+  const model = models.find((item) => item.progress?.phase === "downloading" || item.state === "downloading")
+    || models.find((item) => item.progress && ["installing", "verifying", "loading"].includes(item.progress.phase || ""));
+  const jobProgress = status.job.progress || null;
+  const progress = model?.progress || jobProgress;
+  const stage = status.job.stage || "";
+  const modelStage = stage === "install_models" || Boolean(model);
+  const packageStage = /install_(model_manager|backend_environment|worker_environment)/.test(stage);
+  const kind = modelStage ? "Model" : packageStage ? "Python package" : "Runtime";
+  const artifact = progress?.model_name || model?.display_name || progress?.message || stage.replaceAll("_", " ") || "Speechcraft runtime";
+  const title = progress?.phase === "downloading" ? "Downloading models" : "Preparing models";
+  return { title, artifact, kind, progress };
+}
+
+function errorView(code: string, message = ""): ErrorView {
+  const info = setupFailureFor(code, message);
+  const title = info.category === "hugging_face_token" ? "Check your Hugging Face token"
+    : info.category === "model_conditions" ? "Accept the model conditions"
+      : info.category === "network" ? "Network unavailable"
+        : info.category === "setup_controller" ? "Setup controller unavailable"
+          : info.category === "backend" ? "Processing backend unavailable"
+            : info.category === "python_runtime" ? "Python setup failed"
+                : info.category === "model_initialization" ? "Model could not initialize"
+              : info.category === "model_download" ? "Model download failed"
+                : info.category === "model_verification" ? "Model verification failed"
+                  : info.category === "interrupted" ? "Setup was interrupted"
+                    : info.category === "prerequisites" ? "Processing requirements are missing"
+                      : "Setup could not finish";
+  return { category: title, message: info.message, action: info.action };
+}
+
+function errorFromException(error: unknown, managed: boolean): ErrorView {
+  if (error instanceof SetupApiError) {
+    if (error.status >= 500 && !error.code.startsWith("HF_")) {
+      return errorView("SETUP_CONTROLLER_UNAVAILABLE");
+    }
+    return errorView(error.code, error.message);
+  }
+  if (error instanceof SpeechcraftApiError) {
+    if (error.status === 0 || error.status >= 500) {
+      return errorView(managed ? "BACKEND_UNAVAILABLE" : "NETWORK_UNAVAILABLE");
+    }
+    return errorView("MODEL_DOWNLOAD_FAILED", error.detail);
+  }
+  return errorView(managed ? "SETUP_CONTROLLER_UNAVAILABLE" : "NETWORK_UNAVAILABLE");
+}
+
+function ProgressScreen({ view }: { view: ProgressView }) {
+  const progress = view.progress;
+  const percent = progressPercent(progress);
+  const downloading = progress?.phase === "downloading";
+  const downloaded = downloading ? formatBytes(progress?.downloaded_bytes) : null;
+  const total = downloading ? formatBytes(progress?.total_bytes) : null;
+  const speed = downloading && typeof progress?.bytes_per_second === "number" && progress.bytes_per_second > 0 && !progress.stalled
+    ? `${formatBytes(progress.bytes_per_second)}/s` : null;
+  const eta = downloading && !progress?.stalled ? formatEta(progress?.eta_seconds) : null;
   return (
     <>
       <div className="text-center space-y-2">
         <h1 className="text-lg lg:text-xl mb-4 font-serif">{view.title}</h1>
-        <p className="font-sans text-sm text-[#878787]">{view.subtitle}</p>
+        <p className="font-sans text-sm text-[#878787]">Speechcraft is preparing the components needed for processing.</p>
       </div>
       <div className="mt-8 space-y-3" aria-live="polite">
-        <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
-          <span className="font-medium truncate">{label}</span>
-          {packageType ? (
-            <span className="text-xs text-[#878787] shrink-0">{packageType}</span>
-          ) : null}
+        <div className="flex items-baseline justify-between gap-3 text-sm">
+          <span className="truncate font-medium">{view.artifact}</span>
+          <span className="shrink-0 text-xs text-[#878787]">{view.kind}</span>
         </div>
-        {progress?.current_filename && isDownload ? (
-          <p className="truncate text-xs text-[#878787]">{progress.current_filename}</p>
-        ) : null}
-        <div
-          role="progressbar"
-          aria-label={`${label}: ${isDownload ? "downloading" : "preparing"}`}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          {...(percent === null ? {} : { "aria-valuenow": percent })}
-          className="h-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10"
-        >
-          <div
-            className={`h-full bg-foreground/70 ${percent === null ? "w-1/3 animate-pulse" : "transition-[width]"}`}
-            style={percent === null ? undefined : { width: `${percent}%` }}
-          />
+        {progress?.current_filename && downloading ? <p className="truncate text-xs text-[#878787]">{progress.current_filename}</p> : null}
+        <div role="progressbar" aria-label={`${view.artifact} ${downloading ? "download" : "setup"}`}
+          aria-valuemin={0} aria-valuemax={100} {...(percent === null ? {} : { "aria-valuenow": percent })}
+          className="h-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+          <div className={`h-full bg-foreground/70 ${percent === null ? "w-1/3 animate-pulse" : "transition-[width]"}`}
+            style={percent === null ? undefined : { width: `${percent}%` }} />
         </div>
-        {isDownload && downloaded && total ? (
-          <div className="flex items-baseline justify-between gap-3 text-xs text-[#878787]">
-            <span>
-              {downloaded} / {total}
-            </span>
-            {percent !== null ? <span>{percent}%</span> : null}
-          </div>
-        ) : null}
-        {isDownload && downloaded && !total ? (
-          <p className="text-xs text-[#878787]">Downloaded: {downloaded}</p>
-        ) : null}
-        {fileCount ? <p className="text-xs text-[#878787]">{fileCount}</p> : null}
-        {isDownload ? (
-          <div className="flex flex-wrap justify-between gap-x-4 gap-y-1 text-xs text-[#878787]">
-            <span>Speed: {progress?.stalled ? "Stalled" : speed || "unavailable"}</span>
-            <span>
-              ETA:{" "}
-              {progress?.stalled
-                ? "Unavailable"
-                : eta ||
-                  (progress?.transfer_indeterminate || progress?.indeterminate
-                    ? "unavailable"
-                    : "Calculating…")}
-            </span>
-          </div>
-        ) : (
-          <p className="text-xs text-[#878787]">
-            {phase === "loading" || phase === "verifying" || phase === "installing"
-              ? "Loading and verifying the model on this machine…"
-              : "Working…"}
-          </p>
-        )}
+        {downloaded ? <div className="flex justify-between gap-3 text-xs text-[#878787]">
+          <span>{total ? `${downloaded} / ${total}` : `Downloaded ${downloaded}`}</span>
+          {percent === null ? null : <span>{percent}%</span>}
+        </div> : null}
+        {downloading ? <div className="flex justify-between gap-3 text-xs text-[#878787]">
+          <span>Speed: {speed || (progress?.stalled ? "Stalled" : "unavailable")}</span>
+          <span>ETA: {eta || "unavailable"}</span>
+        </div> : <p className="text-xs text-[#878787]">Installing and verifying required components…</p>}
       </div>
     </>
   );
-}
-
-function pickActiveSetupModel(models: ModelState[]): ModelState | null {
-  const asr = models.find((m) => m.role === "asr");
-  if (!asr) return null;
-  if (asr.progress?.phase === "downloading" || asr.state === "downloading") return asr;
-  const active = models.find(
-    (m) =>
-      m.progress?.phase === "downloading" ||
-      ["downloading", "installing", "verifying_files", "validating_inference"].includes(m.state),
-  );
-  return active || asr;
 }
 
 export function ModelDownload() {
@@ -251,625 +165,399 @@ export function ModelDownload() {
   const projectId = params.get("project");
   const demo = demoEnabled(params);
   const [phase, setPhase] = useState<Phase>("checking");
-  const [model, setModel] = useState<WhisperModelSize | null>(null);
-  const [downloadTarget, setDownloadTarget] = useState<{
-    model: WhisperModelSize;
-    repoId: string;
-  } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [progressView, setProgressView] = useState<ProgressView | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [hfToken, setHfToken] = useState("");
+  const [managed, setManaged] = useState(false);
+  const [token, setToken] = useState("");
   const [authorizationError, setAuthorizationError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorView | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [progress, setProgress] = useState<ProgressView | null>(null);
+  const [downloadModel, setDownloadModel] = useState<WhisperModelSize | null>(null);
   const startedRef = useRef(false);
   const busyRef = useRef(false);
+  const finalizingRef = useRef(false);
+  const watchingRef = useRef(false);
   const setupStopRef = useRef<(() => void) | null>(null);
-  const setupRefreshRef = useRef<Promise<boolean> | null>(null);
+  const standaloneTimerRef = useRef<number | null>(null);
+  const monitorTimerRef = useRef<number | null>(null);
 
-  const navigateToLogin4 = useCallback(
-    (runId: string) => {
-      if (projectId) storeRunId(projectId, runId);
-      router.push(
-        withDemo(
-          `/login4?project=${encodeURIComponent(projectId ?? "demo-review")}&run=${encodeURIComponent(runId)}`,
-          demo,
-        ),
-      );
-    },
-    [router, projectId, demo],
-  );
+  const goToImport = useCallback(() => {
+    const search = projectId ? `?project=${encodeURIComponent(projectId)}` : "";
+    router.replace(withDemo(`/login2${search}`, demo));
+  }, [router, projectId, demo]);
 
-  const skipAhead = useCallback(() => {
-    const runId = params.get("run") ?? "demo";
-    router.push(
-      withDemo(
-        `/login4?project=${encodeURIComponent(projectId ?? "demo-review")}&run=${encodeURIComponent(runId)}`,
-        true,
-      ),
-    );
-  }, [router, projectId, params]);
-
-  const ensureDatasetRun = useCallback(
-    async (whisperModel: WhisperModelSize) => {
-      if (!projectId) throw new SpeechcraftApiError(0, "No project in the URL. Restart from ingest.");
-
-      const attemptId = getWizardAttemptId(projectId);
-      const reusable = await findReusableWizardRun(projectId, attemptId, whisperModel);
-      if (reusable) {
-        storeRunId(projectId, reusable.id);
-        if (reusable.status === "pending") {
-          await startRun(reusable.id);
-        }
-        return reusable.id;
-      }
-
-      const datasetRun = await createDatasetRun(projectId, {
-        whisper_model_size: whisperModel,
-        wizard_attempt: attemptId,
-      });
-      storeRunId(projectId, datasetRun.id);
-      await startRun(datasetRun.id);
-      return datasetRun.id;
-    },
-    [projectId],
-  );
-
-  const finishWithModel = useCallback(
-    async (whisperModel: WhisperModelSize) => {
-      setModel(whisperModel);
-      setPhase("starting");
-      setProgressView({
-        title: "Starting speaker detection",
-        subtitle: `Using ${whisperModel} · preparing the run…`,
-        packageType: "faster-whisper",
-        progress: { phase: "installing", model_name: whisperModel, indeterminate: true },
-      });
-      const runId = await ensureDatasetRun(whisperModel);
-      navigateToLogin4(runId);
-    },
-    [ensureDatasetRun, navigateToLogin4],
-  );
-
-  const continueWithModel = useCallback(async (whisperModel: WhisperModelSize) => {
-    if (projectId) {
-      await finishWithModel(whisperModel);
-      return;
-    }
-    router.replace(withDemo("/login2", demo));
-  }, [projectId, finishWithModel, router, demo]);
-
-  const stopSetupWatch = useCallback(() => {
+  const stopWatch = useCallback(() => {
     setupStopRef.current?.();
     setupStopRef.current = null;
+    watchingRef.current = false;
+    if (monitorTimerRef.current !== null) window.clearTimeout(monitorTimerRef.current);
+    monitorTimerRef.current = null;
   }, []);
 
-  const waitForSetupModels = useCallback(async () => {
-    setPhase("downloading");
-    setProgressView({
-      title: "Preparing SpeechCraft",
-      subtitle: "Checking required processing components…",
-      packageType: "setup",
-      progress: { phase: "checking", model_name: "SpeechCraft runtime", indeterminate: true },
-    });
+  const showFailure = useCallback((value: ErrorView) => {
+    stopWatch();
+    setError(value);
+    if (value.action === "verify") {
+      setAuthorizationError(value.message);
+      setPhase("needs_authorization");
+    } else setPhase("error");
+  }, [stopWatch]);
 
-    const refreshModels = async () => {
-      if (setupRefreshRef.current) return setupRefreshRef.current;
-      const refresh = (async () => {
-        const [list, status] = await Promise.all([setupApi.models(), setupApi.status()]);
-        const pyannoteNeedsAuthorization =
-          list.models.some(
-            (m) => m.role === "diarization" && (m.action_required || m.state === "waiting_for_token"),
-          ) || status.components?.pyannote?.state === "waiting_for_token" ||
-          ["HF_TOKEN_INVALID", "HF_MODEL_ACCESS_REQUIRED", "HF_TOKEN_PERMISSION_DENIED", "HF_APPROVAL_PENDING"]
-            .includes(status.job.error?.code || "");
-        const needsAction = status.job.state === "waiting_for_user" ||
-          list.models.some((m) => m.action_required || m.state === "waiting_for_token");
-        // Keep authorization as the stable, higher priority screen even when
-        // stale status or progress events describe an earlier setup phase.
-        if (needsAction) {
-          if (!pyannoteNeedsAuthorization) {
-            throw new SpeechcraftApiError(0, "A required model needs authorization before setup can continue.");
-          }
-          setAuthorizationError(null);
-          setPhase("needs_authorization");
-          return false;
-        }
-        if (status.job.state === "failed") {
-          throw new SpeechcraftApiError(
-            0,
-            status.job.error?.message || "Model setup failed. Retry after the runtime is repaired.",
-          );
-        }
-        const active = pickActiveSetupModel(list.models);
-        if (active) {
-          const downloading =
-            active.progress?.phase === "downloading" || active.state === "downloading";
-          setPhase(downloading ? "downloading" : "loading");
-          setProgressView({
-            title: downloading ? "Downloading models" : "Loading models",
-            subtitle: downloading
-              ? "Transferring model files…"
-              : "Verifying and initializing installed models…",
-            packageType: active.role === "asr" ? "whisper" : active.role,
-            progress: active.progress
-              ? { ...active.progress, model_name: active.progress.model_name || active.display_name }
-              : {
-                  phase: downloading ? "downloading" : "installing",
-                  model_name: active.display_name,
-                  indeterminate: true,
-                },
-          });
-        }
-        if (status.job.state === "completed" && !status.technical_processing_ready) {
-          throw new SpeechcraftApiError(0, "Required processing components are not ready. Review setup and retry.");
-        }
-        return status.job.state === "completed" && status.technical_processing_ready;
-      })();
-      setupRefreshRef.current = refresh;
-      try {
-        return await refresh;
-      } finally {
-        if (setupRefreshRef.current === refresh) setupRefreshRef.current = null;
-      }
-    };
-
+  const verifyFinalBackend = useCallback(async () => {
+    if (finalizingRef.current) return;
+    finalizingRef.current = true;
     try {
-      await setupApi.ensureSession();
-      const status = await setupApi.status();
-      if (status.job.state === "failed" || status.job.state === "cancelled" || status.job.state === "idle") {
-        try {
-          await setupApi.repair();
-        } catch {
-          await setupApi.start();
-        }
-      } else if (status.job.state === "completed" && !status.technical_processing_ready) {
-        await setupApi.repair();
-      }
-    } catch (err) {
-      throw err instanceof SetupApiError
-        ? new SpeechcraftApiError(err.status, err.message)
-        : err;
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        stopSetupWatch();
-        if (error) reject(error);
-        else resolve();
-      };
-      const stop = subscribeSetupEvents(
-        async () => {
-          try {
-            if (await refreshModels()) finish();
-          } catch (err) {
-            finish(err instanceof Error ? err : new Error("Setup progress failed"));
-          }
-        },
-        () => {
-          void refreshModels()
-            .then((ready) => {
-              if (ready) finish();
-            })
-            .catch((err) => finish(err instanceof Error ? err : new Error("Setup reconnect failed")));
-        },
-        () => {
-          /* transient SSE errors retry inside the helper */
-        },
-      );
-      setupStopRef.current = stop;
-      void refreshModels()
-        .then((ready) => {
-          if (ready) finish();
-        })
-        .catch((err) => finish(err instanceof Error ? err : new Error("Setup status failed")));
-      window.setTimeout(() => {
-        finish(new Error("Timed out waiting for model setup."));
-      }, 3_600_000);
-    });
-  }, [stopSetupWatch]);
-
-  const submitPyannoteAuthorization = useCallback(async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const token = hfToken.trim();
-    if (!token || submitting) return;
-    setSubmitting(true);
-    setAuthorizationError(null);
-    try {
-      const status = await setupApi.status();
-      if (status.job.state === "waiting_for_user") {
-        await setupApi.authorizePyannote(token);
-        setHfToken("");
-        setPhase("downloading");
-        if (setupStopRef.current) return;
-      } else {
-        await setupApi.preauthorizePyannote(token);
-        setHfToken("");
-      }
-      setPhase("downloading");
-      setProgressView({
-        title: "Preparing SpeechCraft",
-        subtitle: "Access verified. Setting up required models and components…",
-        packageType: "setup",
-        progress: { phase: "checking", model_name: "SpeechCraft runtime", indeterminate: true },
-      });
-      await waitForSetupModels();
-      const resolved = await resolveWhisperModel();
-      if (resolved.status !== "ready") {
-        throw new SpeechcraftApiError(0, resolved.status === "error"
-          ? resolved.error : "Setup finished, but the model is not ready yet. Retry setup.");
-      }
-      await continueWithModel(resolved.model);
-    } catch (err) {
-      if (err instanceof SetupApiError) {
-        setAuthorizationError(err.message);
-      } else if (err instanceof SpeechcraftApiError) {
-        setPhase("error");
-        setError(err.detail);
-      } else {
-        setPhase("error");
-        setError("Could not verify Hugging Face access or prepare the required models.");
-      }
+      const result: AsrAvailability = await resolveWhisperModel();
+      if (result.status === "ready") { goToImport(); return; }
+      const detail = result.status === "error" ? result.error : "Whisper is not verified in the managed runtime.";
+      const code = result.status === "error" && result.category === "model_unusable"
+        ? "MODEL_INITIALIZATION_FAILED" : "PROCESSING_PREREQUISITES_MISSING";
+      showFailure(errorView(code, detail));
+    } catch (failure) {
+      showFailure(errorFromException(failure, true));
     } finally {
-      setSubmitting(false);
+      finalizingRef.current = false;
     }
-  }, [hfToken, submitting, waitForSetupModels, continueWithModel]);
+  }, [goToImport, showFailure]);
 
-  const waitForBackendEnsure = useCallback(async (target: WhisperModelSize) => {
-    setPhase("downloading");
-    setProgressView({
-      title: "Downloading models",
-      subtitle: "Downloading the Whisper package…",
-      packageType: "faster-whisper",
-      progress: {
-        phase: "downloading",
-        model_name: target,
-        package_type: "faster-whisper",
-        transfer_indeterminate: true,
-        indeterminate: true,
-      },
-    });
-
-    let job: AsrEnsureJob;
-    const savedJobId = readEnsureJobId(projectId, target);
-    if (savedJobId) {
-      try { job = await fetchAsrEnsure(savedJobId); }
-      catch { job = await startAsrEnsure(target); }
-    } else {
-      try { job = await startAsrEnsure(target); }
-      catch (err) {
-        if (err instanceof SpeechcraftApiError && err.status === 409) {
-          await waitForSetupModels();
-          return;
-        }
-        throw err;
-      }
-    }
-    storeEnsureJobId(projectId, target, job.id);
-
-    for (;;) {
-      const latest = await fetchAsrEnsure(job.id);
-      const downloading = latest.phase === "downloading" || latest.phase === "queued";
-      setPhase(downloading ? "downloading" : latest.phase === "complete" ? "loading" : "downloading");
-      setProgressView({
-        title: downloading ? "Downloading models" : "Preparing models",
-        subtitle: downloading
-          ? "Downloading the Whisper package…"
-          : "Verifying the downloaded model…",
-        packageType: latest.package_type || "faster-whisper",
-        progress: {
-          ...latest.progress,
-          phase: latest.progress.phase || latest.phase,
-          model_name: latest.progress.model_name || latest.model,
-          package_type: latest.package_type,
-        },
-      });
-      if (latest.phase === "complete" && latest.ok) {
-        storeEnsureJobId(projectId, target, null);
-        return;
-      }
-      if (latest.phase === "failed" || latest.ok === false) {
-        if (latest.reason_codes?.includes("managed_runtime_use_setup")) {
-          await waitForSetupModels();
-          return;
-        }
-        throw new SpeechcraftApiError(0, latest.error || "Model download failed.");
-      }
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-  }, [waitForSetupModels, projectId]);
-
-  const checkAndMaybePrompt = useCallback(async () => {
-    if (demo) {
-      skipAhead();
+  const processManagedStatus = useCallback(async (status: SetupStatus, models: ModelState[]) => {
+    const action = setupActionFor(status, models);
+    if (action === "watch") {
+      setError(null);
+      setProgress(setupProgress(status, models));
+      setPhase("downloading");
       return;
     }
-    setPhase("checking");
-    setError(null);
-    try {
-      // URL and stored runs use the same project, attempt, configuration and input checks.
-      const urlRun = params.get("run");
-      if (projectId && urlRun && urlRun !== "demo") {
-        const attemptId = getWizardAttemptId(projectId);
-        const candidate = await findReusableWizardRun(projectId, attemptId, undefined, urlRun);
-        if (candidate) {
-          if (candidate.status === "pending") {
-            setPhase("starting");
-            await startRun(candidate.id);
-          }
-          navigateToLogin4(candidate.id);
-          return;
-        }
-      }
-      let resolved: AsrAvailability;
-      try {
-        resolved = await resolveWhisperModel();
-      } catch (err) {
-        if (err instanceof SpeechcraftApiError && err.status > 0 && err.status < 500) throw err;
-        await setupApi.ensureSession();
-        const status = await setupApi.status();
-        if (status.components?.pyannote?.state === "runtime_ready" ||
-            status.components?.pyannote?.state === "files_verified") {
-          await waitForSetupModels();
-          resolved = await resolveWhisperModel();
-        } else if (status.job.state === "running") {
-          await waitForSetupModels();
-          resolved = await resolveWhisperModel();
-        } else {
-          setAuthorizationError(null);
-          setPhase("needs_authorization");
-          return;
-        }
-      }
-      if (resolved.status === "ready") {
-        if (!projectId) {
-          await continueWithModel(resolved.model);
-          return;
-        }
-        const attemptId = getWizardAttemptId(projectId);
-        const reusable = await findReusableWizardRun(projectId, attemptId, resolved.model);
-        if (reusable) {
-          if (reusable.status === "pending") await startRun(reusable.id);
-          navigateToLogin4(reusable.id);
-          return;
-        }
-        await continueWithModel(resolved.model);
-        return;
-      }
-      if (resolved.status === "needs_download") {
-        setDownloadTarget({ model: resolved.downloadModel, repoId: resolved.repoId });
-        setModel(resolved.downloadModel);
-        await setupApi.ensureSession();
-        const setupStatus = await setupApi.status();
-        const pyannoteReady = setupStatus.components?.pyannote?.state === "runtime_ready" ||
-          setupStatus.components?.pyannote?.state === "files_verified";
-        if (setupStatus.job.state === "running") {
-          await waitForSetupModels();
-          const after = await resolveWhisperModel();
-          if (after.status === "ready") { await continueWithModel(after.model); return; }
-          throw new SpeechcraftApiError(0, after.status === "error"
-            ? after.error : "Setup finished, but the model is not ready yet.");
-        }
-        if (!pyannoteReady) {
-          setAuthorizationError(null);
-          setPhase("needs_authorization");
-          return;
-        }
-        const activeJobId = readEnsureJobId(projectId, resolved.downloadModel);
-        if (activeJobId) {
-          try {
-            const activeJob = await fetchAsrEnsure(activeJobId);
-            if (["queued", "downloading", "verifying", "complete"].includes(activeJob.phase)) {
-              if (activeJob.phase === "complete" && activeJob.ok) {
-                const after = await resolveWhisperModel();
-                if (after.status === "ready") { await continueWithModel(after.model); return; }
-              } else {
-                setDownloadTarget({ model: resolved.downloadModel, repoId: resolved.repoId });
-                setModel(resolved.downloadModel);
-                busyRef.current = true;
-                setPhase("downloading");
-                void waitForBackendEnsure(resolved.downloadModel).then(async () => {
-                  const after = await resolveWhisperModel();
-                  if (after.status !== "ready") throw new Error(after.error || "The downloaded model is not ready.");
-                  await continueWithModel(after.model);
-                }).catch((err) => {
-                  setPhase("error");
-                  setError(err instanceof SpeechcraftApiError ? err.detail : "Could not resume the model download.");
-                }).finally(() => { busyRef.current = false; });
-                return;
-              }
-            } else {
-              storeEnsureJobId(projectId, resolved.downloadModel, null);
-            }
-          } catch { storeEnsureJobId(projectId, resolved.downloadModel, null); }
-        }
-        setDownloadTarget({ model: resolved.downloadModel, repoId: resolved.repoId });
-        setModel(resolved.downloadModel);
-        setPhase("needs_download");
-        setProgressView(null);
-        return;
-      }
-      setPhase("error");
-      setError(resolved.error);
-    } catch (err) {
-      if (downloadTarget) storeEnsureJobId(projectId, downloadTarget.model, null);
-      setPhase("error");
-      setError(err instanceof SpeechcraftApiError ? err.detail : "Could not prepare the model.");
+    stopWatch();
+    if (action === "finalize") {
+      await verifyFinalBackend();
+      return;
     }
-  }, [demo, projectId, params, skipAhead, navigateToLogin4, continueWithModel, waitForBackendEnsure, waitForSetupModels]);
+    if (action === "verify") {
+      const authMessage = status.job.error?.code ? setupFailureFor(status.job.error.code, status.job.error.message).message : null;
+      setAuthorizationError(authMessage);
+      setPhase("needs_authorization");
+      return;
+    }
+    if (action === "download") {
+      setError(null);
+      setPhase("access_verified");
+      return;
+    }
+    const code = setupFailureCodeFor(status);
+    showFailure(errorView(code, status.job.error?.message || ""));
+  }, [stopWatch, verifyFinalBackend, showFailure]);
 
-  const beginDownload = useCallback(async () => {
-    if (busyRef.current || !downloadTarget) return;
+  const inspectManagedSetup = useCallback(async () => {
+    await setupApi.ensureSession();
+    const [status, list] = await Promise.all([setupApi.status(), setupApi.models()]);
+    await processManagedStatus(status, list.models);
+    return status;
+  }, [processManagedStatus]);
+
+  const refreshManagedJob = useCallback(async () => {
+    const [status, list] = await Promise.all([setupApi.status(), setupApi.models()]);
+    await processManagedStatus(status, list.models);
+    return status;
+  }, [processManagedStatus]);
+
+  const watchManagedJob = useCallback(() => {
+    if (watchingRef.current) return;
+    watchingRef.current = true;
+    let disconnectedAt: number | null = null;
+    const timeout = () => {
+      if (!watchingRef.current || disconnectedAt === null) return;
+      if (Date.now() - disconnectedAt >= 45_000) {
+        showFailure(errorView("SETUP_CONTROLLER_UNAVAILABLE"));
+        return;
+      }
+      monitorTimerRef.current = window.setTimeout(timeout, 5_000);
+    };
+    setupStopRef.current = subscribeSetupEvents(
+      () => {
+        void refreshManagedJob().catch((failure) => showFailure(errorFromException(failure, true)));
+      },
+      () => {
+        disconnectedAt = null;
+        if (monitorTimerRef.current !== null) window.clearTimeout(monitorTimerRef.current);
+        monitorTimerRef.current = null;
+      },
+      () => {
+        if (disconnectedAt === null) disconnectedAt = Date.now();
+        if (monitorTimerRef.current === null) monitorTimerRef.current = window.setTimeout(timeout, 5_000);
+      },
+    );
+    void refreshManagedJob().catch((failure) => showFailure(errorFromException(failure, true)));
+  }, [refreshManagedJob, showFailure]);
+
+  const monitorStandaloneJob = useCallback((jobId: string, model: WhisperModelSize) => {
+    if (standaloneTimerRef.current !== null) window.clearInterval(standaloneTimerRef.current);
+    let consecutiveErrors = 0;
+    const poll = async () => {
+      try {
+        const job = await fetchAsrEnsure(jobId);
+        consecutiveErrors = 0;
+        const downloading = job.phase === "queued" || job.phase === "downloading";
+        setPhase("downloading");
+        setProgress({ title: downloading ? "Downloading models" : "Preparing models", artifact: job.progress.model_name || job.model,
+          kind: "Model", progress: { ...job.progress, phase: job.progress.phase || job.phase, package_type: job.package_type } });
+        if (job.phase === "complete" && job.ok) {
+          if (standaloneTimerRef.current !== null) window.clearInterval(standaloneTimerRef.current);
+          standaloneTimerRef.current = null;
+          storeEnsureJobId(model, null);
+          await finalizeStandalone();
+        } else if (job.phase === "failed" || job.ok === false) {
+          if (standaloneTimerRef.current !== null) window.clearInterval(standaloneTimerRef.current);
+          standaloneTimerRef.current = null;
+          showFailure(errorView("MODEL_DOWNLOAD_FAILED", job.error || "The Whisper model download failed."));
+        } else if (!downloading && job.phase !== "verifying") {
+          setProgress({ title: job.phase === "downloading" ? "Downloading models" : "Preparing models", artifact: model, kind: "Model", progress: job.progress });
+        }
+      } catch (failure) {
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= 3) {
+          if (standaloneTimerRef.current !== null) window.clearInterval(standaloneTimerRef.current);
+          standaloneTimerRef.current = null;
+          storeEnsureJobId(model, null);
+          showFailure(errorView("MODEL_DOWNLOAD_FAILED", "The previous download job is no longer available. Retry to start a new download."));
+        }
+      }
+    };
+    void poll();
+    standaloneTimerRef.current = window.setInterval(() => { void poll(); }, 1_500);
+  }, [showFailure]);
+
+  const finalizeStandalone = useCallback(async () => {
+    try {
+      const result = await resolveWhisperModel();
+      if (result.status === "ready") goToImport();
+      else showFailure(errorView(result.status === "error" && result.category === "model_unusable"
+        ? "MODEL_INITIALIZATION_FAILED" : "PROCESSING_PREREQUISITES_MISSING",
+      result.status === "error" ? result.error : "Whisper is not ready after download."));
+    } catch (failure) { showFailure(errorFromException(failure, false)); }
+  }, [goToImport, showFailure]);
+
+  const startStandaloneDownload = useCallback(async () => {
+    if (!downloadModel || busyRef.current) return;
     busyRef.current = true;
     setSubmitting(true);
     setError(null);
     try {
-      await waitForBackendEnsure(downloadTarget.model);
-      setPhase("loading");
-      setProgressView({
-        title: "Loading models",
-        subtitle: "Checking that the model can run on this hardware…",
-        packageType: "faster-whisper",
-        progress: {
-          phase: "loading",
-          model_name: downloadTarget.model,
-          package_type: "faster-whisper",
-          indeterminate: true,
-        },
-      });
-      const resolved = await resolveWhisperModel();
-      if (resolved.status !== "ready") {
-        setPhase("error");
-        setError(
-          resolved.status === "error"
-            ? resolved.error
-            : "The model downloaded, but is still not ready. Retry after required runtime components are available.",
-        );
-        return;
+      let job: AsrEnsureJob | null = null;
+      const savedId = readEnsureJobId(downloadModel);
+      if (savedId) {
+        try { job = await fetchAsrEnsure(savedId); }
+        catch (failure) {
+          if (failure instanceof SpeechcraftApiError && failure.status === 404) {
+            storeEnsureJobId(downloadModel, null);
+          } else throw failure;
+        }
       }
-      await continueWithModel(resolved.model);
-    } catch (err) {
-      setPhase("error");
-      setError(err instanceof SpeechcraftApiError ? err.detail : "Could not download the model.");
+      if (!job || ["failed", "complete"].includes(job.phase)) {
+        if (job?.phase === "complete" && job.ok) { await finalizeStandalone(); return; }
+        job = await startAsrEnsure(downloadModel);
+      }
+      storeEnsureJobId(downloadModel, job.id);
+      monitorStandaloneJob(job.id, downloadModel);
+    } catch (failure) {
+      const detail = failure instanceof SpeechcraftApiError ? failure.detail : "Could not start the model download.";
+      if (/managed_runtime_use_setup/i.test(detail)) {
+        showFailure(errorView("SETUP_CONTROLLER_UNAVAILABLE", "This installation requires the managed setup controller. Restart Speechcraft with its launcher, then retry."));
+      } else showFailure(errorFromException(failure, false));
     } finally {
       busyRef.current = false;
       setSubmitting(false);
-      stopSetupWatch();
     }
-  }, [downloadTarget, waitForBackendEnsure, continueWithModel, stopSetupWatch]);
+  }, [downloadModel, finalizeStandalone, monitorStandaloneJob, showFailure]);
+
+  const initialize = useCallback(async () => {
+    if (demo) { goToImport(); return; }
+    setPhase("checking");
+    setError(null);
+    let launcherManaged = false;
+    try {
+      launcherManaged = await isLauncherManagedInstallation();
+      if (!launcherManaged) {
+        try {
+          await setupApi.health();
+          await setupApi.ensureSession();
+          launcherManaged = (await setupApi.status()).mode === "runtime";
+        } catch { /* an unmanaged development server may not run the setup controller */ }
+      }
+      setManaged(launcherManaged);
+      if (launcherManaged) {
+        const status = await inspectManagedSetup();
+        if (status.job.state === "running") watchManagedJob();
+        return;
+      }
+      const result = await resolveWhisperModel();
+      if (result.status === "ready") { goToImport(); return; }
+      if (result.status === "needs_download") {
+        setDownloadModel(result.downloadModel);
+        setPhase("needs_download");
+        const savedId = readEnsureJobId(result.downloadModel);
+        if (savedId) {
+          try {
+            const saved = await fetchAsrEnsure(savedId);
+            if (!["failed", "complete"].includes(saved.phase)) {
+              storeEnsureJobId(result.downloadModel, saved.id);
+              monitorStandaloneJob(saved.id, result.downloadModel);
+            } else if (saved.phase === "complete" && saved.ok) await finalizeStandalone();
+            else storeEnsureJobId(result.downloadModel, null);
+          } catch (failure) {
+            if (failure instanceof SpeechcraftApiError && failure.status === 404) storeEnsureJobId(result.downloadModel, null);
+            else throw failure;
+          }
+        }
+        return;
+      }
+      showFailure(errorView(result.category === "model_unusable" ? "MODEL_INITIALIZATION_FAILED" : "PROCESSING_PREREQUISITES_MISSING", result.error));
+    } catch (failure) {
+      showFailure(errorFromException(failure, launcherManaged));
+    }
+  }, [demo, goToImport, inspectManagedSetup, watchManagedJob, monitorStandaloneJob, finalizeStandalone, showFailure]);
+
+  const verifyToken = useCallback(async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const value = token.trim();
+    if (!value || busyRef.current) return;
+    busyRef.current = true;
+    setSubmitting(true);
+    setAuthorizationError(null);
+    try {
+      const result = await setupApi.preauthorizePyannote(value);
+      setToken("");
+      if (!result.verified) throw new SetupApiError(502, "HF_VERIFICATION_FAILED", "Hugging Face access could not be verified.");
+      setPhase("access_verified");
+    } catch (failure) {
+      const view = errorFromException(failure, true);
+      setAuthorizationError(view.message);
+    } finally {
+      busyRef.current = false;
+      setSubmitting(false);
+    }
+  }, [token]);
+
+  const downloadManagedModels = useCallback(async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await setupApi.repair();
+      const job = (response as { job?: { state?: string } }).job;
+      const status = await setupApi.status();
+      if (status.job.state === "waiting_for_user") {
+        setAuthorizationError("Your verification expired or the controller restarted. Verify your Hugging Face access again.");
+        setPhase("needs_authorization");
+      } else if (job?.state === "running" || status.job.state === "running") {
+        setPhase("downloading");
+        setProgress({ title: "Downloading models", artifact: status.job.progress?.message || "Speechcraft runtime", kind: "Runtime", progress: status.job.progress || null });
+        watchManagedJob();
+      } else {
+        await refreshManagedJob();
+      }
+    } catch (failure) {
+      showFailure(errorFromException(failure, true));
+    } finally {
+      busyRef.current = false;
+      setSubmitting(false);
+    }
+  }, [refreshManagedJob, showFailure, watchManagedJob]);
+
+  const retry = useCallback(async () => {
+    if (!managed || error?.category === "Setup controller unavailable") {
+      await initialize();
+      return;
+    }
+    await downloadManagedModels();
+  }, [managed, error, initialize, downloadManagedModels]);
 
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
-    void checkAndMaybePrompt();
+    void initialize();
     return () => {
-      stopSetupWatch();
+      stopWatch();
+      if (standaloneTimerRef.current !== null) window.clearInterval(standaloneTimerRef.current);
+      standaloneTimerRef.current = null;
     };
-  }, [checkAndMaybePrompt, stopSetupWatch]);
+  }, [initialize, stopWatch]);
 
-  if (phase === "error") {
-    return (
-      <>
-        <div className="text-center space-y-2">
-          <h1 className="text-lg lg:text-xl mb-4 font-serif">Couldn&apos;t prepare a model</h1>
-          <p className="font-sans text-sm text-[#878787]">{error}</p>
-        </div>
-        <div className="mt-10 lg:mt-12">
-          <SubmitButton
-            type="button"
-            onClick={() => {
-              startedRef.current = false;
-              busyRef.current = false;
-              void checkAndMaybePrompt();
-            }}
-            className="bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full"
-            isSubmitting={false}
-          >
-            <div className="flex items-center justify-center gap-2">
-              <Icons.HuggingFace size={16} />
-              <span>Retry</span>
-            </div>
-          </SubmitButton>
-        </div>
-        <button
-          type="button"
-          onClick={skipAhead}
-          className="mt-4 w-full text-center text-xs text-[#878787] underline hover:text-foreground"
-        >
-          Skip ahead with demo data (no model needed)
-        </button>
-      </>
-    );
-  }
-
-  if (phase === "needs_download" && downloadTarget) {
-    return (
-      <>
-        <div className="text-center space-y-2">
-          <h1 className="text-lg lg:text-xl mb-4 font-serif">Model download required</h1>
-          <p className="font-sans text-sm text-[#878787]">
-            SpeechCraft needs Whisper{" "}
-            <span className="text-foreground">{downloadTarget.model}</span> before speaker
-            detection can start. Nothing is downloaded until you continue.
-          </p>
-        </div>
-        <div className="mt-10 lg:mt-12">
-          <SubmitButton
-            type="button"
-            onClick={() => void beginDownload()}
-            className="bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full"
-            isSubmitting={submitting}
-          >
-            <div className="flex items-center justify-center gap-2">
-              <Icons.HuggingFace size={16} />
-              <span>Download &amp; Continue</span>
-            </div>
-          </SubmitButton>
-        </div>
-      </>
-    );
+  if (phase === "error" && error) {
+    return <>
+      <div className="text-center space-y-2">
+        <h1 className="text-lg lg:text-xl mb-4 font-serif">{error.category}</h1>
+        <p className="font-sans text-sm text-[#878787]">{error.message}</p>
+      </div>
+      <div className="mt-10 lg:mt-12">
+        <SubmitButton type="button" onClick={() => void retry()}
+          className="bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full" isSubmitting={submitting}>
+          <span>Retry</span>
+        </SubmitButton>
+      </div>
+    </>;
   }
 
   if (phase === "needs_authorization") {
-    return (
-      <>
-        <div className="text-center space-y-2">
-          <h1 className="text-lg lg:text-xl mb-4 font-serif">Authorize pyannote Community-1</h1>
-          <p className="font-sans text-sm text-[#878787]">
-            Accept the model conditions and provide a Hugging Face read token. SpeechCraft verifies access first; setup and model downloads start only after it is confirmed.
-          </p>
-        </div>
-        <ol className="mt-5 list-inside list-decimal space-y-2 text-center text-sm text-[#878787]">
-          <li><a className="underline underline-offset-2" href="https://huggingface.co/pyannote/speaker-diarization-community-1" target="_blank" rel="noreferrer">Accept Community-1 conditions</a></li>
-          <li><a className="underline underline-offset-2" href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer">Create a read-access token</a></li>
-        </ol>
-        <form className="mt-8 flex flex-col gap-3" onSubmit={submitPyannoteAuthorization}>
-          <label className="sr-only" htmlFor="speechcraft-hf-token">Hugging Face token</label>
-          <input
-            id="speechcraft-hf-token"
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            value={hfToken}
-            onChange={(event) => setHfToken(event.target.value)}
-            placeholder="hf_…"
-            className="h-10 w-full rounded-md border border-white/15 bg-transparent px-3 text-sm outline-none focus:border-white/40"
-          />
-          {authorizationError && <p role="alert" className="text-sm text-[#c98b8b]">{authorizationError}</p>}
-          <SubmitButton
-            type="submit"
-            disabled={!hfToken.trim()}
-            className="bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full"
-            isSubmitting={submitting}
-          >
-            <span>Verify &amp; Continue</span>
-          </SubmitButton>
-        </form>
-      </>
-    );
-  }
-
-  if (progressView && (phase === "downloading" || phase === "loading" || phase === "starting")) {
-    return <RestrainedProgress view={progressView} />;
-  }
-
-  return (
-    <>
+    return <>
       <div className="text-center space-y-2">
-        <h1 className="text-lg lg:text-xl mb-4 font-serif">Preparing models</h1>
-        <p className="font-sans text-sm text-[#878787]">
-          {phase === "checking"
-            ? "Checking whether a Whisper model is already available…"
-            : model
-              ? `Using ${model} · starting speaker detection…`
-              : "Detecting your hardware and loading the best Whisper model…"}
-        </p>
+        <h1 className="text-lg lg:text-xl mb-4 font-serif">Connect Hugging Face</h1>
+        <p className="font-sans text-sm text-[#878787]">Speechcraft needs permission to download the speaker detection model.</p>
       </div>
-      <div className="mt-10 lg:mt-12 flex items-center justify-center">
-        <Spinner size={20} />
+      <ol className="mt-5 list-inside list-decimal space-y-2 text-center text-sm text-[#878787]">
+        <li><a className="underline underline-offset-2" href="https://huggingface.co/pyannote/speaker-diarization-community-1" target="_blank" rel="noreferrer">Accept the pyannote Community-1 model conditions</a></li>
+        <li><a className="underline underline-offset-2" href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer">Create a Hugging Face read-access token</a></li>
+      </ol>
+      <form className="mt-8 flex flex-col gap-3" onSubmit={verifyToken}>
+        <label className="sr-only" htmlFor="speechcraft-hf-token">Hugging Face token</label>
+        <input id="speechcraft-hf-token" type="password" autoComplete="off" spellCheck={false} value={token}
+          onChange={(event) => setToken(event.target.value)} placeholder="hf_…"
+          className="h-10 w-full rounded-md border border-white/15 bg-transparent px-3 text-sm outline-none focus:border-white/40" />
+        {authorizationError ? <p role="alert" className="text-sm text-[#c98b8b]">{authorizationError}</p> : null}
+        <SubmitButton type="submit" disabled={!token.trim()} className="bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full" isSubmitting={submitting}>
+          <span>Verify</span>
+        </SubmitButton>
+      </form>
+    </>;
+  }
+
+  if (phase === "access_verified") {
+    return <>
+      <div className="text-center space-y-2">
+        <div aria-hidden="true" className="mx-auto mb-2 flex h-7 w-7 items-center justify-center rounded-full border border-white/30 text-sm">✓</div>
+        <h1 className="text-lg lg:text-xl mb-4 font-serif">Access verified</h1>
+        <p className="font-sans text-sm text-[#878787]">You&apos;re ready to download the models Speechcraft needs.</p>
       </div>
-    </>
-  );
+      <div className="mt-10 lg:mt-12">
+        <SubmitButton type="button" onClick={() => managed ? void downloadManagedModels() : void startStandaloneDownload()}
+          className="bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full" isSubmitting={submitting}>
+          <span>Download Models</span>
+        </SubmitButton>
+      </div>
+    </>;
+  }
+
+  if (phase === "needs_download") {
+    return <>
+      <div className="text-center space-y-2">
+        <h1 className="text-lg lg:text-xl mb-4 font-serif">Download Models</h1>
+        <p className="font-sans text-sm text-[#878787]">Speechcraft needs Whisper {downloadModel || "large-v3"} before importing recordings.</p>
+      </div>
+      <div className="mt-10 lg:mt-12">
+        <SubmitButton type="button" onClick={() => void startStandaloneDownload()} className="bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full" isSubmitting={submitting}>
+          <span>Download Models</span>
+        </SubmitButton>
+      </div>
+    </>;
+  }
+
+  if (phase === "downloading" && progress) return <ProgressScreen view={progress} />;
+
+  return <>
+    <div className="text-center space-y-2">
+      <h1 className="text-lg lg:text-xl mb-4 font-serif">Checking Speechcraft</h1>
+      <p className="font-sans text-sm text-[#878787]">Checking the installed runtime and required models…</p>
+    </div>
+    <div className="mt-10 lg:mt-12 flex items-center justify-center"><Spinner size={20} /></div>
+  </>;
 }

@@ -10,6 +10,7 @@ import {
   wizardRunOptions,
   matchesWizardRun,
 } from "./processing-plan.mjs";
+import { resolveWhisperPreflights } from "./model-resolution.mjs";
 
 const BASE = speechcraftApiBase();
 
@@ -252,7 +253,7 @@ export type AsrAvailability =
       repoId: string;
       error: string;
     }
-  | { status: "error"; model: null; error: string };
+  | { status: "error"; model: null; error: string; category?: "dependencies_missing" | "model_unusable" };
 
 export type SpeakerSample = {
   sample_id: string;
@@ -315,40 +316,6 @@ function asrRepoId(model: WhisperModelSize): string {
     : "Systran/faster-whisper-large-v3";
 }
 
-/** Classify nested preflight ASR result without treating other deps as "needs download". */
-export function classifyAsrModel(
-  preflight: PreflightResult,
-  model: WhisperModelSize,
-): "ready" | "missing" | "unloadable" {
-  const asr = preflight.asr_model;
-  if (!asr || typeof asr !== "object") {
-    // Fall back to top-level only when the worker omitted the nested block.
-    return preflight.ok ? "ready" : "missing";
-  }
-  if (asr.ok === true) return "ready";
-  const err = String(asr.error || preflight.error || "");
-  if (
-    /LocalEntryNotFound|not available locally|SnapshotIncomplete|incomplete|HF_SNAPSHOT|FileNotFoundError/i.test(
-      err,
-    )
-  ) {
-    return "missing";
-  }
-  // Cache miss before a load attempt — preflight uses local_files_only=True.
-  if (asr.local_only === true && asr.load_checked === false) return "missing";
-  if (!err) return "missing";
-  return "unloadable";
-}
-
-function otherPreflightDependenciesReady(preflight: PreflightResult): boolean {
-  const modules = preflight.modules;
-  const moduleChecksComplete = Array.isArray(modules) && modules.length > 0 && modules.every(
-    (item) => !!item && typeof item === "object" && (item as { ok?: boolean }).ok === true,
-  );
-  const checkOk = (value: unknown) => !!value && typeof value === "object" && (value as { ok?: boolean }).ok === true;
-  return moduleChecksComplete && checkOk(preflight.ffmpeg) && checkOk(preflight.diarization_model) && checkOk(preflight.artifact_root);
-}
-
 /**
  * Resolve the most capable whisper model the hardware can actually load:
  * prefer large-v3, fall back to base. Distinguishes cache-miss (needs download)
@@ -356,47 +323,12 @@ function otherPreflightDependenciesReady(preflight: PreflightResult): boolean {
  */
 export async function resolveWhisperModel(): Promise<AsrAvailability> {
   const large = await fetchPreflight("large-v3");
-  const largeState = classifyAsrModel(large, "large-v3");
-  if (largeState === "ready" && large.ok === true) return { status: "ready", model: "large-v3" };
-
+  if (large.ok === true && large.asr_model?.ok === true) return { status: "ready", model: "large-v3" };
   const base = await fetchPreflight("base");
-  const baseState = classifyAsrModel(base, "base");
-  if (baseState === "ready" && base.ok === true) return { status: "ready", model: "base" };
-
-  // A model cache miss is actionable only when the other required parts of
-  // the worker preflight pass. Downloading Whisper cannot repair those.
-  if (!otherPreflightDependenciesReady(large) || !otherPreflightDependenciesReady(base)) {
-    return { status: "error", model: null, error: base.error || large.error || "Required processing dependencies are unavailable." };
-  }
-
-  if (largeState === "missing") {
-    return {
-      status: "needs_download",
-      model: null,
-      downloadModel: "large-v3",
-      repoId: String(large.asr_model?.repo_id || asrRepoId("large-v3")),
-      error: "Whisper large-v3 is not available locally. Download it to continue.",
-    };
-  }
-  if (baseState === "missing") {
-    return {
-      status: "needs_download",
-      model: null,
-      downloadModel: "base",
-      repoId: String(base.asr_model?.repo_id || asrRepoId("base")),
-      error: "Whisper base is not available locally. Download it to continue.",
-    };
-  }
-  return {
-    status: "error",
-    model: null,
-    error:
-      base.asr_model?.error ||
-      large.asr_model?.error ||
-      base.error ||
-      large.error ||
-      "No usable Whisper model for this hardware.",
-  };
+  if (base.ok === true && base.asr_model?.ok === true) return { status: "ready", model: "base" };
+  return resolveWhisperPreflights(large, base, {
+    large: asrRepoId("large-v3"), base: asrRepoId("base"),
+  }) as AsrAvailability;
 }
 
 export function startAsrEnsure(model: WhisperModelSize): Promise<AsrEnsureJob> {
