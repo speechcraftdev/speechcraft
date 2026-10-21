@@ -36,3 +36,22 @@ export function completedAtStage(run, stage) {
   return run?.status === "completed" &&
     (run?.stage === stage || run?.stage === BACKEND_STAGE_ALIASES[stage]);
 }
+
+/** Check that an existing run belongs to this onboarding attempt and exact input set. */
+export function matchesWizardRun(run, { projectId, attemptId, recordingIds, model }) {
+  const allowedStatuses = new Set(["pending", "running", "needs_review", "completed"]);
+  const input = run?.input_summary ?? {};
+  const actualIds = Array.isArray(input.source_recording_ids) ? [...input.source_recording_ids].sort() : [];
+  const expectedIds = [...recordingIds].sort();
+  return run?.project_id === projectId &&
+    allowedStatuses.has(run?.status) &&
+    input.wizard_attempt === attemptId &&
+    input.single_speaker === false &&
+    input.requested_stop_after === WIZARD_INITIAL_STOP_AFTER &&
+    input.target_speaker_label === "speaker_0" &&
+    input.language === "auto" &&
+    (!model || input.whisper_model_size === model) &&
+    expectedIds.length > 0 &&
+    actualIds.length === expectedIds.length &&
+    actualIds.every((id, index) => id === expectedIds[index]);
+}

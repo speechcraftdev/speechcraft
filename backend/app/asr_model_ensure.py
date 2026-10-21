@@ -111,6 +111,7 @@ def _apply_progress(job: AsrEnsureJob, payload: dict[str, Any]) -> None:
 
 
 def _run_job(job_id: str) -> None:
+    process: subprocess.Popen[str] | None = None
     with _lock:
         job = _jobs.get(job_id)
         if job is None:
@@ -169,11 +170,14 @@ def _run_job(job_id: str) -> None:
             command,
             cwd=str(dataset_worker_root()),
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # The worker emits structured JSON on stdout; merging stderr keeps
+            # an unconsumed pipe from blocking the child during a noisy failure.
+            stderr=subprocess.STDOUT,
             text=True,
         )
         assert process.stdout is not None
         final: dict[str, Any] | None = None
+        diagnostic_tail: list[str] = []
         for raw in process.stdout:
             line = raw.strip()
             if not line:
@@ -181,6 +185,8 @@ def _run_job(job_id: str) -> None:
             try:
                 payload = json.loads(line)
             except json.JSONDecodeError:
+                diagnostic_tail.append(line[-500:])
+                del diagnostic_tail[:-10]
                 continue
             if not isinstance(payload, dict):
                 continue
@@ -221,9 +227,6 @@ def _run_job(job_id: str) -> None:
                                 "transfer_indeterminate": False,
                             },
                         )
-        stderr = ""
-        if process.stderr is not None:
-            stderr = process.stderr.read()
         returncode = process.wait()
         with _lock:
             job = _jobs[job_id]
@@ -231,8 +234,8 @@ def _run_job(job_id: str) -> None:
                 job.phase = "failed"
                 job.ok = False
                 job.error = f"ASR ensure exited without a result (code {returncode})"
-                if stderr.strip():
-                    job.error = f"{job.error}: {stderr.strip()[-500:]}"
+                if diagnostic_tail:
+                    job.error = f"{job.error}: {' | '.join(diagnostic_tail)[-500:]}"
                 _apply_progress(
                     job,
                     {
@@ -247,6 +250,13 @@ def _run_job(job_id: str) -> None:
                 job.ok = False
                 job.error = job.error or f"ASR ensure failed (code {returncode})"
     except Exception as exc:  # noqa: BLE001 — surface to the polling UI
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
         with _lock:
             job = _jobs[job_id]
             job.phase = "failed"

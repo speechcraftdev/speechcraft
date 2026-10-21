@@ -644,6 +644,7 @@ class ProcessingJobView(SQLModel):
 
 class DatasetRunCreateRequest(SQLModel):
     source_recording_ids: list[str] = Field(default_factory=list)
+    wizard_attempt: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     single_speaker: bool = True
     target_speaker_label: str = "speaker_0"

@@ -95,6 +95,28 @@ class DatasetRunTests(TestCase):
         self.assertEqual(config["slicer"], "VR")
         self.assertNotIn("mfa_dictionary", config)
 
+    def test_wizard_attempt_reuses_only_the_same_model_and_recordings(self) -> None:
+        request = DatasetRunCreateRequest(
+            source_recording_ids=["recording-1"],
+            wizard_attempt="login3:project-1",
+            single_speaker=False,
+            whisper_model_size="base",
+        )
+        first = create_dataset_run(self.repository, "project-1", request)
+        repeated = create_dataset_run(self.repository, "project-1", request)
+        other_model = create_dataset_run(
+            self.repository,
+            "project-1",
+            DatasetRunCreateRequest(
+                source_recording_ids=["recording-1"],
+                wizard_attempt="login3:project-1",
+                single_speaker=False,
+                whisper_model_size="large-v3",
+            ),
+        )
+        self.assertEqual(first.id, repeated.id)
+        self.assertNotEqual(first.id, other_model.id)
+
     @unittest.skipIf(sys.platform == "win32", "owned POSIX process groups are used by Linux/macOS workers")
     def test_cancel_stops_only_the_recorded_worker_and_persists_cancelled_state(self) -> None:
         command = [sys.executable, "-c", "import time; time.sleep(60)"]
@@ -226,6 +248,27 @@ class DatasetRunTests(TestCase):
             with self.assertRaisesRegex(ValueError, "missing model.bin"):
                 start_dataset_run(self.repository, run.id)
 
+        popen.assert_not_called()
+
+    def test_start_run_rejects_broken_preflight_even_when_asr_model_loads(self) -> None:
+        run = create_dataset_run(
+            self.repository,
+            "project-1",
+            DatasetRunCreateRequest(stop_after="transcript_qc"),
+        )
+        with (
+            patch(
+                "app.dataset_runs.run_dataset_worker_preflight",
+                return_value={
+                    "ok": False,
+                    "error": "ffmpeg not found on PATH",
+                    "asr_model": {"ok": True},
+                },
+            ),
+            patch("app.dataset_runs.subprocess.Popen") as popen,
+        ):
+            with self.assertRaisesRegex(ValueError, "ffmpeg not found"):
+                start_dataset_run(self.repository, run.id)
         popen.assert_not_called()
 
     def test_create_run_rejects_backend_controlled_config(self) -> None:

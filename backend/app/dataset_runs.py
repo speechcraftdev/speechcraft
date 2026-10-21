@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +43,7 @@ from .models import (
 
 
 LOG_TAIL_CHARS = 50000
+_wizard_run_lock = threading.Lock()
 RESERVED_WORKER_CONFIG_KEYS = {
     "config_hash",
     "mode",
@@ -260,7 +262,7 @@ def _assert_asr_model_available(repository: Any, run: ProcessingRun) -> None:
         asr_compute_type=str(config.get("faster_whisper_compute_type") or "int8"),
     )
     asr_model = preflight.get("asr_model")
-    if isinstance(asr_model, dict) and asr_model.get("ok") is True:
+    if preflight.get("ok") is True and isinstance(asr_model, dict) and asr_model.get("ok") is True:
         return
     message = None
     if isinstance(asr_model, dict):
@@ -297,10 +299,26 @@ def _view(session: Session, run: ProcessingRun) -> DatasetRunView:
     )
 
 
-def create_dataset_run(repository: Any, project_id: str, request: DatasetRunCreateRequest) -> DatasetRunView:
+def _create_dataset_run(repository: Any, project_id: str, request: DatasetRunCreateRequest) -> DatasetRunView:
     repository.get_project(project_id)
     with Session(repository.engine, expire_on_commit=False) as session:
         recordings = list(session.exec(select(SourceRecording).where(SourceRecording.batch_id == project_id)))
+        wizard_attempt = request.wizard_attempt
+        if isinstance(wizard_attempt, str) and wizard_attempt:
+            existing = list(session.exec(select(ProcessingRun).where(ProcessingRun.project_id == project_id)))
+            for candidate in existing:
+                summary = candidate.input_summary or {}
+                if (
+                    summary.get("wizard_attempt") == wizard_attempt
+                    and summary.get("whisper_model_size") == request.whisper_model_size
+                    and summary.get("source_recording_ids") == (request.source_recording_ids or [r.id for r in recordings])
+                    and summary.get("single_speaker") == request.single_speaker
+                    and summary.get("requested_stop_after") == request.stop_after
+                    and summary.get("target_speaker_label") == request.target_speaker_label
+                    and summary.get("language") == request.language
+                    and candidate.status in {ProcessingRunStatus.PENDING, ProcessingRunStatus.RUNNING, ProcessingRunStatus.NEEDS_REVIEW, ProcessingRunStatus.COMPLETED}
+                ):
+                    return _view(session, candidate)
         by_id = {recording.id: recording for recording in recordings}
         selected_ids = request.source_recording_ids or list(by_id)
         missing = sorted(set(selected_ids) - set(by_id))
@@ -339,6 +357,9 @@ def create_dataset_run(repository: Any, project_id: str, request: DatasetRunCrea
                 "single_speaker": request.single_speaker,
                 "target_speaker_label": request.target_speaker_label,
                 "requested_stop_after": request.stop_after,
+                "whisper_model_size": request.whisper_model_size,
+                "language": request.language,
+                **({"wizard_attempt": wizard_attempt} if isinstance(wizard_attempt, str) and wizard_attempt else {}),
             },
         )
         session.add(run)
@@ -346,6 +367,15 @@ def create_dataset_run(repository: Any, project_id: str, request: DatasetRunCrea
         _index_artifacts(session, repository, run)
         session.commit()
         return _view(session, run)
+
+
+def create_dataset_run(repository: Any, project_id: str, request: DatasetRunCreateRequest) -> DatasetRunView:
+    # The wizard may submit twice from separate tabs or lose the response during
+    # refresh. Serialize its check-and-create so the stable attempt marker wins.
+    if request.wizard_attempt:
+        with _wizard_run_lock:
+            return _create_dataset_run(repository, project_id, request)
+    return _create_dataset_run(repository, project_id, request)
 
 
 def start_dataset_run(repository: Any, run_id: str) -> DatasetRunView:

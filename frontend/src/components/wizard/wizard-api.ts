@@ -8,6 +8,7 @@ import {
   WIZARD_SELECTED_SPEAKER_STOP_AFTER,
   wizardResumeOptions,
   wizardRunOptions,
+  matchesWizardRun,
 } from "./processing-plan.mjs";
 
 const BASE = speechcraftApiBase();
@@ -339,6 +340,15 @@ export function classifyAsrModel(
   return "unloadable";
 }
 
+function otherPreflightDependenciesReady(preflight: PreflightResult): boolean {
+  const modules = preflight.modules;
+  const moduleChecksComplete = Array.isArray(modules) && modules.length > 0 && modules.every(
+    (item) => !!item && typeof item === "object" && (item as { ok?: boolean }).ok === true,
+  );
+  const checkOk = (value: unknown) => !!value && typeof value === "object" && (value as { ok?: boolean }).ok === true;
+  return moduleChecksComplete && checkOk(preflight.ffmpeg) && checkOk(preflight.diarization_model) && checkOk(preflight.artifact_root);
+}
+
 /**
  * Resolve the most capable whisper model the hardware can actually load:
  * prefer large-v3, fall back to base. Distinguishes cache-miss (needs download)
@@ -347,11 +357,17 @@ export function classifyAsrModel(
 export async function resolveWhisperModel(): Promise<AsrAvailability> {
   const large = await fetchPreflight("large-v3");
   const largeState = classifyAsrModel(large, "large-v3");
-  if (largeState === "ready") return { status: "ready", model: "large-v3" };
+  if (largeState === "ready" && large.ok === true) return { status: "ready", model: "large-v3" };
 
   const base = await fetchPreflight("base");
   const baseState = classifyAsrModel(base, "base");
-  if (baseState === "ready") return { status: "ready", model: "base" };
+  if (baseState === "ready" && base.ok === true) return { status: "ready", model: "base" };
+
+  // A model cache miss is actionable only when the other required parts of
+  // the worker preflight pass. Downloading Whisper cannot repair those.
+  if (!otherPreflightDependenciesReady(large) || !otherPreflightDependenciesReady(base)) {
+    return { status: "error", model: null, error: base.error || large.error || "Required processing dependencies are unavailable." };
+  }
 
   if (largeState === "missing") {
     return {
@@ -395,11 +411,22 @@ export function listDatasetRuns(projectId: string): Promise<DatasetRunView[]> {
   return getJson<DatasetRunView[]>(`/api/projects/${encodeURIComponent(projectId)}/dataset-runs`);
 }
 
+export function listProjectSourceRecordings(projectId: string): Promise<SourceRecording[]> {
+  return getJson<SourceRecording[]>(`/api/projects/${encodeURIComponent(projectId)}/source-recordings`);
+}
+
 /** Reuse a pending/active wizard run for this project when present. */
 export async function findReusableWizardRun(
   projectId: string,
+  attemptId: string,
+  model?: WhisperModelSize,
+  runId?: string,
 ): Promise<DatasetRunView | null> {
-  const runs = await listDatasetRuns(projectId);
+  const [runs, recordings] = await Promise.all([
+    listDatasetRuns(projectId),
+    listProjectSourceRecordings(projectId),
+  ]);
+  const recordingIds = recordings.map((recording) => recording.id);
   const rank: Record<string, number> = {
     pending: 0,
     running: 1,
@@ -407,7 +434,7 @@ export async function findReusableWizardRun(
     completed: 3,
   };
   const reusable = [...runs]
-    .filter((run) => rank[run.status] !== undefined)
+    .filter((run) => (!runId || run.id === runId) && matchesWizardRun(run, { projectId, attemptId, recordingIds, model }))
     .sort((a, b) => (rank[a.status] ?? 99) - (rank[b.status] ?? 99));
   return reusable[0] ?? null;
 }
@@ -417,6 +444,7 @@ export function createDatasetRun(
   projectId: string,
   body: {
     source_recording_ids?: string[];
+    wizard_attempt?: string;
     whisper_model_size: WhisperModelSize;
     language?: string;
     stop_after?: string;
@@ -426,6 +454,7 @@ export function createDatasetRun(
 ): Promise<DatasetRunView> {
   return sendJson<DatasetRunView>(`/api/projects/${projectId}/dataset-runs`, "POST", {
     source_recording_ids: body.source_recording_ids ?? [],
+    wizard_attempt: body.wizard_attempt,
     config: body.config ?? {},
     single_speaker: body.single_speaker ?? false, // diarize; output stays single-speaker via selection
     target_speaker_label: "speaker_0",

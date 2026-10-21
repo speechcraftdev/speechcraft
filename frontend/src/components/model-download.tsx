@@ -45,12 +45,44 @@ function runStorageKey(projectId: string) {
   return `speechcraft-login3-run:${projectId}`;
 }
 
-function readStoredRunId(projectId: string): string | null {
+function attemptStorageKey(projectId: string) {
+  return `speechcraft-login3-attempt:${projectId}`;
+}
+
+function getWizardAttemptId(projectId: string) {
+  const key = attemptStorageKey(projectId);
   try {
-    return localStorage.getItem(runStorageKey(projectId));
+    const current = localStorage.getItem(key);
+    if (current) return current;
+    const created = `login3:${projectId}:${crypto.randomUUID()}`;
+    localStorage.setItem(key, created);
+    return created;
   } catch {
-    return null;
+    try {
+      const current = sessionStorage.getItem(key);
+      if (current) return current;
+      const created = `login3:${projectId}:${crypto.randomUUID()}`;
+      sessionStorage.setItem(key, created);
+      return created;
+    } catch {
+      return `login3:${projectId}`;
+    }
   }
+}
+
+function ensureStorageKey(projectId: string, model: WhisperModelSize) {
+  return `speechcraft-login3-ensure:${projectId}:${model}`;
+}
+
+function readEnsureJobId(projectId: string, model: WhisperModelSize): string | null {
+  try { return localStorage.getItem(ensureStorageKey(projectId, model)); } catch { return null; }
+}
+
+function storeEnsureJobId(projectId: string, model: WhisperModelSize, jobId: string | null) {
+  try {
+    if (jobId) localStorage.setItem(ensureStorageKey(projectId, model), jobId);
+    else localStorage.removeItem(ensureStorageKey(projectId, model));
+  } catch { /* storage may be unavailable */ }
 }
 
 function storeRunId(projectId: string, runId: string) {
@@ -256,49 +288,25 @@ export function ModelDownload() {
     async (whisperModel: WhisperModelSize) => {
       if (!projectId) throw new SpeechcraftApiError(0, "No project in the URL. Restart from ingest.");
 
-      const urlRun = params.get("run");
-      if (urlRun && urlRun !== "demo") {
-        storeRunId(projectId, urlRun);
-        return urlRun;
-      }
-
-      const stored = readStoredRunId(projectId);
-      if (stored) {
-        try {
-          const existing = await findReusableWizardRun(projectId);
-          const match = existing && existing.id === stored ? existing : null;
-          if (match) {
-            if (match.status === "pending") {
-              await startRun(match.id);
-            }
-            return match.id;
-          }
-        } catch {
-          /* fall through to create */
+      const attemptId = getWizardAttemptId(projectId);
+      const reusable = await findReusableWizardRun(projectId, attemptId, whisperModel);
+      if (reusable) {
+        storeRunId(projectId, reusable.id);
+        if (reusable.status === "pending") {
+          await startRun(reusable.id);
         }
-      }
-
-      try {
-        const reusable = await findReusableWizardRun(projectId);
-        if (reusable) {
-          storeRunId(projectId, reusable.id);
-          if (reusable.status === "pending") {
-            await startRun(reusable.id);
-          }
-          return reusable.id;
-        }
-      } catch {
-        /* create below */
+        return reusable.id;
       }
 
       const datasetRun = await createDatasetRun(projectId, {
         whisper_model_size: whisperModel,
+        wizard_attempt: attemptId,
       });
       storeRunId(projectId, datasetRun.id);
       await startRun(datasetRun.id);
       return datasetRun.id;
     },
-    [projectId, params],
+    [projectId],
   );
 
   const finishWithModel = useCallback(
@@ -449,15 +457,21 @@ export function ModelDownload() {
     });
 
     let job: AsrEnsureJob;
-    try {
-      job = await startAsrEnsure(target);
-    } catch (err) {
-      if (err instanceof SpeechcraftApiError && err.status === 409) {
-        await waitForSetupModels();
-        return;
+    const savedJobId = projectId ? readEnsureJobId(projectId, target) : null;
+    if (savedJobId) {
+      try { job = await fetchAsrEnsure(savedJobId); }
+      catch { job = await startAsrEnsure(target); }
+    } else {
+      try { job = await startAsrEnsure(target); }
+      catch (err) {
+        if (err instanceof SpeechcraftApiError && err.status === 409) {
+          await waitForSetupModels();
+          return;
+        }
+        throw err;
       }
-      throw err;
     }
+    if (projectId) storeEnsureJobId(projectId, target, job.id);
 
     for (;;) {
       const latest = await fetchAsrEnsure(job.id);
@@ -476,7 +490,10 @@ export function ModelDownload() {
           package_type: latest.package_type,
         },
       });
-      if (latest.phase === "complete" && latest.ok) return;
+      if (latest.phase === "complete" && latest.ok) {
+        if (projectId) storeEnsureJobId(projectId, target, null);
+        return;
+      }
       if (latest.phase === "failed" || latest.ok === false) {
         if (latest.reason_codes?.includes("managed_runtime_use_setup")) {
           await waitForSetupModels();
@@ -486,7 +503,7 @@ export function ModelDownload() {
       }
       await new Promise((r) => setTimeout(r, 1000));
     }
-  }, [waitForSetupModels]);
+  }, [waitForSetupModels, projectId]);
 
   const checkAndMaybePrompt = useCallback(async () => {
     if (demo) {
@@ -501,35 +518,60 @@ export function ModelDownload() {
     setPhase("checking");
     setError(null);
     try {
-      // Prefer an already-started wizard run so refresh does not spawn duplicates.
+      const attemptId = getWizardAttemptId(projectId);
+      // URL and stored runs use the same project, attempt, configuration and input checks.
       const urlRun = params.get("run");
       if (urlRun && urlRun !== "demo") {
-        navigateToLogin4(urlRun);
-        return;
-      }
-      const stored = readStoredRunId(projectId);
-      if (stored) {
-        try {
-          const reusable = await findReusableWizardRun(projectId);
-          if (reusable && reusable.id === stored && reusable.status !== "failed" && reusable.status !== "rejected") {
-            if (reusable.status === "pending") {
-              setPhase("starting");
-              await startRun(reusable.id);
-            }
-            navigateToLogin4(reusable.id);
-            return;
+        const candidate = await findReusableWizardRun(projectId, attemptId, undefined, urlRun);
+        if (candidate) {
+          if (candidate.status === "pending") {
+            setPhase("starting");
+            await startRun(candidate.id);
           }
-        } catch {
-          /* continue to model check */
+          navigateToLogin4(candidate.id);
+          return;
         }
       }
-
       const resolved = await resolveWhisperModel();
       if (resolved.status === "ready") {
+        const reusable = await findReusableWizardRun(projectId, attemptId, resolved.model);
+        if (reusable) {
+          if (reusable.status === "pending") await startRun(reusable.id);
+          navigateToLogin4(reusable.id);
+          return;
+        }
         await finishWithModel(resolved.model);
         return;
       }
       if (resolved.status === "needs_download") {
+        const activeJobId = readEnsureJobId(projectId, resolved.downloadModel);
+        if (activeJobId) {
+          try {
+            const activeJob = await fetchAsrEnsure(activeJobId);
+            if (["queued", "downloading", "verifying", "complete"].includes(activeJob.phase)) {
+              if (activeJob.phase === "complete" && activeJob.ok) {
+                const after = await resolveWhisperModel();
+                if (after.status === "ready") { await finishWithModel(after.model); return; }
+              } else {
+                setDownloadTarget({ model: resolved.downloadModel, repoId: resolved.repoId });
+                setModel(resolved.downloadModel);
+                busyRef.current = true;
+                setPhase("downloading");
+                void waitForBackendEnsure(resolved.downloadModel).then(async () => {
+                  const after = await resolveWhisperModel();
+                  if (after.status !== "ready") throw new Error(after.error || "The downloaded model is not ready.");
+                  await finishWithModel(after.model);
+                }).catch((err) => {
+                  setPhase("error");
+                  setError(err instanceof SpeechcraftApiError ? err.detail : "Could not resume the model download.");
+                }).finally(() => { busyRef.current = false; });
+                return;
+              }
+            } else {
+              storeEnsureJobId(projectId, resolved.downloadModel, null);
+            }
+          } catch { storeEnsureJobId(projectId, resolved.downloadModel, null); }
+        }
         setDownloadTarget({ model: resolved.downloadModel, repoId: resolved.repoId });
         setModel(resolved.downloadModel);
         setPhase("needs_download");
@@ -539,10 +581,11 @@ export function ModelDownload() {
       setPhase("error");
       setError(resolved.error);
     } catch (err) {
+      if (projectId && downloadTarget) storeEnsureJobId(projectId, downloadTarget.model, null);
       setPhase("error");
       setError(err instanceof SpeechcraftApiError ? err.detail : "Could not prepare the model.");
     }
-  }, [demo, projectId, params, skipAhead, navigateToLogin4, finishWithModel]);
+  }, [demo, projectId, params, skipAhead, navigateToLogin4, finishWithModel, waitForBackendEnsure]);
 
   const beginDownload = useCallback(async () => {
     if (busyRef.current || !downloadTarget) return;
@@ -582,7 +625,7 @@ export function ModelDownload() {
       setSubmitting(false);
       stopSetupWatch();
     }
-  }, [downloadTarget, waitForBackendEnsure, finishWithModel, stopSetupWatch]);
+  }, [downloadTarget, waitForBackendEnsure, finishWithModel, stopSetupWatch, projectId]);
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -634,10 +677,9 @@ export function ModelDownload() {
         <div className="text-center space-y-2">
           <h1 className="text-lg lg:text-xl mb-4 font-serif">Model download required</h1>
           <p className="font-sans text-sm text-[#878787]">
-            SpeechCraft needs{" "}
-            <span className="text-foreground">{downloadTarget.model}</span> (
-            {downloadTarget.repoId}) before speaker detection can start. Nothing is downloaded
-            until you continue.
+            SpeechCraft needs Whisper{" "}
+            <span className="text-foreground">{downloadTarget.model}</span> before speaker
+            detection can start. Nothing is downloaded until you continue.
           </p>
         </div>
         <div className="mt-10 lg:mt-12">
