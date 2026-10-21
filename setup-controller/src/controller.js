@@ -313,7 +313,12 @@ export class SetupController {
       const component = job.bootstrap_status?.components?.pyannote;
       if (component) Object.assign(component, { state: 'checking_token', failure_code: null, message: null });
     }, 'model_authorization_started');
-    this.launch({ startStage: 'install_models', authorizationToken: Buffer.from(credential, 'utf8') });
+    // The controller may have restarted while waiting for this credential.
+    // Startup recovery deliberately clears runtime readiness claims, including
+    // worker_environment. Re-run the last prerequisite stage before model
+    // acquisition so validate_runtime cannot mistake a reset status for a
+    // verified managed worker.
+    this.launch({ startStage: 'install_worker_environment', authorizationToken: Buffer.from(credential, 'utf8') });
     return { job: this.store.snapshot().job, idempotent: false };
   }
 

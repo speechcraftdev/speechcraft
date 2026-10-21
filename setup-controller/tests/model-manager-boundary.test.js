@@ -113,11 +113,11 @@ function waitForListening(app) { return `http://127.0.0.1:${app.port}`; }
   runtime.paths = { home: directory, temporary: directory, uvCache: directory, pythonRoot: directory,
     hfHome: cache, hfHub: cache, hfXet: cache };
   runtime.getManagerPython = () => python;
-  const tasks = { stages: ['install_models'], taskId: (stage) => `runtime:${stage}`,
+  const tasks = { stages: ['install_worker_environment', 'install_models'], taskId: (stage) => `runtime:${stage}`,
     initialBootstrapStatus: () => runtime.initialBootstrapStatus(),
     initialProgress: (_stage, message) => ({ phase: 'queued', current: null, total: null, percent: null, message }),
     completionProgress: () => ({ phase: 'complete', current: null, total: null, percent: null, message: 'models checked' }),
-    run: (stage, context) => runtime.run(stage, context) };
+    run: (stage, context) => stage === 'install_worker_environment' ? Promise.resolve() : runtime.run(stage, context) };
   let app;
   try {
     app = await createSetupController({ dataDirectory: directory, port: 0, mode: 'runtime', tasks });

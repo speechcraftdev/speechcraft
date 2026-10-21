@@ -30,16 +30,20 @@ function filesUnder(root) {
 function gatedTestTasks({ entered, release } = {}) {
   let calls = 0;
   let invocation = null;
+  const stagesRun = [];
   return {
-    stages: ['install_models', 'validate_runtime'],
+    stages: ['install_worker_environment', 'install_models', 'validate_runtime'],
     taskId: () => 'runtime:install_models',
     initialBootstrapStatus: () => ({ components: initialComponents(), production_ready: false }),
     initialProgress: (_stage, message) => ({ phase: 'queued', current: null, total: null, percent: null, message }),
     completionProgress: () => ({ phase: 'complete', current: null, total: null, percent: null, message: 'plan completed' }),
     get calls() { return calls; },
     get invocation() { return invocation; },
+    get stagesRun() { return stagesRun; },
     async run(stage, context) {
       calls += 1;
+      stagesRun.push(stage);
+      if (stage === 'install_worker_environment') return;
       if (stage === 'validate_runtime') {
         assert.equal(context.authorizationToken, null, 'later setup stages receive no authorization credential');
         assert.ok(invocation.tokenBuffer.every((byte) => byte === 0), 'the controller buffer is cleared before the next stage');
@@ -180,7 +184,11 @@ test('token waits ephemerally, is piped to an actual child, and never appears in
   status = await f.request('/setup-api/status').then((r) => r.json());
   assert.equal(status.job.state, 'completed');
   assert.equal(status.production_ready, false);
-  assert.equal(tasks.calls, 3);
+  assert.equal(tasks.calls, 5);
+  assert.deepEqual(tasks.stagesRun, [
+    'install_worker_environment', 'install_models',
+    'install_worker_environment', 'install_models', 'validate_runtime',
+  ], 'authorization revalidates the managed worker environment before model and runtime checks');
   assert.equal(tasks.invocation.args.includes(token), false);
   assert.equal(JSON.stringify(tasks.invocation.env).includes(token), false);
   assert.ok(tasks.invocation.tokenBuffer.every((byte) => byte === 0), 'controller clears its mutable token buffer after install_models settles');
