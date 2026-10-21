@@ -1,17 +1,3 @@
-# Speechcraft model download onboarding
+# Merge and push verified model-download changes
 
-## Goal
-Implement the agreed UX in existing `/login3`, frontend-first, with minimal safe backend work.
-
-## Requirements
-- Inspect current HEAD and relevant UI/backend flow before edits.
-- Preserve existing `(login-chain)` split-screen layout, left video and testimonials, typography, buttons, mobile behavior.
-- Keep `/login2` import -> `/login3` model setup -> `/login4` speaker detection, existing model resolution (`large-v3` then `base`), run creation/start, demo and error recovery.
-- If model download needed, show one `Download & Continue` button. On click, show a restrained progress screen: actual currently downloaded model/package name and type, thin progress bar, percent, transferred/total bytes, speed and ETA **only when genuinely measurable**. Distinguish downloading from loading/initializing. Automatically navigate after preparation and run startup. If model already available, bypass download prompt.
-- Determine whether preflight itself downloads; avoid downloading before consent where feasible.
-- Prevent duplicate runs from double-click, retry and refresh; preserve imported recordings.
-- Backend changes only for smallest viable accurate telemetry or cache/readiness detection; never invent progress, model names, ETA, or speed. When telemetry unavailable, show honest indeterminate status.
-- No unrelated refactors, migrations, new visual system or processing algorithm changes.
-
-## Verification
-Test cached, fresh, failed/interrupted, fallback, demo, and navigation paths where feasible. Report changes, tests, telemetry limitations, and risks. Avoid unrelated dirty files.
+User explicitly requests merging and pushing so they can test and view UI now. Current branch linus/attempt-4 includes reviewed model onboarding work and committed follow-up fixes d89d0c73f7a95bc4a44268b1a6cdc4ca37a7a3b7. Inspect git status and remotes and verify actual branch content; run practical fast frontend checks and focused tests if available. **Do not change implementation unless a test reveals a blocking defect; report such defects rather than making broad changes.** If checks pass, merge this feature branch into local `main` safely (fast-forward where appropriate, no force, avoid losing changes) and push to `origin/main` if permitted; if main has advanced fetch/reconcile safely, never force push. Verify remote commit after push. Respect repository release and installer security policies; Git push is not a release. If direct main push is prohibited, push a review branch if permitted and report the PR route rather than bypassing protection. Do not invent a published tunnel, installation URL, or claim hosted UI exists. Return exact commit, remote branch, commands/tests/results, and how to preview if actually verified. Do not touch unrelated artifacts.
