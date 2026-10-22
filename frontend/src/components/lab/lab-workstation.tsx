@@ -33,6 +33,7 @@ import {
   STATUS_LABELS,
 } from "./lab-data";
 import { demoEnabled } from "@/lib/demo";
+import { clipLabFailurePresentation } from "./clip-lab-load.mjs";
 import {
   fetchClipLabView,
   fetchDatasetRuns,
@@ -80,6 +81,36 @@ function passesQcSubset(clip: LabClip, subset: QcSubset | null): boolean {
     clip.speakerCheckRaw != null &&
     clip.transcriptMatchRaw >= subset.transcript_match_min &&
     clip.speakerCheckRaw >= subset.speaker_check_min
+  );
+}
+
+function ClipLabLoadError({
+  error,
+  projectId,
+  onRetry,
+}: {
+  error: unknown;
+  projectId: string | null;
+  onRetry: () => void;
+}) {
+  const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: number }).status) : 0;
+  const detail = error instanceof Error ? ((error as { detail?: string }).detail || error.message) : "";
+  const presentation = clipLabFailurePresentation({ status, detail });
+  return (
+    <div className="flex flex-1 items-center justify-center px-6">
+      <div className="max-w-md text-center">
+        <p className="font-serif text-xl">{presentation.title}</p>
+        <p className="mt-2 text-sm text-muted-foreground">{presentation.message}</p>
+        <div className="mt-6 flex flex-col gap-3">
+          <Button type="button" onClick={onRetry}>Retry</Button>
+          {projectId ? (
+            <Link href={`/onboarding/speakers?project=${encodeURIComponent(projectId)}`} className="text-sm underline underline-offset-4">
+              Return to speaker mode
+            </Link>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -184,11 +215,17 @@ export function LabWorkstation() {
     data: view,
     isLoading: viewLoading,
     error: viewError,
+    refetch: refetchView,
   } = useQuery({
     queryKey: ["sc-cliplab", runId],
     queryFn: () => fetchClipLabView(runId!),
     enabled: !useMockClips && !!runId,
     staleTime: Number.POSITIVE_INFINITY,
+    retry: (failureCount, error) => {
+      const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: number }).status) : 0;
+      if (status >= 400 && status < 500) return false;
+      return failureCount < 2;
+    },
   });
 
   // Committed (or default) QC thresholds — drives machineBucket below so
@@ -779,15 +816,11 @@ export function LabWorkstation() {
           onOpenInClipLab={openQcSubset}
         />
       ) : viewError ? (
-        <div className="flex flex-1 items-center justify-center">
-          <div className="max-w-sm text-center">
-            <p className="font-serif text-xl">Backend unavailable</p>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Couldn't reach the speechcraft backend. Make sure it's running on
-              :8010 (make dev-backend), then reload.
-            </p>
-          </div>
-        </div>
+        <ClipLabLoadError
+          error={viewError}
+          projectId={projectId}
+          onRetry={() => { void refetchView(); }}
+        />
       ) : isLoading ? (
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
           Loading clips…

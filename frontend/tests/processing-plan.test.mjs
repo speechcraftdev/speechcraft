@@ -187,6 +187,34 @@ test("multi-speaker diarization completion resumes into slicing", () => {
   assert.deepEqual(wizardProcessingStep(run), { kind: "clips", resume: true });
 });
 
+test("running diarization is not redirected to speaker selection", () => {
+  const run = {
+    status: "running",
+    stage: "diarization",
+    input_summary: { single_speaker: false },
+    reason_codes: ["speaker_selection_required"],
+  };
+  assert.equal(wizardProcessingPlan(run).chooseSpeaker, false);
+  assert.equal(wizardProcessingPlan(run).resume, false);
+  assert.deepEqual(wizardProcessingStep(run), { kind: "clips", resume: false });
+});
+
+test("finished diarization that still needs a speaker opens choose-speaker", () => {
+  const run = {
+    status: "completed",
+    stage: "diarization",
+    input_summary: { single_speaker: false },
+    reason_codes: ["speaker_selection_required"],
+  };
+  assert.equal(wizardProcessingPlan(run).chooseSpeaker, true);
+  assert.equal(wizardProcessingPlan(run).resume, false);
+  assert.equal(wizardProcessingPlan(run).processClips, false);
+  assert.deepEqual(wizardProcessingStep(run), { kind: "choose-speaker" });
+  const chosen = { selected: true, target_speaker_id: "speaker_1" };
+  assert.equal(wizardProcessingPlan(run, chosen).chooseSpeaker, false);
+  assert.deepEqual(wizardProcessingStep(run, chosen), { kind: "clips", resume: true });
+});
+
 test("single-speaker runs never resume for speaker selection", () => {
   const run = { status: "completed", stage: "diarization", input_summary: { single_speaker: true } };
   assert.equal(wizardProcessingPlan(run).resume, false);

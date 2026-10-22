@@ -51,7 +51,7 @@ function waitForHttp(url, child, timeoutMs) {
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const tick = async () => {
-      if (child.exitCode != null) {
+      if (child && child.exitCode != null) {
         reject(new Error(`${url} process exited (${child.exitCode})`));
         return;
       }
@@ -168,13 +168,14 @@ async function main() {
   const work = path.join(tmpdir(), `speechcraft-onboarding-e2e-${process.pid}`);
   mkdirSync(work, { recursive: true });
   const dbPath = path.join(work, "project.db");
+  const externalBackend = process.env.SPEECHCRAFT_E2E_EXTERNAL_BACKEND || "";
   const backendPort = Number(process.env.SPEECHCRAFT_E2E_BACKEND_PORT) || await freePort();
   const frontendPort = Number(process.env.SPEECHCRAFT_E2E_FRONTEND_PORT) || await freePort();
   const deadControllerPort = Number(process.env.SPEECHCRAFT_E2E_CONTROLLER_PORT) || await freePort();
-  const backend = `http://127.0.0.1:${backendPort}`;
+  const backend = externalBackend || `http://127.0.0.1:${backendPort}`;
   const app = `http://127.0.0.1:${frontendPort}`;
   const python = path.join(root, "backend", ".venv", "bin", "python");
-  const backendProc = spawn(python, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(backendPort)], {
+  const backendProc = externalBackend ? null : spawn(python, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(backendPort)], {
     cwd: path.join(root, "backend"),
     env: {
       ...process.env,
@@ -198,13 +199,13 @@ async function main() {
   });
   let backendLog = "";
   let frontendLog = "";
-  backendProc.stdout.on("data", (chunk) => { backendLog += chunk; });
-  backendProc.stderr.on("data", (chunk) => { backendLog += chunk; });
+  backendProc?.stdout.on("data", (chunk) => { backendLog += chunk; });
+  backendProc?.stderr.on("data", (chunk) => { backendLog += chunk; });
   frontendProc.stdout.on("data", (chunk) => { frontendLog += chunk; });
   frontendProc.stderr.on("data", (chunk) => { frontendLog += chunk; });
   const stop = () => {
     for (const child of [frontendProc, backendProc]) {
-      if (child.exitCode == null) child.kill("SIGTERM");
+      if (child && child.exitCode == null) child.kill("SIGTERM");
     }
   };
   process.on("exit", stop);
@@ -341,17 +342,33 @@ async function runSuite({ browser, app, backend, dbPath, python }) {
     };
     page.on("request", onRequest);
     await continueButton.click();
-    await continueButton.click({ timeout: 1000 }).catch(() => {});
-    await Promise.race([
-      page.waitForURL(/\/onboarding\/(processing|choose-speaker)/, { timeout: 45000 }),
-      page.getByRole("alert").waitFor({ timeout: 45000 }),
-    ]).catch(() => {});
+    const outcome = await Promise.race([
+      page.waitForURL(/\/onboarding\/processing/, { timeout: 90000 }).then(() => "processing"),
+      page.getByRole("alert").waitFor({ timeout: 90000 }).then(async () => `alert:${await page.getByRole("alert").first().innerText()}`),
+    ]);
+    if (outcome !== "processing") throw new Error(`speaker continue did not start processing (${outcome})`);
     page.off("request", onRequest);
     const runs = await api(backend, `/api/projects/${project}/dataset-runs`);
-    if (!Array.isArray(runs.body)) throw new Error(JSON.stringify(runs.body));
-    if (runs.body.length > 1) throw new Error(`created ${runs.body.length} runs`);
-    if (posts.length > 1) throw new Error(`posted ${posts.length} dataset-run creates`);
-    return runs.body.length === 1 ? `one run ${runs.body[0].id} single_speaker=${runs.body[0].input_summary.single_speaker}` : `no run created yet (${posts.length} posts)`;
+    const recordings = await api(backend, `/api/projects/${project}/source-recordings`);
+    if (!Array.isArray(runs.body) || runs.body.length !== 1) throw new Error(`expected one run, got ${JSON.stringify(runs.body)}`);
+    const created = runs.body[0];
+    if (created.input_summary.single_speaker !== true) throw new Error(`single_speaker=${created.input_summary.single_speaker}`);
+    const recordingIds = recordings.body.map((item) => item.id).sort();
+    const runIds = [...created.input_summary.source_recording_ids].sort();
+    if (JSON.stringify(recordingIds) !== JSON.stringify(runIds)) throw new Error(`recordings ${recordingIds} run ${runIds}`);
+    if (posts.filter((url) => url.includes("/dataset-runs") && !url.includes("/start")).length !== 1) {
+      throw new Error(`dataset-run posts: ${posts.join(", ")}`);
+    }
+    await page.goto(`${app}/onboarding/speakers?project=${encodeURIComponent(project)}`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("radio", { name: /One speaker/ }).click();
+    const again = page.getByRole("button", { name: "Continue" });
+    await again.click();
+    await page.waitForURL(/\/onboarding\/processing/, { timeout: 90000 });
+    const repeated = await api(backend, `/api/projects/${project}/dataset-runs`);
+    if (repeated.body.length !== 1 || repeated.body[0].id !== created.id) {
+      throw new Error(`retry created another run: ${JSON.stringify(repeated.body.map((item) => item.id))}`);
+    }
+    return `one run ${created.id}`;
   });
 
   await scenario("an invalid project link does not create a replacement project", async () => {

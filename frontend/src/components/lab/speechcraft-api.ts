@@ -139,7 +139,20 @@ export async function fetchProjectSourceRecordings(
 }
 
 export async function fetchClipLabView(runId: string): Promise<ClipLabApiView> {
-  return getJson<ClipLabApiView>(`/api/dataset-runs/${runId}/clip-lab`);
+  const path = `/api/dataset-runs/${runId}/clip-lab`;
+  const res = await fetch(`${BASE}${path}`, { headers: { Accept: "application/json" } });
+  if (!res.ok) {
+    let detail = `Speechcraft API ${res.status} for ${path}`;
+    try {
+      const body = await res.json() as { detail?: unknown };
+      if (typeof body?.detail === "string" && body.detail) detail = body.detail;
+    } catch { /* keep the status line */ }
+    const error = new Error(detail) as Error & { status: number; detail: string };
+    error.status = res.status;
+    error.detail = detail;
+    throw error;
+  }
+  return (await res.json()) as ClipLabApiView;
 }
 
 export function qcSubsetLabel(subset: QcSubset | null): string {

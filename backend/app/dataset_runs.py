@@ -616,13 +616,25 @@ def resume_dataset_run_processing(
     run_id: str,
     request: DatasetRunResumeRequest | None = None,
 ) -> DatasetRunView:
+    # One backend process may receive overlapping resume calls from a refreshed
+    # page. Hold the same process-local lock as wizard creation and re-check the
+    # live worker before launching another one.
+    with _wizard_run_lock:
+        return _resume_dataset_run_processing(repository, run_id, request)
+
+
+def _resume_dataset_run_processing(
+    repository: Any,
+    run_id: str,
+    request: DatasetRunResumeRequest | None = None,
+) -> DatasetRunView:
     with Session(repository.engine, expire_on_commit=False) as session:
         run = session.get(ProcessingRun, run_id)
         if run is None:
             raise KeyError("Dataset run not found")
         if bool(run.input_summary.get("single_speaker", True)):
             raise ValueError("Single-speaker runs do not need speaker-selection resume")
-        if run.status == ProcessingRunStatus.RUNNING:
+        if run.status == ProcessingRunStatus.RUNNING or _owned_worker_process(run) is not None:
             raise ValueError("Dataset run is already running")
         requested_stop_after = str(
             (request.stop_after if request is not None else None)

@@ -13,6 +13,7 @@ import {
   type DatasetRunView,
   createDatasetRun,
   fetchRun,
+  fetchSpeakers,
   generateQc,
   refreshRun,
   resolveWhisperModel,
@@ -22,6 +23,7 @@ import {
 } from "./wizard/wizard-api";
 import {
   completedAtStage,
+  speakerSelectionRequired,
   wizardProcessingStep,
   WIZARD_SELECTED_SPEAKER_STOP_AFTER,
 } from "./wizard/processing-plan.mjs";
@@ -33,6 +35,16 @@ const PHASE_COPY: Record<Exclude<Phase, "error">, { title: string; sub: string; 
   slicing: { title: "Slicing clips", sub: "Running the locked VR O0_4 slicing pass…", pct: 55 },
   scoring: { title: "Scoring transcript and speaker quality", sub: "Running Transcript Correctness and Speaker Purity…", pct: 90 },
 };
+
+async function speakerSelectionFor(run: DatasetRunView) {
+  if (run.input_summary?.single_speaker || run.stage !== "diarization" || run.status === "running" || run.status === "pending") return null;
+  try {
+    const results = await fetchSpeakers(run.id);
+    return results.speaker_selection;
+  } catch {
+    return null;
+  }
+}
 
 function processingFailureMessage(reason: string | undefined): string {
   if (reason === "failed" || reason === "rejected" || reason === "cancelled") {
@@ -55,13 +67,24 @@ async function startUnlessStarted(runId: string): Promise<DatasetRunView> {
 }
 
 async function resumeUnlessRunning(runId: string): Promise<void> {
-  try {
-    await resumeProcessing(runId, WIZARD_SELECTED_SPEAKER_STOP_AFTER);
-  } catch (error) {
-    const current = await fetchRun(runId);
-    if (current.status === "running" || completedAtStage(current, "candidate_review_clips") || completedAtStage(current, "speaker_purity")) return;
-    throw error;
+  let last: unknown;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      await resumeProcessing(runId, WIZARD_SELECTED_SPEAKER_STOP_AFTER);
+      return;
+    } catch (error) {
+      last = error;
+      const current = await fetchRun(runId);
+      if (current.status === "running" || completedAtStage(current, "candidate_review_clips") || completedAtStage(current, "speaker_purity")) return;
+      // Diarization can finish in the database while its process is still exiting.
+      if (current.status === "completed" && current.stage === "diarization") {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+      throw error;
+    }
   }
+  throw last instanceof Error ? last : new Error("Could not resume processing.");
 }
 
 async function scoreUnlessRunning(runId: string): Promise<void> {
@@ -145,9 +168,18 @@ export function TranscriptionProgress() {
         await adopt(current);
         for (let stepIndex = 0; stepIndex < 6; stepIndex += 1) {
           if (ctrl.signal.aborted) return;
-          const step = wizardProcessingStep(current);
+          const selection = await speakerSelectionFor(current);
+          if (ctrl.signal.aborted) return;
+          const step = wizardProcessingStep(current, selection);
           if (step.kind === "error") {
             throw new Error(processingFailureMessage(step.reason));
+          }
+          if (step.kind === "choose-speaker") {
+            router.push(withDemo(
+              `/onboarding/choose-speaker?project=${encodeURIComponent(projectId)}&run=${encodeURIComponent(runId)}`,
+              demo,
+            ));
+            return;
           }
           if (step.kind === "lab") {
             router.push(labUrl);
@@ -169,8 +201,12 @@ export function TranscriptionProgress() {
           }
           if (step.kind === "clips") {
             setPhase("slicing");
+            const resumed = Boolean(step.resume);
             if (step.resume) await resumeUnlessRunning(runId);
-            current = await waitForRun(runId, (candidate) => completedAtStage(candidate, "candidate_review_clips"), {
+            current = await waitForRun(runId, (candidate) => (
+              completedAtStage(candidate, "candidate_review_clips")
+              || (!resumed && speakerSelectionRequired(candidate) && candidate.status !== "running")
+            ), {
               signal: ctrl.signal,
               onTick: (candidate) => { if (!ctrl.signal.aborted) setRun(candidate); },
             });

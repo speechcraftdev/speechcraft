@@ -43,6 +43,7 @@ const STAGE_GROUPS = Object.freeze([
 const STAGE_RANK = new Map(STAGE_GROUPS.flatMap((names, rank) => names.map((name) => [name, rank])));
 const TERMINAL_FAILURE = new Set(["failed", "rejected", "cancelled"]);
 const QC_STAGES = new Set(["transcript_qc", "speaker_purity"]);
+const SPEAKER_SELECTION_REQUIRED = "speaker_selection_required";
 
 export function stageRank(stage) {
   return STAGE_RANK.has(stage) ? STAGE_RANK.get(stage) : null;
@@ -66,8 +67,32 @@ export function completedAtStage(run, stage) {
   return false;
 }
 
+export function speakerSelectionRequired(run) {
+  const codes = [
+    ...(Array.isArray(run?.reason_codes) ? run.reason_codes : []),
+    ...(Array.isArray(run?.output_summary?.reason_codes) ? run.output_summary.reason_codes : []),
+  ];
+  return codes.includes(SPEAKER_SELECTION_REQUIRED);
+}
+
+/**
+ * Multi-speaker diarization has finished and the target voice is not chosen.
+ * A running diarization stage is still working, so it is not this state.
+ * A saved selection wins over a stale reason code.
+ */
+export function awaitsSpeakerSelection(run, selection) {
+  if (Boolean(run?.input_summary?.single_speaker)) return false;
+  if (run?.status === "running" || run?.status === "pending") return false;
+  if (TERMINAL_FAILURE.has(run?.status)) return false;
+  if (run?.stage !== "diarization") return false;
+  if (completedAtStage(run, "candidate_review_clips")) return false;
+  if (selection?.selected === true && selection?.target_speaker_id) return false;
+  if (selection?.selected === false) return true;
+  return speakerSelectionRequired(run) && (run?.status === "completed" || run?.status === "needs_review");
+}
+
 /** Decide the frontend work after a run is loaded, without invoking invalid endpoints. */
-export function wizardProcessingPlan(run) {
+export function wizardProcessingPlan(run, selection) {
   const status = run?.status;
   const singleSpeaker = Boolean(run?.input_summary?.single_speaker);
   const terminalFailure = TERMINAL_FAILURE.has(status);
@@ -75,13 +100,15 @@ export function wizardProcessingPlan(run) {
   const clipsComplete = completedAtStage(run, "candidate_review_clips");
   const qcComplete = completedAtStage(run, "speaker_purity");
   const qcInProgress = status === "running" && QC_STAGES.has(run?.stage);
+  const chooseSpeaker = awaitsSpeakerSelection(run, selection);
   return {
     singleSpeaker,
     terminalFailure,
     knownStage,
+    chooseSpeaker,
     start: status === "pending",
-    resume: !singleSpeaker && !clipsComplete && !terminalFailure && knownStage && status !== "running" && status !== "pending",
-    processClips: !terminalFailure && !clipsComplete && knownStage && status !== "pending",
+    resume: !chooseSpeaker && !singleSpeaker && !clipsComplete && !terminalFailure && knownStage && status !== "running" && status !== "pending",
+    processClips: !chooseSpeaker && !terminalFailure && !clipsComplete && knownStage && status !== "pending",
     runQc: !terminalFailure && clipsComplete && !qcComplete && !qcInProgress,
     qcInProgress,
     reviewReady: !terminalFailure && qcComplete,
@@ -93,14 +120,15 @@ export function wizardProcessingPlan(run) {
  * after `start`, `clips`, `wait`, or `qc` and ask again. A completed downstream
  * stage therefore goes to the lab without resume, restart, or a second QC launch.
  */
-export function wizardProcessingStep(run) {
-  const plan = wizardProcessingPlan(run);
+export function wizardProcessingStep(run, selection) {
+  const plan = wizardProcessingPlan(run, selection);
   if (!run || typeof run !== "object") return { kind: "error", reason: "missing-run" };
   if (plan.terminalFailure) return { kind: "error", reason: run.status };
   if (plan.start) return { kind: "start" };
   if ((run.status === "completed" || run.status === "running" || run.status === "needs_review") && !plan.knownStage) {
     return { kind: "error", reason: "unknown-stage" };
   }
+  if (plan.chooseSpeaker) return { kind: "choose-speaker" };
   if (plan.reviewReady) return { kind: "lab" };
   if (plan.qcInProgress) return { kind: "wait", stage: "speaker_purity" };
   if (plan.processClips) return { kind: "clips", resume: plan.resume };
