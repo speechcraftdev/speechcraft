@@ -1,10 +1,5 @@
-import type { Metadata } from "next";
-import { ModelDownload } from "@/components/model-download";
+import { LegacyOnboardingRedirect } from "../legacy-onboarding-redirect";
 
-export const metadata: Metadata = {
-  title: "Login | Midday",
-};
-
-export default function Page() {
-  return <ModelDownload />;
+export default async function Page({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  return await LegacyOnboardingRedirect({ path: "/login3", searchParams });
 }

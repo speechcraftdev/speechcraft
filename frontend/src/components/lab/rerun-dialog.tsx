@@ -22,6 +22,7 @@ import {
   createDatasetRun,
   fetchRun,
   resolveWhisperModel,
+  startRun,
   slicerRerun,
 } from "@/components/wizard/wizard-api";
 
@@ -111,10 +112,11 @@ export function LabRerunDialog({
           text_normalization_strategy: textNorm,
         },
       });
+      await startRun(fresh.id);
       toast({ title: "New run created", description: "Re-running with your overrides.", variant: "success", duration: 2500 });
       setOpen(false);
       router.push(
-        `/login4?project=${encodeURIComponent(projectId)}&run=${encodeURIComponent(fresh.id)}`,
+        `/onboarding/${singleSpeaker ? "processing" : "choose-speaker"}?project=${encodeURIComponent(projectId)}&run=${encodeURIComponent(fresh.id)}`,
       );
     } catch (err) {
       toast({

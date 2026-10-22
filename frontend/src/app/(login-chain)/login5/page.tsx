@@ -1,10 +1,5 @@
-import type { Metadata } from "next";
-import { TranscriptionProgress } from "@/components/transcription-progress";
+import { LegacyOnboardingRedirect } from "../legacy-onboarding-redirect";
 
-export const metadata: Metadata = {
-  title: "Login | Midday",
-};
-
-export default function Page() {
-  return <TranscriptionProgress />;
+export default async function Page({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  return await LegacyOnboardingRedirect({ path: "/login5", searchParams });
 }

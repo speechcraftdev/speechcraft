@@ -210,7 +210,7 @@ export function ModelDownload() {
 
   const goToImport = useCallback(() => {
     const search = projectId ? `?project=${encodeURIComponent(projectId)}` : "";
-    router.replace(withDemo(`/login2${search}`, demo));
+    router.replace(withDemo(`/onboarding/import${search}`, demo));
   }, [router, projectId, demo]);
 
   const stopWatch = useCallback(() => {

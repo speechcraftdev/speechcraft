@@ -366,6 +366,7 @@ export async function findReusableWizardRun(
   attemptId: string,
   model?: WhisperModelSize,
   runId?: string,
+  singleSpeaker = false,
 ): Promise<DatasetRunView | null> {
   const [runs, recordings] = await Promise.all([
     listDatasetRuns(projectId),
@@ -379,7 +380,7 @@ export async function findReusableWizardRun(
     completed: 3,
   };
   const reusable = [...runs]
-    .filter((run) => (!runId || run.id === runId) && matchesWizardRun(run, { projectId, attemptId, recordingIds, model }))
+    .filter((run) => (!runId || run.id === runId) && matchesWizardRun(run, { projectId, attemptId, recordingIds, model, singleSpeaker }))
     .sort((a, b) => (rank[a.status] ?? 99) - (rank[b.status] ?? 99));
   return reusable[0] ?? null;
 }

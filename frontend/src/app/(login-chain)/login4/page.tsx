@@ -1,10 +1,5 @@
-import type { Metadata } from "next";
-import { VoiceSelection } from "@/components/voice-selection";
+import { LegacyOnboardingRedirect } from "../legacy-onboarding-redirect";
 
-export const metadata: Metadata = {
-  title: "Login | Midday",
-};
-
-export default function Page() {
-  return <VoiceSelection />;
+export default async function Page({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  return await LegacyOnboardingRedirect({ path: "/login4", searchParams });
 }

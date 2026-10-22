@@ -37,8 +37,23 @@ export function completedAtStage(run, stage) {
     (run?.stage === stage || run?.stage === BACKEND_STAGE_ALIASES[stage]);
 }
 
+/** Decide the frontend work after a run is loaded, without invoking invalid endpoints. */
+export function wizardProcessingPlan(run) {
+  const singleSpeaker = Boolean(run?.input_summary?.single_speaker);
+  const clipsComplete = completedAtStage(run, "candidate_review_clips");
+  const qcInProgress = run?.status === "running" && ["transcript_qc", "speaker_purity"].includes(run?.stage);
+  return {
+    singleSpeaker,
+    start: run?.status === "pending",
+    resume: !singleSpeaker && !clipsComplete && run?.status !== "running",
+    processClips: !clipsComplete,
+    runQc: !completedAtStage(run, "speaker_purity"),
+    qcInProgress,
+  };
+}
+
 /** Check that an existing run belongs to this onboarding attempt and exact input set. */
-export function matchesWizardRun(run, { projectId, attemptId, recordingIds, model }) {
+export function matchesWizardRun(run, { projectId, attemptId, recordingIds, model, singleSpeaker = false }) {
   const allowedStatuses = new Set(["pending", "running", "needs_review", "completed"]);
   const input = run?.input_summary ?? {};
   const actualIds = Array.isArray(input.source_recording_ids) ? [...input.source_recording_ids].sort() : [];
@@ -46,7 +61,7 @@ export function matchesWizardRun(run, { projectId, attemptId, recordingIds, mode
   return run?.project_id === projectId &&
     allowedStatuses.has(run?.status) &&
     input.wizard_attempt === attemptId &&
-    input.single_speaker === false &&
+    input.single_speaker === singleSpeaker &&
     input.requested_stop_after === WIZARD_INITIAL_STOP_AFTER &&
     input.target_speaker_label === "speaker_0" &&
     input.language === "auto" &&

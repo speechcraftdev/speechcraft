@@ -12,6 +12,7 @@ import { demoEnabled, withDemo } from "@/lib/demo";
 import {
   type DatasetRunView,
   createDatasetRun,
+  fetchRun,
   generateQc,
   refreshRun,
   resolveWhisperModel,
@@ -21,6 +22,7 @@ import {
 } from "./wizard/wizard-api";
 import {
   completedAtStage,
+  wizardProcessingPlan,
   WIZARD_SELECTED_SPEAKER_STOP_AFTER,
 } from "./wizard/processing-plan.mjs";
 
@@ -67,7 +69,7 @@ export function TranscriptionProgress() {
     startedRef.current = true;
     if (!projectId || !runId) {
       setPhase("error");
-      setError("Missing project/run in the URL. Restart from ingest.");
+      setError("This processing link is missing its project or run. Return to import and choose the speaker mode again.");
       return;
     }
     if (demo) {
@@ -91,22 +93,46 @@ export function TranscriptionProgress() {
     const ctrl = new AbortController();
     (async () => {
       try {
-        setPhase("slicing");
-        await resumeProcessing(runId, WIZARD_SELECTED_SPEAKER_STOP_AFTER);
-        const sliced = await waitForRun(
-          runId,
-          (r) => completedAtStage(r, "candidate_review_clips"),
-          { signal: ctrl.signal, onTick: setRun },
-        );
+        let current = await fetchRun(runId);
+        if (current.project_id !== projectId) throw new Error("This run belongs to a different project. Return to import and restart.");
+        const plan = wizardProcessingPlan(current);
+        if (plan.start) current = await startRun(runId);
+        setRun(current);
+
+        const processingPlan = wizardProcessingPlan(current);
+        if (current.status === "failed" || current.status === "rejected" || current.status === "cancelled") {
+          throw new Error(`This dataset run ${current.status}. Return to speaker mode to retry.`);
+        }
+        if (processingPlan.qcInProgress) {
+          setPhase("scoring");
+          current = await waitForRun(
+            runId,
+            (r) => completedAtStage(r, "speaker_purity"),
+            { signal: ctrl.signal, onTick: setRun },
+          );
+        } else if (processingPlan.processClips) {
+          setPhase("slicing");
+          if (processingPlan.resume) {
+            await resumeProcessing(runId, WIZARD_SELECTED_SPEAKER_STOP_AFTER);
+          }
+          current = await waitForRun(
+            runId,
+            (r) => completedAtStage(r, "candidate_review_clips"),
+            { signal: ctrl.signal, onTick: setRun },
+          );
+        }
+        const sliced = current;
         setLanguage(detectLanguage(sliced));
 
-        setPhase("scoring");
-        await generateQc(runId, false);
-        await waitForRun(
-          runId,
-          (r) => completedAtStage(r, "speaker_purity"),
-          { signal: ctrl.signal, onTick: setRun },
-        );
+        if (wizardProcessingPlan(sliced).runQc) {
+          setPhase("scoring");
+          await generateQc(runId, false);
+          await waitForRun(
+            runId,
+            (r) => completedAtStage(r, "speaker_purity"),
+            { signal: ctrl.signal, onTick: setRun },
+          );
+        }
 
         router.push(
           withDemo(
@@ -117,7 +143,7 @@ export function TranscriptionProgress() {
       } catch (err) {
         if (ctrl.signal.aborted) return;
         setPhase("error");
-        setError(err instanceof SpeechcraftApiError ? err.detail : "Processing failed.");
+        setError(err instanceof SpeechcraftApiError ? err.detail : err instanceof Error ? err.message : "Processing failed.");
       }
     })();
     return () => ctrl.abort();
@@ -133,22 +159,25 @@ export function TranscriptionProgress() {
       }
       if (!projectId) return;
       try {
+        const current = run ?? await fetchRun(runId!);
         const resolved = await resolveWhisperModel();
         if (resolved.model === null) throw new SpeechcraftApiError(0, resolved.error);
         const fresh = await createDatasetRun(projectId, {
+          source_recording_ids: (current.input_summary.source_recording_ids as string[]) ?? [],
           whisper_model_size: resolved.model,
           language: lang,
+          single_speaker: Boolean(current.input_summary.single_speaker),
         });
         await startRun(fresh.id);
         router.push(
-          `/login4?project=${encodeURIComponent(projectId)}&run=${encodeURIComponent(fresh.id)}`,
+          `/onboarding/${current.input_summary.single_speaker ? "processing" : "choose-speaker"}?project=${encodeURIComponent(projectId)}&run=${encodeURIComponent(fresh.id)}`,
         );
       } catch (err) {
         setPhase("error");
         setError(err instanceof SpeechcraftApiError ? err.detail : "Could not re-run with that language.");
       }
     },
-    [projectId, router, demo],
+    [projectId, run, runId, router, demo],
   );
 
   if (phase === "error") {
@@ -156,6 +185,7 @@ export function TranscriptionProgress() {
       <div className="text-center space-y-2">
         <h1 className="text-lg lg:text-xl mb-4 font-serif">Processing failed</h1>
         <p className="font-sans text-sm text-[#878787]">{error}</p>
+        {projectId ? <button type="button" onClick={() => router.push(withDemo(`/onboarding/speakers?project=${encodeURIComponent(projectId)}`, demo))} className="mt-4 text-sm underline underline-offset-4">Return to speaker mode</button> : <button type="button" onClick={() => router.push(withDemo("/onboarding/import", demo))} className="mt-4 text-sm underline underline-offset-4">Return to import</button>}
         <div className="pt-6">
           <DiagnosticsSheet runId={runId} runStatus={run?.status ?? "failed"} runStage={run?.stage} stages={stages} />
         </div>

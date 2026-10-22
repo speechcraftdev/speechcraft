@@ -46,7 +46,7 @@ export function VoiceSelection() {
   const goNext = useCallback(() => {
     router.push(
       withDemo(
-        `/login5?project=${encodeURIComponent(projectId!)}&run=${encodeURIComponent(runId!)}`,
+        `/onboarding/processing?project=${encodeURIComponent(projectId!)}&run=${encodeURIComponent(runId!)}`,
         demo,
       ),
     );

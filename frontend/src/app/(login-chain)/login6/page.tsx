@@ -1,25 +1,5 @@
-import type { Metadata } from "next";
-import { LoginContinueButton } from "@/components/login-continue-button";
+import { LegacyOnboardingRedirect } from "../legacy-onboarding-redirect";
 
-export const metadata: Metadata = {
-  title: "Login | Midday",
-};
-
-export default function Page() {
-  return (
-    <>
-      <div className="text-center space-y-2">
-        <h1 className="text-lg lg:text-xl mb-4 font-serif">
-          Train better voice models.
-        </h1>
-        <p className="font-sans text-sm text-[#878787]">
-          The internal tool every voice AI lab built for themselves.
-        </p>
-      </div>
-
-      <div className="mt-10 lg:mt-12">
-        <LoginContinueButton />
-      </div>
-    </>
-  );
+export default async function Page({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  return await LegacyOnboardingRedirect({ path: "/login6", searchParams });
 }

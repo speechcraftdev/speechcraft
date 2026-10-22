@@ -58,7 +58,7 @@ export function IngestDropzone() {
 
     const target = new URLSearchParams({ project: projectId });
     if (runId) target.set("run", runId);
-    router.push(withDemo(`/login3?${target.toString()}`, true));
+    router.push(withDemo(`/onboarding/speakers?${target.toString()}`, true));
     setSkipping(false);
   }, [router, skipping]);
 
@@ -94,7 +94,7 @@ export function IngestDropzone() {
           });
         }
         setProgress(100);
-        router.push(withDemo(`/login3?project=${encodeURIComponent(projectId)}`, demo));
+        router.push(withDemo(`/onboarding/speakers?project=${encodeURIComponent(projectId)}`, demo));
       } catch (err) {
         startedRef.current = false;
         setPhase("error");
