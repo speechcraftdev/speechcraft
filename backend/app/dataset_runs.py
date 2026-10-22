@@ -43,6 +43,8 @@ from .models import (
 
 
 LOG_TAIL_CHARS = 50000
+# Serializes wizard create-or-reuse inside this process only. Speechcraft runs
+# one backend process; this lock is not a cross-process guarantee.
 _wizard_run_lock = threading.Lock()
 RESERVED_WORKER_CONFIG_KEYS = {
     "config_hash",
@@ -149,6 +151,42 @@ SUMMARY_ARTIFACT_KINDS = {
 }
 SPEAKER_SELECTION_REQUIRED = "speaker_selection_required"
 DEFAULT_SINGLE_SPEAKER_ID = "speaker_0"
+# Same order as the frontend processing plan. Aliases are resolved through
+# WORKER_STAGE_MAP before comparing ranks.
+_STAGE_ORDER = (
+    RfcStage.INGEST.value,
+    RfcStage.AUDIO_VARIANTS.value,
+    RfcStage.SOURCE_HEALTH.value,
+    RfcStage.VAD.value,
+    RfcStage.DIARIZATION.value,
+    RfcStage.SPEAKER_IDENTITY.value,
+    RfcStage.TRUSTED_REGIONS.value,
+    RfcStage.PROCESSING_BUFFERS.value,
+    RfcStage.ASR.value,
+    RfcStage.NORMALIZATION.value,
+    RfcStage.MFA.value,
+    RfcStage.SAFE_CUTPOINTS.value,
+    RfcStage.CANDIDATE_CLIPS.value,
+    RfcStage.TRANSCRIPT_QC.value,
+    RfcStage.SPEAKER_PURITY.value,
+    RfcStage.DATASET_QC.value,
+    RfcStage.EXPORT.value,
+)
+
+
+def _completed_through(run: ProcessingRun, stop_after: str) -> bool:
+    """True when a successful run has already reached the requested stop."""
+    if run.status != ProcessingRunStatus.COMPLETED:
+        return False
+    mapped = WORKER_STAGE_MAP.get(stop_after)
+    if mapped is None:
+        return False
+    try:
+        current = _STAGE_ORDER.index(run.stage.value)
+        target = _STAGE_ORDER.index(mapped.value)
+    except ValueError:
+        return False
+    return current >= target
 
 
 def dataset_storage_root(repository: Any) -> Path:
@@ -586,14 +624,16 @@ def resume_dataset_run_processing(
             raise ValueError("Single-speaker runs do not need speaker-selection resume")
         if run.status == ProcessingRunStatus.RUNNING:
             raise ValueError("Dataset run is already running")
-        selection = _read_speaker_selection(repository, run)
-        if not bool(selection.get("selected")):
-            raise ValueError("speaker_selection.json does not select a target speaker")
         requested_stop_after = str(
             (request.stop_after if request is not None else None)
             or run.input_summary.get("requested_stop_after")
             or "candidate_review_clips"
         )
+        if _completed_through(run, requested_stop_after):
+            raise ValueError("Dataset run has already completed this stage")
+        selection = _read_speaker_selection(repository, run)
+        if not bool(selection.get("selected")):
+            raise ValueError("speaker_selection.json does not select a target speaker")
         run.input_summary = {**run.input_summary, "requested_stop_after": requested_stop_after}
         if _stop_after_requires_asr(requested_stop_after):
             _assert_asr_model_available(repository, run)

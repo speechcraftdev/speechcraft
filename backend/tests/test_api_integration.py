@@ -256,6 +256,81 @@ class ApiIntegrationTests(LiveServerTestCase):
         self.assertEqual(original.read_bytes(), original_bytes)
         self.assertNotEqual(working.read_bytes(), original_bytes)
 
+    def test_additional_upload_preserves_the_project_and_recording_set(self) -> None:
+        created = self.client.post("/api/import-batches", json={"id": "append-project", "name": "Append Project"})
+        self.assertEqual(created.status_code, 200, created.text)
+        first_wav = make_wav_bytes()
+        second_wav = bytearray(first_wav)
+        second_wav[-1] ^= 0x01
+        first = self.upload_file("append-project", "speaker-a.wav", first_wav)
+        second = self.upload_file("append-project", "speaker-b.wav", bytes(second_wav))
+        self.assertNotEqual(first["id"], second["id"])
+
+        listed = self.client.get("/api/projects/append-project/source-recordings")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        recordings = listed.json()
+        self.assertEqual({item["id"] for item in recordings}, {first["id"], second["id"]})
+        self.assertEqual(
+            [item["id"] for item in self.client.get("/api/projects").json() if item["id"] == "append-project"],
+            ["append-project"],
+        )
+
+        attempt = {
+            "wizard_attempt": "onboarding:append-project:single",
+            "single_speaker": True,
+            "whisper_model_size": "base",
+            "language": "auto",
+            "stop_after": "candidate_review_clips",
+            "target_speaker_label": "speaker_0",
+        }
+        first_run = self.client.post(
+            "/api/projects/append-project/dataset-runs",
+            json={**attempt, "source_recording_ids": [first["id"]]},
+        )
+        self.assertEqual(first_run.status_code, 201, first_run.text)
+        reused = self.client.post(
+            "/api/projects/append-project/dataset-runs",
+            json={**attempt, "source_recording_ids": [first["id"]]},
+        )
+        self.assertEqual(reused.status_code, 201, reused.text)
+        self.assertEqual(reused.json()["id"], first_run.json()["id"])
+        expanded = self.client.post(
+            "/api/projects/append-project/dataset-runs",
+            json={**attempt, "source_recording_ids": [first["id"], second["id"]]},
+        )
+        self.assertEqual(expanded.status_code, 201, expanded.text)
+        self.assertNotEqual(expanded.json()["id"], first_run.json()["id"])
+        self.assertEqual(expanded.json()["input_summary"]["source_recording_ids"], [first["id"], second["id"]])
+        self.assertTrue(expanded.json()["input_summary"]["single_speaker"])
+        multiple = self.client.post(
+            "/api/projects/append-project/dataset-runs",
+            json={
+                **attempt,
+                "wizard_attempt": "onboarding:append-project:multiple",
+                "single_speaker": False,
+                "source_recording_ids": [first["id"], second["id"]],
+            },
+        )
+        self.assertEqual(multiple.status_code, 201, multiple.text)
+        self.assertFalse(multiple.json()["input_summary"]["single_speaker"])
+        self.assertNotEqual(multiple.json()["id"], expanded.json()["id"])
+
+    def tearDown(self) -> None:
+        if getattr(self, "client", None) is not None:
+            self.client.delete("/api/projects/append-project")
+        super().tearDown()
+
+    def test_upload_to_a_missing_project_does_not_create_one(self) -> None:
+        before = {item["id"] for item in self.client.get("/api/projects").json()}
+        content = make_wav_bytes()
+        response = self.client.post(
+            "/api/projects/missing-import/source-recordings/upload-sessions",
+            json={"filename": "orphan.wav", "size": len(content), **upload_identity(content)},
+        )
+        self.assertEqual(response.status_code, 404, response.text)
+        after = {item["id"] for item in self.client.get("/api/projects").json()}
+        self.assertEqual(after, before)
+
     def test_cors_preflight_uses_explicit_origin_for_allowed_frontend(self) -> None:
         response = self.client.options(
             "/api/projects",

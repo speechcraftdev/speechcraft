@@ -41,7 +41,6 @@ export function VoiceSelection() {
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const startedRef = useRef(false);
 
   const goNext = useCallback(() => {
     router.push(
@@ -54,8 +53,6 @@ export function VoiceSelection() {
 
   // Poll until diarization produces speaker samples; branch on speaker count.
   useEffect(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
     if (!projectId || !runId) {
       setPhase("error");
       setError("Missing project/run in the URL. Restart from ingest.");
@@ -72,7 +69,11 @@ export function VoiceSelection() {
         for (;;) {
           if (cancelled) return;
           const run = await refreshRun(runId);
+          if (cancelled) return;
           setRunStatus(run.status);
+          if (run.project_id !== projectId) {
+            throw new Error("This run belongs to a different project. Return to import and restart.");
+          }
           if (run.status === "cancelled") {
             setPhase("error");
             setError("Processing was cancelled.");
@@ -81,16 +82,17 @@ export function VoiceSelection() {
           if (run.status === "failed" || run.status === "rejected") {
             throw new SpeechcraftApiError(0, `Speaker detection ${run.status}.`);
           }
+          if (run.status === "pending") {
+            throw new Error("Speaker detection has not started. Return to speaker mode and continue.");
+          }
           const results = await fetchSpeakers(runId);
           if (results.speaker_samples_manifest.length > 0) {
             const ids = distinctSpeakerIds(results);
-            // One sample per speaker for preview.
             const bySpeaker = ids.map((id) => ({
               id,
               sample: results.speaker_samples_manifest.find((s) => s.speaker_id === id)!,
             }));
             if (ids.length <= 1) {
-              // Single speaker detected — no page, auto-select and continue.
               await saveSpeakerSelection(runId, ids[0] ?? "speaker_0");
               if (!cancelled) goNext();
               return;
@@ -101,12 +103,15 @@ export function VoiceSelection() {
             }
             return;
           }
+          if (run.status === "completed" || run.status === "needs_review") {
+            throw new Error("No speakers were detected in these recordings. Return to import and check the audio.");
+          }
           await new Promise((r) => setTimeout(r, 2500));
         }
       } catch (err) {
         if (cancelled) return;
         setPhase("error");
-        setError(err instanceof SpeechcraftApiError ? err.detail : "Speaker detection failed.");
+        setError(err instanceof SpeechcraftApiError ? err.detail : err instanceof Error ? err.message : "Speaker detection failed.");
       }
     })();
     return () => {
@@ -160,6 +165,11 @@ export function VoiceSelection() {
       <div className="text-center space-y-2">
         <h1 className="text-lg lg:text-xl mb-4 font-serif">Speaker detection failed</h1>
         <p className="font-sans text-sm text-[#878787]">{error}</p>
+        {projectId ? (
+          <button type="button" onClick={() => router.push(withDemo(`/onboarding/speakers?project=${encodeURIComponent(projectId)}`, demo))} className="mt-4 text-sm underline underline-offset-4">
+            Return to speaker mode
+          </button>
+        ) : null}
         <div className="pt-6">
           <DiagnosticsSheet runId={runId} runStatus={runStatus} runStage="diarization" />
         </div>

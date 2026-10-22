@@ -30,8 +30,9 @@ test("wizard rejects obsolete worker stages before sending an API request", () =
   assert.throws(() => wizardResumeOptions("alignment_qc"), /Unsupported dataset run stage/);
 });
 
-test("wizard stage completion requires the exact completed API stage", () => {
+test("a later completed stage counts as earlier-stage success", () => {
   assert.equal(completedAtStage({ status: "completed", stage: "candidate_review_clips" }, "candidate_review_clips"), true);
   assert.equal(completedAtStage({ status: "running", stage: "candidate_review_clips" }, "candidate_review_clips"), false);
-  assert.equal(completedAtStage({ status: "completed", stage: "speaker_purity" }, "candidate_review_clips"), false);
+  assert.equal(completedAtStage({ status: "completed", stage: "speaker_purity" }, "candidate_review_clips"), true);
+  assert.equal(completedAtStage({ status: "failed", stage: "speaker_purity" }, "candidate_review_clips"), false);
 });

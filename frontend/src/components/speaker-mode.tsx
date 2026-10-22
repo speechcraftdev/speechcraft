@@ -30,8 +30,10 @@ export function SpeakerMode() {
   const demo = demoEnabled(params);
   const [choice, setChoice] = useState<SpeakerModeChoice | null>(null);
   const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [blocked, setBlocked] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
+  const [checkAttempt, setCheckAttempt] = useState(0);
   const submitted = useRef(false);
 
   useEffect(() => {
@@ -44,28 +46,31 @@ export function SpeakerMode() {
 
   useEffect(() => {
     if (!projectId) {
-      setProblem("No project was provided. Return to import to upload recordings.");
+      setBlocked("No project was provided. Return to import to upload recordings.");
       setChecking(false);
       return;
     }
     if (demo) {
+      setBlocked(null);
       setChecking(false);
       return;
     }
     let active = true;
+    setChecking(true);
     listProjectSourceRecordings(projectId).then((recordings) => {
-      if (active && recordings.length === 0) setProblem("This project has no imported recordings yet. Return to import and add audio.");
+      if (!active) return;
+      setBlocked(recordings.length === 0 ? "This project has no imported recordings yet. Return to import and add audio." : null);
     }).catch((error: unknown) => {
-      if (active) setProblem(error instanceof SpeechcraftApiError ? error.detail : "Could not verify the imported recordings.");
+      if (active) setBlocked(error instanceof SpeechcraftApiError ? error.detail : "Could not verify the imported recordings.");
     }).finally(() => { if (active) setChecking(false); });
     return () => { active = false; };
-  }, [projectId, demo]);
+  }, [projectId, demo, checkAttempt]);
 
   const continueFlow = async () => {
-    if (!choice || busy || submitted.current) return;
+    if (!choice || busy || submitted.current || blocked) return;
     submitted.current = true;
     setBusy(true);
-    setProblem(null);
+    setSubmitError(null);
     try {
       if (!projectId) throw new Error("Project is missing. Return to import and try again.");
       if (demo) {
@@ -90,7 +95,7 @@ export function SpeakerMode() {
     } catch (error) {
       submitted.current = false;
       setBusy(false);
-      setProblem(error instanceof SpeechcraftApiError ? error.detail : error instanceof Error ? error.message : "Could not start processing.");
+      setSubmitError(error instanceof SpeechcraftApiError ? error.detail : error instanceof Error ? error.message : "Could not start processing.");
     }
   };
 
@@ -113,7 +118,7 @@ export function SpeakerMode() {
             type="button"
             role="radio"
             aria-checked={choice === value}
-            disabled={busy || checking || Boolean(problem)}
+            disabled={busy || checking || Boolean(blocked)}
             onClick={() => {
               setChoice(value);
               if (projectId) {
@@ -135,14 +140,18 @@ export function SpeakerMode() {
         ))}
       </div>
 
-      {problem ? <p role="alert" className="mt-4 text-center text-sm text-destructive">{problem}</p> : null}
+      {blocked ? <p role="alert" className="mt-4 text-center text-sm text-destructive">{blocked}</p> : null}
+      {submitError ? <p role="alert" className="mt-4 text-center text-sm text-destructive">{submitError}</p> : null}
       {checking ? <p className="mt-4 text-center text-xs text-[#878787]">Checking imported recordings…</p> : null}
+      {blocked && projectId ? (
+        <button type="button" onClick={() => setCheckAttempt((attempt) => attempt + 1)} className="mt-3 w-full text-sm underline underline-offset-4">Try again</button>
+      ) : null}
 
       <div className="mt-8 space-y-3">
         <SubmitButton
           type="button"
           onClick={() => void continueFlow()}
-          disabled={!choice || busy || checking || Boolean(problem)}
+          disabled={!choice || busy || checking || Boolean(blocked)}
           className="bg-primary px-6 py-4 text-secondary font-medium flex space-x-2 h-[40px] w-full disabled:opacity-50"
           isSubmitting={busy}
         >

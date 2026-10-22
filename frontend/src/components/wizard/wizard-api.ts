@@ -43,6 +43,14 @@ async function parseError(res: Response): Promise<SpeechcraftApiError> {
   return new SpeechcraftApiError(res.status, detail);
 }
 
+export async function fetchProject(id: string): Promise<SpeechcraftProject> {
+  const res = await fetch(`${BASE}/api/projects/${encodeURIComponent(id)}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw await parseError(res);
+  return (await res.json()) as SpeechcraftProject;
+}
+
 /** Create a project (import batch). id must be url-safe and unique. */
 export async function createProject(
   id: string,
@@ -489,7 +497,7 @@ export async function waitForRun(
     const run = await refreshRun(runId);
     opts?.onTick?.(run);
     if (predicate(run)) return run;
-    if (run.status === "failed" || run.status === "rejected") {
+    if (run.status === "failed" || run.status === "rejected" || run.status === "cancelled") {
       throw new SpeechcraftApiError(0, `Run ${run.status} at stage "${run.stage}"`);
     }
     if (Date.now() - start > timeout) {

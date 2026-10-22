@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import TestCase
@@ -116,6 +117,64 @@ class DatasetRunTests(TestCase):
         )
         self.assertEqual(first.id, repeated.id)
         self.assertNotEqual(first.id, other_model.id)
+
+    def test_wizard_attempt_does_not_reuse_a_different_recording_set(self) -> None:
+        root = Path(self.temp_dir.name)
+        second_path = root / "source-b.wav"
+        second_path.write_bytes(b"RIFF")
+        with Session(self.repository.engine) as session:
+            session.add(
+                SourceRecording(
+                    id="recording-2",
+                    batch_id="project-1",
+                    file_path=str(second_path),
+                    sample_rate=48000,
+                    num_channels=1,
+                    num_samples=48000,
+                )
+            )
+            session.commit()
+        first = create_dataset_run(
+            self.repository,
+            "project-1",
+            DatasetRunCreateRequest(
+                source_recording_ids=["recording-1"],
+                wizard_attempt="onboarding:project-1:attempt",
+                single_speaker=True,
+            ),
+        )
+        expanded = create_dataset_run(
+            self.repository,
+            "project-1",
+            DatasetRunCreateRequest(
+                source_recording_ids=["recording-1", "recording-2"],
+                wizard_attempt="onboarding:project-1:attempt",
+                single_speaker=True,
+            ),
+        )
+        self.assertNotEqual(first.id, expanded.id)
+        self.assertEqual(expanded.input_summary["source_recording_ids"], ["recording-1", "recording-2"])
+
+    def test_concurrent_wizard_creates_reuse_one_run_in_this_process(self) -> None:
+        request = DatasetRunCreateRequest(
+            source_recording_ids=["recording-1"],
+            wizard_attempt="onboarding:project-1:concurrent",
+            single_speaker=True,
+        )
+        barrier = threading.Barrier(6)
+        results: list[str] = []
+
+        def create() -> None:
+            barrier.wait()
+            results.append(create_dataset_run(self.repository, "project-1", request).id)
+
+        threads = [threading.Thread(target=create) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(results), 6)
+        self.assertEqual(set(results), {results[0]})
 
     @unittest.skipIf(sys.platform == "win32", "owned POSIX process groups are used by Linux/macOS workers")
     def test_cancel_stops_only_the_recorded_worker_and_persists_cancelled_state(self) -> None:
@@ -732,3 +791,40 @@ class DatasetRunTests(TestCase):
         config = json.loads((self.repository.media_root / resumed.artifact_root / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(config["mode"], "selected_speaker")
         self.assertEqual(config["target_speaker_label"], "speaker_1")
+
+    def test_resume_refuses_a_run_that_already_completed_the_requested_stage(self) -> None:
+        run = create_dataset_run(self.repository, "project-1", DatasetRunCreateRequest(single_speaker=False))
+        with Session(self.repository.engine) as session:
+            stored = session.get(ProcessingRun, run.id)
+            assert stored is not None
+            stored.status = ProcessingRunStatus.COMPLETED
+            stored.stage = RfcStage.SPEAKER_PURITY
+            session.add(stored)
+            session.commit()
+        with self.assertRaisesRegex(ValueError, "already completed this stage"):
+            resume_dataset_run_processing(self.repository, run.id)
+
+    def test_resume_allows_a_completed_diarization_run_to_continue(self) -> None:
+        run = create_dataset_run(self.repository, "project-1", DatasetRunCreateRequest(single_speaker=False))
+        artifacts = self.repository.media_root / str(run.artifact_root) / "artifacts"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (artifacts / "speaker_selection.json").write_text(
+            json.dumps({"mode": "diarization", "selected": True, "target_speaker_id": "speaker_0", "source": "user", "available_speaker_ids": ["speaker_0"]}),
+            encoding="utf-8",
+        )
+        with Session(self.repository.engine) as session:
+            stored = session.get(ProcessingRun, run.id)
+            assert stored is not None
+            stored.status = ProcessingRunStatus.COMPLETED
+            stored.stage = RfcStage.DIARIZATION
+            session.add(stored)
+            session.commit()
+        with (
+            patch("app.dataset_runs.run_dataset_worker_preflight", return_value={"ok": True}),
+            patch("app.dataset_runs.dataset_worker_python", return_value=Path("/bin/true")),
+            patch("app.dataset_runs.dataset_worker_root", return_value=Path("/tmp/worker")),
+            patch("app.dataset_runs.subprocess.Popen", return_value=Mock(pid=8888)),
+        ):
+            resumed = resume_dataset_run_processing(self.repository, run.id)
+        self.assertEqual(resumed.status, ProcessingRunStatus.RUNNING)
+        self.assertEqual(resumed.input_summary["active_stop_after"], "candidate_review_clips")

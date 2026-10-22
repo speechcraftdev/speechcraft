@@ -2,7 +2,7 @@
 
 import { Progress } from "@midday/ui/progress";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   DiagnosticsSheet,
   type DiagnosticStage,
@@ -22,7 +22,7 @@ import {
 } from "./wizard/wizard-api";
 import {
   completedAtStage,
-  wizardProcessingPlan,
+  wizardProcessingStep,
   WIZARD_SELECTED_SPEAKER_STOP_AFTER,
 } from "./wizard/processing-plan.mjs";
 
@@ -33,6 +33,46 @@ const PHASE_COPY: Record<Exclude<Phase, "error">, { title: string; sub: string; 
   slicing: { title: "Slicing clips", sub: "Running the locked VR O0_4 slicing pass…", pct: 55 },
   scoring: { title: "Scoring transcript and speaker quality", sub: "Running Transcript Correctness and Speaker Purity…", pct: 90 },
 };
+
+function processingFailureMessage(reason: string | undefined): string {
+  if (reason === "failed" || reason === "rejected" || reason === "cancelled") {
+    return `This dataset run ${reason}. Return to speaker mode to retry.`;
+  }
+  if (reason === "unknown-stage") {
+    return "This run is at an unrecognized stage. Return to speaker mode to retry.";
+  }
+  return "Processing stopped before review results were ready. Return to speaker mode to retry.";
+}
+
+async function startUnlessStarted(runId: string): Promise<DatasetRunView> {
+  try {
+    return await startRun(runId);
+  } catch (error) {
+    const current = await fetchRun(runId);
+    if (current.status !== "pending") return current;
+    throw error;
+  }
+}
+
+async function resumeUnlessRunning(runId: string): Promise<void> {
+  try {
+    await resumeProcessing(runId, WIZARD_SELECTED_SPEAKER_STOP_AFTER);
+  } catch (error) {
+    const current = await fetchRun(runId);
+    if (current.status === "running" || completedAtStage(current, "candidate_review_clips") || completedAtStage(current, "speaker_purity")) return;
+    throw error;
+  }
+}
+
+async function scoreUnlessRunning(runId: string): Promise<void> {
+  try {
+    await generateQc(runId, false);
+  } catch (error) {
+    const current = await fetchRun(runId);
+    if (current.status === "running" || completedAtStage(current, "speaker_purity")) return;
+    throw error;
+  }
+}
 
 function detectLanguage(run: DatasetRunView | null): string | null {
   if (!run) return null;
@@ -55,7 +95,6 @@ export function TranscriptionProgress() {
   const [error, setError] = useState<string | null>(null);
   const [run, setRun] = useState<DatasetRunView | null>(null);
   const [language, setLanguage] = useState<string | null>(null);
-  const startedRef = useRef(false);
 
   const stages: DiagnosticStage[] = [
     { key: "diarization", label: "Speaker detection", status: "completed" },
@@ -65,8 +104,6 @@ export function TranscriptionProgress() {
   ];
 
   useEffect(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
     if (!projectId || !runId) {
       setPhase("error");
       setError("This processing link is missing its project or run. Return to import and choose the speaker mode again.");
@@ -91,55 +128,67 @@ export function TranscriptionProgress() {
       return () => timers.forEach(clearTimeout);
     }
     const ctrl = new AbortController();
+    const labUrl = withDemo(
+      `/lab?project=${encodeURIComponent(projectId)}&run=${encodeURIComponent(runId)}`,
+      demo,
+    );
+    const adopt = async (next: DatasetRunView) => {
+      if (ctrl.signal.aborted) return next;
+      setRun(next);
+      setLanguage(detectLanguage(next));
+      return next;
+    };
     (async () => {
       try {
         let current = await fetchRun(runId);
         if (current.project_id !== projectId) throw new Error("This run belongs to a different project. Return to import and restart.");
-        const plan = wizardProcessingPlan(current);
-        if (plan.start) current = await startRun(runId);
-        setRun(current);
-
-        const processingPlan = wizardProcessingPlan(current);
-        if (current.status === "failed" || current.status === "rejected" || current.status === "cancelled") {
-          throw new Error(`This dataset run ${current.status}. Return to speaker mode to retry.`);
-        }
-        if (processingPlan.qcInProgress) {
-          setPhase("scoring");
-          current = await waitForRun(
-            runId,
-            (r) => completedAtStage(r, "speaker_purity"),
-            { signal: ctrl.signal, onTick: setRun },
-          );
-        } else if (processingPlan.processClips) {
-          setPhase("slicing");
-          if (processingPlan.resume) {
-            await resumeProcessing(runId, WIZARD_SELECTED_SPEAKER_STOP_AFTER);
+        await adopt(current);
+        for (let stepIndex = 0; stepIndex < 6; stepIndex += 1) {
+          if (ctrl.signal.aborted) return;
+          const step = wizardProcessingStep(current);
+          if (step.kind === "error") {
+            throw new Error(processingFailureMessage(step.reason));
           }
-          current = await waitForRun(
-            runId,
-            (r) => completedAtStage(r, "candidate_review_clips"),
-            { signal: ctrl.signal, onTick: setRun },
-          );
+          if (step.kind === "lab") {
+            router.push(labUrl);
+            return;
+          }
+          if (step.kind === "start") {
+            current = await startUnlessStarted(runId);
+            await adopt(current);
+            continue;
+          }
+          if (step.kind === "wait") {
+            setPhase("scoring");
+            current = await waitForRun(runId, (candidate) => completedAtStage(candidate, "speaker_purity"), {
+              signal: ctrl.signal,
+              onTick: (candidate) => { if (!ctrl.signal.aborted) setRun(candidate); },
+            });
+            await adopt(current);
+            continue;
+          }
+          if (step.kind === "clips") {
+            setPhase("slicing");
+            if (step.resume) await resumeUnlessRunning(runId);
+            current = await waitForRun(runId, (candidate) => completedAtStage(candidate, "candidate_review_clips"), {
+              signal: ctrl.signal,
+              onTick: (candidate) => { if (!ctrl.signal.aborted) setRun(candidate); },
+            });
+            await adopt(current);
+            continue;
+          }
+          if (step.kind === "qc") {
+            setPhase("scoring");
+            await scoreUnlessRunning(runId);
+            current = await waitForRun(runId, (candidate) => completedAtStage(candidate, "speaker_purity"), {
+              signal: ctrl.signal,
+              onTick: (candidate) => { if (!ctrl.signal.aborted) setRun(candidate); },
+            });
+            await adopt(current);
+            continue;
+          }
         }
-        const sliced = current;
-        setLanguage(detectLanguage(sliced));
-
-        if (wizardProcessingPlan(sliced).runQc) {
-          setPhase("scoring");
-          await generateQc(runId, false);
-          await waitForRun(
-            runId,
-            (r) => completedAtStage(r, "speaker_purity"),
-            { signal: ctrl.signal, onTick: setRun },
-          );
-        }
-
-        router.push(
-          withDemo(
-            `/lab?project=${encodeURIComponent(projectId)}&run=${encodeURIComponent(runId)}`,
-            demo,
-          ),
-        );
+        throw new Error("Processing stopped before review results were ready. Return to speaker mode to retry.");
       } catch (err) {
         if (ctrl.signal.aborted) return;
         setPhase("error");
