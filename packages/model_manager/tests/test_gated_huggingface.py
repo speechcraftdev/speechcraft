@@ -146,16 +146,16 @@ class GatedAcquisitionTests(unittest.TestCase):
                 partial.parent.mkdir(parents=True, exist_ok=True)
                 partial.write_bytes(FILES['embedding/pytorch_model.bin'][:5])
                 raise FakeHubError(503)
+            bar = tqdm_class(total=len(FILES))
             for name, data in FILES.items():
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
+                bar.update(1)
             # Exercise the official local_dir metadata lifecycle.
             metadata = root / '.cache' / 'huggingface'
             metadata.mkdir(parents=True, exist_ok=True)
             (metadata / 'metadata.json').write_text('{"resume":true}')
-            bar = tqdm_class(total=len(FILES))
-            bar.update(len(FILES))
             return str(root)
 
         return api, (api, download_file, download_snapshot), attempts
@@ -171,6 +171,8 @@ class GatedAcquisitionTests(unittest.TestCase):
                 gated_token=TOKEN, gated_hub_client=client, retry_delay=0).install('diarization', 'linux-x86_64')
             self.assertTrue(result['install_ready'])
             self.assertTrue(result['inventory_exact'])
+            file_progress = [event['completed_files'] for event in progress if event.get('progress_mode') == 'files']
+            self.assertEqual(file_progress, list(range(1, len(FILES) + 1)))
             self.assertEqual([call[0] for call in api.calls], ['whoami', 'model_info'])
             self.assertEqual(attempts['snapshot'], 1)
             self.assertFalse((Path(result['root']) / '.cache').exists())

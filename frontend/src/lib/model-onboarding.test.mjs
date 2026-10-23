@@ -63,3 +63,11 @@ test("progress selection rejects stale job attempts and prefers the newest event
   ]);
   assert.equal(result, current);
 });
+
+test("progress selection never carries a completed stage into the active stage", () => {
+  const result = latestProgressForJob("job-1", "attempt-1", [
+    { job_id: "job-1", attempt_id: "attempt-1", stage_id: "install_backend_environment", event_revision: 90, artifact_name: "old backend" },
+    { job_id: "job-1", attempt_id: "attempt-1", stage_id: "install_worker_environment", event_revision: 20, artifact_name: "active worker" },
+  ], "install_worker_environment");
+  assert.equal(result.artifact_name, "active worker");
+});

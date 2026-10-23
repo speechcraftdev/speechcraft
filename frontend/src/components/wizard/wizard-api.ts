@@ -239,6 +239,7 @@ export type AsrEnsureProgress = {
   current_filename?: string | null;
   downloaded_bytes?: number | null;
   total_bytes?: number | null;
+  expected_size_bytes?: number | null;
   current?: number | null;
   total?: number | null;
   percent?: number | null;

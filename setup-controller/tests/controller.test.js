@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import { afterEach, test } from 'node:test';
 import { assertTransition, serializePublicJob } from '../src/controller.js';
+import { PRODUCTION_STAGES, PRODUCTION_STAGE_TITLES } from '../src/runtime-plan.js';
 import { StateStore, StateStoreError } from '../src/state-store.js';
 import { openEvents, readUntilEvent, temporaryController } from './helpers.js';
 
@@ -17,6 +18,49 @@ test('public setup status exposes Pyannote CUDA selection and a bounded validati
   assert.equal(value.bootstrap_status.runtime_profile.pyannote_device, 'cpu');
   assert.match(value.bootstrap_status.components.pyannote.cuda_validation.reason, /out of memory/);
   assert.deepEqual(value.bootstrap_status.components.pyannote.cuda_validation.measurements, {});
+});
+
+test('public production stage indicator matches the controller stage source of truth', () => {
+  for (const [index, stage] of PRODUCTION_STAGES.entries()) {
+    const job = serializePublicJob({ mode: 'runtime', stage });
+    assert.equal(job.stage_index, index + 1);
+    assert.equal(job.stage_count, 11);
+    assert.equal(job.stage_title, PRODUCTION_STAGE_TITLES[stage]);
+  }
+  assert.equal(serializePublicJob({ mode: 'runtime', stage: 'not_a_production_stage' }).stage_index, undefined);
+  assert.equal(serializePublicJob({ mode: 'runtime', stage: 'verify_services' }).stage_index, 11);
+});
+
+test('runtime controller advances the displayed step only after each production stage resolves', async () => {
+  let waiting = null;
+  const queued = [];
+  const nextStage = () => queued.length ? Promise.resolve(queued.shift()) : new Promise((resolve) => { waiting = resolve; });
+  const tasks = {
+    stages: PRODUCTION_STAGES,
+    taskId: (stage) => `runtime:${stage}`,
+    initialProgress: (_stage, message) => ({ operation: 'checking', progress_mode: 'indeterminate', message }),
+    initialBootstrapStatus: () => ({ components: {}, production_ready: false }),
+    async run(stage) {
+      let release;
+      const current = { stage, done: new Promise((resolve) => { release = resolve; }), release: () => release() };
+      if (waiting) { const resolve = waiting; waiting = null; resolve(current); } else queued.push(current);
+      await current.done;
+    },
+  };
+  const f = await fixture({ mode: 'runtime', tasks });
+  await f.request('/setup-api/start', { method: 'POST', body: {} });
+  for (let index = 0; index < PRODUCTION_STAGES.length; index += 1) {
+    const current = await nextStage();
+    const status = await f.request('/setup-api/status').then((response) => response.json());
+    assert.equal(status.job.stage, current.stage);
+    assert.equal(status.job.stage_index, index + 1);
+    assert.equal(status.job.stage_count, 11);
+    assert.ok(Date.parse(status.job.stage_started_at));
+    current.release();
+  }
+  await f.app.controller.waitForIdle();
+  assert.equal(f.app.controller.status().job.stage_index, 11,
+    'completion retains the actual final stage and never synthesizes a twelfth step');
 });
 
 afterEach(async () => {

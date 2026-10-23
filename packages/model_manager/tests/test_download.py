@@ -534,8 +534,8 @@ class DownloadTests(unittest.TestCase):
         self.assertTrue(all(value is None for value in server.auth_headers))
         source_progress = [event for event in events if event['event'] == 'source_progress']
         self.assertEqual(source_progress[-1]['progress_mode'], 'files')
-        self.assertEqual(source_progress[-1]['completed_files'], 0,
-                         'snapshot_download does not expose per-file transfer completion through this hook')
+        self.assertEqual(source_progress[-1]['completed_files'], 1,
+                         'the disabled tqdm wrapper must still report the completed snapshot file')
         self.assertEqual(source_progress[-1]['total_files'], 1)
         self.assertEqual(source_progress[-1]['artifact_name'], 'Wespeaker/wespeaker-ecapa-tdnn512-LM')
         self.assertNotIn('transferred_bytes', source_progress[-1])

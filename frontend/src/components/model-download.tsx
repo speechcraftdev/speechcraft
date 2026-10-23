@@ -28,7 +28,8 @@ import { downloadPercent, latestProgressForJob, setupActionFor, setupFailureCode
 
 type Phase = "checking" | "needs_authorization" | "access_verified" | "needs_download" | "downloading" | "error";
 type ErrorView = { category: string; message: string; action: "retry" | "verify" };
-type ProgressView = { title: string; artifact: string; kind: "Model" | "Python package" | "Runtime"; progress: ProgressTelemetry | AsrEnsureProgress | null };
+type ProgressView = { title: string; artifact: string; kind: "Model" | "Python package" | "Runtime"; progress: ProgressTelemetry | AsrEnsureProgress | null;
+  step?: number; steps?: number; stageStartedAt?: string | null; runtimeProfile?: string | null };
 
 const ENSURE_JOB_PREFIX = "speechcraft-login3-ensure:";
 
@@ -66,7 +67,7 @@ function formatEta(seconds: number | null | undefined) {
 
 function setupProgress(status: SetupStatus, models: ModelState[]): ProgressView {
   const progress = latestProgressForJob(status.job.id, status.job.attempt_id,
-    [status.job.progress, ...models.map((item) => item.progress)]);
+    [status.job.progress, ...models.map((item) => item.progress)], status.job.stage);
   const stage = status.job.stage || "";
   const packageStage = /install_(model_manager|backend_environment|worker_environment)/.test(stage);
   const kind = progress?.artifact_type === "model" ? "Model"
@@ -86,13 +87,18 @@ function setupProgress(status: SetupStatus, models: ModelState[]): ProgressView 
     || (operation === "loading" ? "Loading model"
       : operation === "verifying" ? "Verifying installation"
         : operation === "installing" && kind === "Python package" ? "Installing dependencies" : "Preparing setup");
-  const title = operation === "downloading" && kind === "Model" ? "Downloading models"
+  const title = status.job.stage_title || (operation === "downloading" && kind === "Model" ? "Downloading models"
     : operation === "downloading" && kind === "Runtime" ? "Downloading runtime"
       : operation === "installing" && kind === "Python package" ? "Installing Python dependencies"
         : operation === "installing" ? artifact
         : operation === "verifying" ? "Verifying installation"
-          : operation === "loading" ? "Loading model" : "Preparing Speechcraft";
-  return { title, artifact, kind, progress };
+          : operation === "loading" ? "Loading model" : "Preparing Speechcraft");
+  const selectedWorker = String(status.runtime_profile?.workerProfile || "");
+  const runtimeProfile = stage !== "install_worker_environment" ? null
+    : selectedWorker.endsWith("-cuda") ? "Validated CUDA"
+      : selectedWorker === "macos-arm64" ? "Apple Silicon" : selectedWorker.endsWith("-cpu") ? "CPU" : null;
+  return { title, artifact, kind, progress, step: status.job.stage_index,
+    steps: status.job.stage_count, stageStartedAt: status.job.stage_started_at, runtimeProfile };
 }
 
 function errorView(code: string, message = ""): ErrorView {
@@ -128,7 +134,7 @@ function errorFromException(error: unknown, managed: boolean): ErrorView {
   return errorView(managed ? "SETUP_CONTROLLER_UNAVAILABLE" : "NETWORK_UNAVAILABLE");
 }
 
-function ProgressScreen({ view }: { view: ProgressView }) {
+function ProgressScreen({ view, elapsedSeconds, history, reconnecting }: { view: ProgressView; elapsedSeconds: number | null; history: Array<{ at: string; message: string }>; reconnecting: boolean }) {
   const progress = view.progress;
   const percent = downloadPercent(progress);
   const operation = progress?.operation || "checking";
@@ -144,27 +150,31 @@ function ProgressScreen({ view }: { view: ProgressView }) {
   const speed = measuredBytes && typeof progress?.bytes_per_second === "number" && progress.bytes_per_second > 0 && !progress.stalled
     ? `${formatBytes(progress.bytes_per_second)}/s` : null;
   const eta = measuredBytes && !progress?.stalled ? formatEta(progress?.eta_seconds) : null;
-  const indeterminateLabel = operation === "installing" ? view.artifact
-    : operation === "verifying" ? "Verifying installation"
-      : operation === "loading" ? "Loading model"
-        : operation === "checking" ? "Preparing Speechcraft" : view.artifact;
+  const activity = progress?.message || (operation === "downloading" ? `Downloading ${view.artifact}`
+    : operation === "installing" ? `Installing ${view.artifact}`
+      : operation === "building" ? `Building ${view.artifact}`
+        : operation === "extracting" ? `Extracting ${view.artifact}`
+          : operation === "verifying" ? `Verifying ${view.artifact}`
+              : operation === "loading" && progress?.artifact_name === "CUDA inference" ? "Checking CUDA inference"
+                : operation === "loading" && progress?.role === "diarization_cuda_validation" ? `Checking CUDA inference for ${view.artifact}`
+                  : operation === "loading" ? `Testing ${view.artifact}`
+              : operation === "starting" ? `Starting ${view.artifact}` : `Checking ${view.artifact}`);
   return (
     <>
       <div className="text-center space-y-2">
+        {view.step && view.steps ? <p className="font-sans text-xs text-[#878787]">Step {view.step} of {view.steps}</p> : null}
         <h1 className="text-lg lg:text-xl mb-4 font-serif">{view.title}</h1>
-        <p className="font-sans text-sm text-[#878787]">
-          {downloading ? `${view.artifact} is downloading.` : operation === "installing" && progress?.message
-            ? progress.message : indeterminateLabel}
-        </p>
+        <p className="font-sans text-sm text-[#878787]">{activity}</p>
       </div>
       <div className="mt-8 space-y-3" aria-live="polite">
-        <div className="flex items-baseline justify-between gap-3 text-sm">
-          <span className="truncate font-medium">{view.artifact}</span>
-          <span className="shrink-0 text-xs text-[#878787]">{view.kind}</span>
-        </div>
+        {view.artifact && !progress?.message ? <div className="truncate text-xs text-[#878787]">{view.artifact}</div> : null}
+        {view.runtimeProfile ? <p className="text-xs text-[#878787]">Selected runtime: {view.runtimeProfile}</p> : null}
         {progress?.current_filename && downloading ? <p className="truncate text-xs text-[#878787]">{progress.current_filename}</p> : null}
         <div role="progressbar" aria-label={`${view.artifact} ${downloading ? "download" : operation}`}
           aria-valuemin={0} aria-valuemax={100} {...(percent === null ? {} : { "aria-valuenow": percent })}
+          aria-valuetext={filesBased ? `${progress?.completed_files} of ${progress?.total_files} files complete`
+            : measuredBytes && downloaded && total ? `${downloaded} of ${total}, ${percent ?? 0}%`
+              : `${operation} in progress`}
           className="h-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
           <div className={`h-full bg-foreground/70 ${measuredBytes && percent !== null ? "transition-[width]" : "speechcraft-progress-indeterminate w-1/3"}`}
             style={measuredBytes && percent !== null ? { width: `${percent}%` } : undefined} />
@@ -176,10 +186,22 @@ function ProgressScreen({ view }: { view: ProgressView }) {
         {filesBased ? <p className="text-xs text-[#878787]">
           {progress?.completed_files} of {progress?.total_files} files
         </p> : null}
+        {downloading && progress?.artifact_type === "model" && typeof progress.expected_size_bytes === "number"
+          ? <p className="text-xs text-[#878787]">Model files: approximately {formatBytes(progress.expected_size_bytes)}</p> : null}
         {speed || eta ? <p className="text-xs text-[#878787]">
           {[speed ? `Speed ${speed}` : null, eta ? `ETA ${eta}` : null].filter(Boolean).join(" · ")}
         </p> : null}
+        {!measuredBytes && elapsedSeconds !== null ? <p className="text-xs text-[#878787]">Elapsed time: {Math.floor(elapsedSeconds / 60)}m {elapsedSeconds % 60}s</p> : null}
+        {reconnecting ? <p role="status" className="text-xs text-[#878787]">Reconnecting to setup status…</p> : null}
       </div>
+      <details className="mt-6 text-xs text-[#878787]">
+        <summary className="cursor-pointer select-none">Installation details</summary>
+        {history.length ? <ol className="mt-3 max-h-36 space-y-2 overflow-y-auto pl-1">
+          {history.map((item, index) => <li key={`${item.at}-${index}`} className="leading-relaxed">
+            <time dateTime={item.at}>{new Date(item.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time> — {item.message}
+          </li>)}
+        </ol> : <p className="mt-3">Activity will appear here as Speechcraft reports it.</p>}
+      </details>
     </>
   );
 }
@@ -196,6 +218,9 @@ export function ModelDownload() {
   const [error, setError] = useState<ErrorView | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState<ProgressView | null>(null);
+  const [activityHistory, setActivityHistory] = useState<Array<{ at: string; message: string }>>([]);
+  const [now, setNow] = useState(Date.now());
+  const [reconnecting, setReconnecting] = useState(false);
   const [downloadModel, setDownloadModel] = useState<WhisperModelSize | null>(null);
   const startedRef = useRef(false);
   const busyRef = useRef(false);
@@ -209,6 +234,24 @@ export function ModelDownload() {
   const setupStopRef = useRef<(() => void) | null>(null);
   const standaloneTimerRef = useRef<number | null>(null);
   const monitorTimerRef = useRef<number | null>(null);
+  const lastActivityRevisionRef = useRef<string | null>(null);
+  const historyAttemptRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (phase !== "downloading" || !progress?.stageStartedAt) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [phase, progress?.stageStartedAt]);
+
+  useEffect(() => {
+    const event = progress?.progress;
+    const message = event?.message?.trim();
+    if (!message) return;
+    const identity = `${event?.job_id || "standalone"}:${event?.attempt_id || ""}:${event?.event_revision ?? message}`;
+    if (lastActivityRevisionRef.current === identity) return;
+    lastActivityRevisionRef.current = identity;
+    setActivityHistory((previous) => [...previous, { at: event?.sampled_at || new Date().toISOString(), message }].slice(-20));
+  }, [progress]);
 
   const goToImport = useCallback(() => {
     const search = projectId ? `?project=${encodeURIComponent(projectId)}` : "";
@@ -288,6 +331,12 @@ export function ModelDownload() {
     const previous = managedRevisionRef.current;
     const sameAttempt = previous.jobId === status.job.id && previous.attemptId === (status.job.attempt_id ?? null);
     if (sameAttempt && revision <= previous.revision) return status;
+    const attemptIdentity = `${status.job.id || ""}:${status.job.attempt_id || ""}`;
+    if (historyAttemptRef.current !== null && historyAttemptRef.current !== attemptIdentity) {
+      setActivityHistory([]);
+      lastActivityRevisionRef.current = null;
+    }
+    historyAttemptRef.current = attemptIdentity;
     managedRevisionRef.current = { jobId: status.job.id, attemptId: status.job.attempt_id ?? null, revision };
     const models = list.state_revision === status.state_revision ? list.models : [];
     await processManagedStatus(status, models);
@@ -338,10 +387,12 @@ export function ModelDownload() {
       },
       () => {
         disconnectedAt = null;
+        setReconnecting(false);
         if (monitorTimerRef.current !== null) window.clearTimeout(monitorTimerRef.current);
         monitorTimerRef.current = null;
       },
       () => {
+        setReconnecting(true);
         if (disconnectedAt === null) disconnectedAt = Date.now();
         if (monitorTimerRef.current === null) monitorTimerRef.current = window.setTimeout(timeout, 5_000);
       },
@@ -618,7 +669,11 @@ export function ModelDownload() {
     </>;
   }
 
-  if (phase === "downloading" && progress) return <ProgressScreen view={progress} />;
+  if (phase === "downloading" && progress) {
+    const started = progress.stageStartedAt ? Date.parse(progress.stageStartedAt) : NaN;
+    const elapsedSeconds = Number.isFinite(started) ? Math.max(0, Math.floor((now - started) / 1_000)) : null;
+    return <ProgressScreen view={progress} elapsedSeconds={elapsedSeconds} history={activityHistory} reconnecting={reconnecting} />;
+  }
 
   return <>
     <div className="text-center space-y-2">

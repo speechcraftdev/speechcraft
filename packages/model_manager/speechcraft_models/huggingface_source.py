@@ -176,12 +176,17 @@ def acquire_gated_snapshot(repo_id: str, revision: str, filenames: list[str], to
         def __init__(self, *args, **kwargs):
             kwargs["disable"] = True
             super().__init__(*args, **kwargs)
+            self.completed_files = 0
 
         def update(self, n=1):
             result = super().update(n)
+            # tqdm intentionally does not advance `self.n` when disabled.
+            # snapshot_download invokes update for completed files, so track
+            # those notifications explicitly rather than inferring byte progress.
+            self.completed_files = max(0, self.completed_files + int(n))
             progress({"event": "source_progress", "source": "huggingface",
                       "operation": "downloading", "progress_mode": "files",
-                      "current_file": None, "completed_files": int(self.n),
+                      "current_file": None, "completed_files": self.completed_files,
                       "total_files": int(self.total) if self.total is not None else None})
             return result
 
@@ -241,12 +246,14 @@ def acquire_public_snapshot(repo_id: str, revision: str, filenames: list[str],
         def __init__(self, *args, **kwargs):
             kwargs["disable"] = True
             super().__init__(*args, **kwargs)
+            self.completed_files = 0
 
         def update(self, n=1):
             result = super().update(n)
+            self.completed_files = max(0, self.completed_files + int(n))
             progress({"event": "source_progress", "source": "huggingface",
                       "operation": "downloading", "progress_mode": "files",
-                      "current_file": None, "completed_files": int(self.n),
+                      "current_file": None, "completed_files": self.completed_files,
                       "total_files": int(self.total) if self.total is not None else None})
             return result
 

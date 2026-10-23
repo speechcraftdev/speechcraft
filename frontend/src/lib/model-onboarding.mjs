@@ -32,9 +32,10 @@ export function downloadPercent(progress) {
     ? progress.percent : null;
 }
 
-export function latestProgressForJob(jobId, attemptId, candidates = []) {
+/** @param {string | null} stageId */
+export function latestProgressForJob(jobId, attemptId, candidates = [], stageId = null) {
   return candidates.filter((progress) => progress && progress.job_id === jobId
-    && progress.attempt_id === attemptId)
+    && progress.attempt_id === attemptId && (!stageId || progress.stage_id === stageId))
     .sort((left, right) => (left.event_revision || 0) - (right.event_revision || 0))
     .at(-1) || null;
 }

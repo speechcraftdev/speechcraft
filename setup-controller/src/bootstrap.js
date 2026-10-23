@@ -7,8 +7,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { inspectHost, validateManagedStorage } from './platform.js';
-import { ByteTransferSampler, DownloadProgressTracker } from './download-progress.js';
-import { PRODUCTION_STAGES, assertTrustedBackendRecipe, expectedWorkerMachines, hashMatches, initialComponents, runtimeRoots, runtimeManifest, selectRuntimeProfile } from './runtime-plan.js';
+import { ByteTransferSampler, DownloadProgressTracker, safeArtifactName } from './download-progress.js';
+import { PRODUCTION_STAGES, assertTrustedBackendRecipe, expectedWorkerMachines, hashMatches, initialComponents, runtimeRoots, runtimeManifest, selectManagedFfmpeg, selectRuntimeProfile } from './runtime-plan.js';
+import { UvOutputProgress } from './uv-output-progress.js';
 
 const manifest = JSON.parse(fs.readFileSync(fileURLToPath(new URL('../resources/bootstrap-manifest.json', import.meta.url)), 'utf8'));
 
@@ -757,7 +758,7 @@ function checkDisk(directory, requiredBytes, availableBytes = null) {
 }
 
 export async function fetchArtifact(url, destination, expected, { signal, onProgress, fetchImpl = fetch,
-  maxBytes = MAX_UV_ARCHIVE_BYTES } = {}) {
+  maxBytes = MAX_UV_ARCHIVE_BYTES, artifactName = 'runtime artifact' } = {}) {
   let parsed;
   try { parsed = new URL(url); } catch { throw new BootstrapError('BOOTSTRAP_SOURCE_INVALID', 'The trusted bootstrap manifest contains an invalid source.'); }
   let response;
@@ -800,7 +801,7 @@ export async function fetchArtifact(url, destination, expected, { signal, onProg
       }
       onProgress?.({ phase: 'downloading', current: bytes, total: expected.size_bytes,
         percent: Math.min(100, Math.floor(bytes * 100 / expected.size_bytes)),
-        message: 'Downloading the pinned uv runtime.', artifact_name: 'uv' });
+        message: `Downloading ${artifactName}.`, artifact_name: artifactName });
     }
     await file.sync();
   } catch (error) {
@@ -1108,6 +1109,25 @@ export class BootstrapTasks {
     return result;
   }
 
+  async runUvInstall(executable, args, context, options = {}) {
+    const telemetry = new UvOutputProgress((event) => {
+      if (event.kind === 'package_installed') {
+        this.emit(context, safeProgress('installing', event.message, null, null,
+          { artifact_name: event.artifact_name, artifact_type: 'python_package' }));
+      } else {
+        this.emit(context, safeProgress('installing', event.message, null, null,
+          { operation: event.operation, artifact_name: 'Python dependency installation', artifact_type: 'python_package' }));
+      }
+    });
+    const callerOutput = options.onOutput;
+    try {
+      return await this.runProcess(executable, args, context, { ...options, onOutput: (stream, chunk) => {
+        telemetry.push(stream, chunk);
+        try { callerOutput?.(stream, chunk); } catch {}
+      } });
+    } finally { telemetry.flush(); }
+  }
+
   currentFreeBytes() { return this.availableBytesOverride; }
 
   requireSpace(requiredBytes) {
@@ -1250,12 +1270,13 @@ export class BootstrapTasks {
     this.emit(context, safeProgress('downloading', 'Downloading the pinned Astral uv release artifact.', null, null,
       { artifact_name: `uv ${this.manifest.uv.version}`, artifact_type: 'runtime' }));
     const transferSampler = new ByteTransferSampler();
-    await fetchArtifact(artifact.url, archive, artifact, { signal: context.signal,
+    const artifactName = `uv ${this.manifest.uv.version}`;
+    await fetchArtifact(artifact.url, archive, artifact, { signal: context.signal, artifactName,
       fetchImpl: this.fetchImpl, onProgress: (value) => this.emit(context, {
         ...value,
         operation: 'downloading', artifact_type: 'runtime', progress_mode: 'bytes',
         transferred_bytes: value.current, total_bytes: value.total,
-        artifact_name: `uv ${this.manifest.uv.version}`,
+        artifact_name: artifactName,
         ...transferSampler.update(value.current, value.total),
       }) });
     const digest = await hashFile(archive);
@@ -1518,16 +1539,22 @@ export class BootstrapTasks {
     }
     this.requireSpace(this.manifest.disk_space.estimated_model_manager_environment_and_cache_bytes
       + this.manifest.disk_space.safety_margin_bytes);
-    this.emit(context, safeProgress('installing', 'Installing the isolated model-manager environment.', null, null,
-      { artifact_name: 'Installing dependencies', artifact_type: 'python_package' }));
+    this.emit(context, safeProgress('installing', 'Creating the isolated model-manager environment.', null, null,
+      { artifact_name: 'Model-manager environment', artifact_type: 'python_package' }));
     const env = this.makeEnvironment(this.paths);
     await this.runProcess(this.paths.uvExecutable, ['venv', '--no-config', '--no-project',
       '--python', managedPython, target], context, { env });
     const environmentPython = path.join(target, 'bin', 'python');
-    await this.runProcess(this.paths.uvExecutable, ['pip', 'sync', '--no-config', '--require-hashes',
+    this.emit(context, safeProgress('installing', 'Installing locked model-manager Python dependencies with uv.', null, null,
+      { artifact_name: 'Model-manager Python dependencies', artifact_type: 'python_package' }));
+    await this.runUvInstall(this.paths.uvExecutable, ['pip', 'sync', '--no-config', '--require-hashes',
       '--only-binary', ':all:', '--python', environmentPython, this.requirementsPath], context, { env });
-    await this.runProcess(this.paths.uvExecutable, ['pip', 'install', '--no-config', '--no-deps',
+    this.emit(context, safeProgress('installing', 'Installing the bundled Speechcraft model-manager wheel.', null, null,
+      { artifact_name: 'Speechcraft model-manager wheel', artifact_type: 'python_package' }));
+    await this.runUvInstall(this.paths.uvExecutable, ['pip', 'install', '--no-config', '--no-deps',
       '--python', environmentPython, wheel], context, { env });
+    this.emit(context, safeProgress('verifying', 'Verifying the model-manager environment and bundled wheel.', null, null,
+      { artifact_name: 'Model-manager environment', artifact_type: 'python_package' }));
     await this.verifyModelManager(environmentPython, context);
     this.status(context, { model_manager_verified: true });
     this.setComponent(context, 'model_manager', { state: 'verified', verification: 'catalog_import_and_cli',
@@ -1537,6 +1564,8 @@ export class BootstrapTasks {
   }
 
   async validateBootstrap(context) {
+    this.emit(context, safeProgress('verifying', 'Verifying uv, managed Python, and the model-manager environment.', null, null,
+      { artifact_name: 'Installation tools', artifact_type: 'runtime' }));
     if (!await this.verifyUv(context)) throw new BootstrapError('UV_VALIDATION_FAILED', 'The managed uv executable did not pass its version check.');
     const python = await this.findPython(context);
     const pythonInfo = await this.verifyPython(python, context);
@@ -1607,15 +1636,19 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     const target = this.backendEnvironmentPath();
     if (await this.validateBackendEnvironment(context, target)) {
       this.setComponent(context, 'backend_environment', { state: 'verified', verification: 'lock_identity_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
+      this.emit(context, safeProgress('verified', 'Verified and reused the existing backend environment.', null, null,
+        { artifact_name: 'Backend Python environment', artifact_type: 'python_package' }));
       return;
     }
     if (inspectDirectoryOrMissing(target)) await this.quarantine(target, 'invalid-backend-env');
     ensureManagedDirectory(this.dataDirectory, target);
     this.requireSpace(runtimeManifest.disk_space.backend_environment_estimate_bytes + runtimeManifest.disk_space.safety_margin_bytes);
     const env = { ...this.makeEnvironment(this.paths), UV_PROJECT_ENVIRONMENT: target };
-    this.emit(context, safeProgress('installing', 'Installing the backend environment from its trusted lockfile.', null, null,
-      { artifact_name: 'Installing dependencies', artifact_type: 'python_package' }));
-    await this.runProcess(this.paths.uvExecutable, ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', project], context, { cwd: project, env });
+    this.emit(context, safeProgress('installing', 'Installing locked backend Python dependencies with uv.', null, null,
+      { artifact_name: 'Backend Python dependencies', artifact_type: 'python_package' }));
+    await this.runUvInstall(this.paths.uvExecutable, ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', project], context, { cwd: project, env });
+    this.emit(context, safeProgress('verifying', 'Checking the installed backend environment.', null, null,
+      { artifact_name: 'Backend Python environment', artifact_type: 'python_package' }));
     if (!await this.validateBackendEnvironment(context, target)) throw new BootstrapError('BACKEND_ENVIRONMENT_INVALID', 'The installed backend did not pass its managed-interpreter import probe.');
     this.setComponent(context, 'backend_environment', { state: 'verified', verification: 'lock_identity_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
   }
@@ -1671,6 +1704,8 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         parseProbe(result, 'SPEECHCRAFT_WORKER_ENV_PROBE', 'WORKER_ENVIRONMENT_INVALID');
         this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${recipe.environment_version}/${selection.workerProfile}`,
           verification: 'trusted_lock_and_import_probe', last_verified_at: new Date().toISOString(), failure_code: null, message: null, path: target });
+        this.emit(context, safeProgress('verified', 'Verified and reused the selected dataset worker environment.', null, null,
+          { artifact_name: `${selection.workerProfile} worker environment`, artifact_type: 'python_package' }));
         return;
       } catch (error) {
         if (error.code === 'BOOTSTRAP_CANCELLED' || error.code === 'BOOTSTRAP_PROCESS_TERMINATION_UNCERTAIN') throw error;
@@ -1680,8 +1715,8 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
     ensureManagedDirectory(this.dataDirectory, target);
     this.requireSpace((recipe.estimated_bytes || 0) + (this.runtimeRecipe.disk_space.safety_margin_bytes || 0));
     const env = { ...this.makeEnvironment(this.paths), UV_PROJECT_ENVIRONMENT: target };
-    this.emit(context, safeProgress('installing', 'Installing the trusted dataset worker environment.', null, null,
-      { artifact_name: 'Installing dependencies', artifact_type: 'python_package' }));
+    this.emit(context, safeProgress('installing', 'Installing the selected locked dataset worker dependencies with uv.', null, null,
+      { artifact_name: `${selection.workerProfile} worker Python dependencies`, artifact_type: 'python_package' }));
     // Release files are deliberately read-only. uv's local path dependency
     // builds (notably the model manager) create egg-info/build artifacts in
     // their source directories, so stage the already-verified recipe and its
@@ -1693,7 +1728,9 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         || !trustedFileMatches(path.join(stagedProject, 'pyproject.toml'), recipe.project_manifest_sha256)) {
       throw new BootstrapError('WORKER_SOURCE_STAGING_FAILED', 'The staged worker recipe does not match its trusted identities.');
     }
-    await this.runProcess(this.paths.uvExecutable, ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', stagedProject], context, { cwd: stagedProject, env });
+    await this.runUvInstall(this.paths.uvExecutable, ['sync', '--locked', '--no-dev', '--no-install-project', '--python', context.managedPython || await this.findPython(context), '--project', stagedProject], context, { cwd: stagedProject, env });
+    this.emit(context, safeProgress('verifying', 'Checking the installed dataset worker environment.', null, null,
+      { artifact_name: `${selection.workerProfile} worker environment`, artifact_type: 'python_package' }));
     const result = await this.runProcess(python, ['-I', '-c', probe], context, { cwd: project });
     parseProbe(result, 'SPEECHCRAFT_WORKER_ENV_PROBE', 'WORKER_ENVIRONMENT_INVALID');
     this.setComponent(context, 'worker_environment', { state: 'verified', identity: `${this.runtimeRecipe.worker.distribution}/v${recipe.environment_version}/${selection.workerProfile}`,
@@ -1716,7 +1753,12 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         const message = sampled.stalled ? 'Model download stalled; waiting for network data.'
           : sampled.operation === 'downloading' ? `Downloading ${sampled.artifact_name || 'model'}.`
             : sampled.operation === 'verifying' ? `Verifying ${sampled.artifact_name || 'model'} files.`
-              : `Installing ${sampled.artifact_name || 'model'}.`;
+              : sampled.operation === 'resolving' ? 'Resolving the selected model and checking its cache.'
+                : sampled.operation === 'retrying' ? `Retrying model download (attempt ${sampled.retry_count || 1}).`
+                  : sampled.operation === 'completed' && sampled.cache_status === 'reused' ? `Reusing available ${sampled.artifact_name || 'model'}.`
+                    : sampled.operation === 'completed' ? `Installed ${sampled.artifact_name || 'model'} files.`
+                      : sampled.operation === 'failed' ? `Model acquisition failed for ${sampled.artifact_name || 'model'}.`
+                        : `Installing ${sampled.artifact_name || 'model'}.`;
         this.setComponent(context, component, { state: componentState, failure_code: null, message,
           progress: sampled, progress_indeterminate: sampled.progress_mode !== 'bytes' });
         this.emit(context, { ...sampled, message });
@@ -1768,7 +1810,10 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
           progress: null, progress_indeterminate: false });
         throw new BootstrapError('MODEL_FILES_NOT_VERIFIED', `Model files for ${role} did not pass the trusted manifest checks.`);
       }
-      this.setComponent(context, component, { state: 'files_verified', verification: 'manifest_size_and_sha256', last_verified_at: new Date().toISOString(), failure_code: null, message: 'Files are verified; runtime inference has not been tested.', runtime_ready: false, progress: null, progress_indeterminate: false, path: report.root, report });
+      this.setComponent(context, component, { state: 'files_verified', identity: safeArtifactName(latestProgress?.artifact_name) || role,
+        verification: 'manifest_size_and_sha256', last_verified_at: new Date().toISOString(), failure_code: null,
+        message: 'Files are verified; runtime inference has not been tested.', runtime_ready: false,
+        progress: null, progress_indeterminate: false, path: report.root, report });
     }
   }
 
@@ -2035,23 +2080,36 @@ print(json.dumps({'kind':'SPEECHCRAFT_BACKEND_ENV_PROBE','python':sys.executable
         throw new BootstrapError('RUNTIME_PROBE_INTEGRITY_FAILED', 'A runtime-validation helper is outside the application or failed its trusted digest check.');
       }
       const modelComponent = ['silero', 'whisper', 'pyannote', 'pyannote_cuda', 'ecapa'].includes(probe.component);
+      const identityComponent = probe.component === 'pyannote_cuda' ? 'pyannote'
+        : probe.component === 'cuda' ? 'worker_cuda_candidate' : probe.component;
+      const knownIdentity = context.componentStatus.components?.[identityComponent]?.identity;
+      const artifactName = probe.component === 'cuda' ? 'CUDA inference'
+        : probe.component === 'pyannote_cuda' ? 'pyannote/speaker-diarization-community-1'
+          : probe.component === 'ffmpeg' ? `FFmpeg ${selectManagedFfmpeg(this.runtimeRecipe, this.environment)?.version || this.runtimeRecipe.ffmpeg?.version || 'runtime'}`
+            : typeof knownIdentity === 'string' && knownIdentity.trim() ? knownIdentity.split('@', 1)[0]
+              : `${probe.component} inference`;
+      const safeArtifact = safeArtifactName(artifactName) || `${probe.component} inference`;
+      const progressOperation = probe.component === 'ffmpeg' ? 'verifying' : 'loading';
+      const progressRole = ({ silero: 'speech_detection', whisper: 'asr', pyannote: 'diarization',
+        pyannote_cuda: 'diarization_cuda_validation', ecapa: 'speaker_purity' })[probe.component] || null;
       if (probe.component === 'pyannote_cuda') {
         const pyannote = context.componentStatus.components.pyannote || {};
         this.setComponent(context, 'pyannote', { ...pyannote, cuda_validation: { validated: false,
           device: 'cpu', reason: 'Running Community-1 CUDA inference and device validation.' },
           progress: { phase: 'running_inference', operation: 'loading', role: 'diarization_cuda_validation',
-            artifact_type: 'model', progress_mode: 'indeterminate', current_filename: null, transferred_bytes: null,
+            artifact_type: 'model', artifact_name: safeArtifact, progress_mode: 'indeterminate', current_filename: null, transferred_bytes: null,
             total_bytes: null, bytes_per_second: null, eta_seconds: null, completed_files: null,
             total_files: null, transfer_indeterminate: true, stalled: false, sampled_at: new Date().toISOString() },
           progress_indeterminate: true });
       }
       this.setComponent(context, probe.component, { state: modelComponent ? 'validating_inference' : 'validating',
         failure_code: null, message: null,
-        ...(modelComponent ? { progress: { phase: 'running_inference', operation: 'loading', role: ({ silero: 'speech_detection', whisper: 'asr', pyannote: 'diarization', pyannote_cuda: 'diarization_cuda_validation', ecapa: 'speaker_purity' })[probe.component],
-          artifact_type: 'model', progress_mode: 'indeterminate', current_filename: null, transferred_bytes: null,
+        progress: { phase: progressOperation === 'loading' ? 'running_inference' : 'verifying', operation: progressOperation,
+          ...(progressRole ? { role: progressRole } : {}), artifact_type: modelComponent ? 'model' : 'runtime', artifact_name: safeArtifact,
+          progress_mode: 'indeterminate', current_filename: null, transferred_bytes: null,
           total_bytes: null, bytes_per_second: null,
           eta_seconds: null, completed_files: null, total_files: null, transfer_indeterminate: true, stalled: false,
-          sampled_at: new Date().toISOString() }, progress_indeterminate: true } : {}) });
+          sampled_at: new Date().toISOString() }, progress_indeterminate: true });
       const role = probe.environment_role || 'model_manager';
       if (!['model_manager', 'backend', 'worker', 'worker_cuda_candidate'].includes(role)) throw new BootstrapError('RUNTIME_PROBE_RECIPE_INVALID', 'A runtime probe references an unapproved interpreter role.');
       const components = context.componentStatus.components || {};

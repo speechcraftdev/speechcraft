@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { SETUP_STAGES, SimulatedTasks } from './simulated-tasks.js';
-import { evaluateRuntimeReadiness } from './runtime-plan.js';
+import { evaluateRuntimeReadiness, PRODUCTION_STAGES, PRODUCTION_STAGE_TITLES } from './runtime-plan.js';
 import { sanitizeProgressTelemetry } from './download-progress.js';
 
 export const JOB_STATES = Object.freeze([
@@ -35,6 +35,7 @@ export function assertTransition(from, to) {
 }
 
 const PUBLIC_JOB_FIELDS = Object.freeze(['schema_version', 'id', 'plan_id', 'state', 'stage', 'task_id', 'mode',
+  'stage_started_at',
   'created_at', 'updated_at', 'started_at', 'completed_at', 'attempt_count', 'attempt_id', 'revision', 'progress', 'error']);
 const PUBLIC_COMPONENT_NAMES = new Set(['uv', 'managed_python', 'model_manager', 'backend_environment', 'worker_environment',
   'worker_cuda_candidate', 'ffmpeg', 'silero', 'whisper', 'ecapa', 'pyannote', 'runtime_probes', 'backend_service', 'dataset_processing']);
@@ -85,11 +86,21 @@ export function publicComponents(components) {
       .map((key) => [key, publicComponentField(key, value[key])]))]));
 }
 
-function bindProgressIdentity(status, jobId, attemptId, eventRevision) {
+function identifyJobProgress(progress, jobId, attemptId, stageId, eventRevision) {
+  return progress && typeof progress === 'object' ? { ...progress, job_id: jobId, attempt_id: attemptId,
+    stage_id: stageId, event_revision: eventRevision, sampled_at: progress.sampled_at || new Date().toISOString() } : progress;
+}
+
+function bindProgressIdentity(status, jobId, attemptId, eventRevision, stageId) {
   if (!status || typeof status !== 'object' || !status.components) return status;
   return { ...status, components: Object.fromEntries(Object.entries(status.components).map(([name, component]) => [name,
     component?.progress && typeof component.progress === 'object'
-      ? { ...component, progress: { ...component.progress, job_id: jobId, attempt_id: attemptId, event_revision: eventRevision } }
+      ? { ...component, progress: { ...component.progress,
+        job_id: component.progress.job_id || jobId,
+        attempt_id: component.progress.attempt_id || attemptId,
+        stage_id: component.progress.stage_id || (Number.isSafeInteger(component.progress.event_revision) ? undefined : stageId),
+        event_revision: Number.isSafeInteger(component.progress.event_revision)
+          ? component.progress.event_revision : eventRevision } }
       : component])) };
 }
 
@@ -102,6 +113,12 @@ export function serializePublicJob(job) {
     message: typeof job.error.message === 'string' ? job.error.message.slice(0, 320) : 'A setup operation failed.',
   };
   if (job.progress) value.progress = sanitizeProgressTelemetry(job.progress);
+  const stageIndex = PRODUCTION_STAGES.indexOf(job.stage);
+  if (stageIndex >= 0) {
+    value.stage_index = stageIndex + 1;
+    value.stage_count = PRODUCTION_STAGES.length;
+    value.stage_title = PRODUCTION_STAGE_TITLES[job.stage];
+  }
   if (job.bootstrap_status) {
     value.bootstrap_status = {
       profile: job.bootstrap_status.profile || null,
@@ -215,13 +232,15 @@ export class SetupController {
           const job = state.job;
           job.state = 'running';
           job.stage = stage;
+          job.stage_started_at = new Date().toISOString();
           job.task_id = this.taskId(stage);
           job.attempt_id = attemptId;
           job.attempt_count += 1;
           job.started_at = new Date().toISOString();
           job.completed_at = null;
           job.error = null;
-          job.progress = this.initialProgress(stage, 'Access verified. Resuming model setup.');
+          job.progress = identifyJobProgress(this.initialProgress(stage, 'Access verified. Resuming model setup.'),
+            job.id, job.attempt_id, stage, this.store.snapshot().revision + 1);
           const component = job.bootstrap_status?.components?.pyannote;
           if (component) Object.assign(component, { state: 'checking_token', failure_code: null, message: null });
         }, 'verified_model_setup_resumed');
@@ -238,14 +257,18 @@ export class SetupController {
     }
     const now = new Date().toISOString();
     const stage = this.stages[0];
+    const attemptId = randomUUID();
+    const jobId = randomUUID();
     const job = {
       schema_version: 2,
-      attempt_id: randomUUID(),
-      id: randomUUID(), plan_id: this.mode === 'simulated' ? 'simulated-v1' : this.mode === 'runtime' ? 'speechcraft-runtime-v1' : 'bootstrap-v1', state: 'running', stage,
+      attempt_id: attemptId,
+      id: jobId, plan_id: this.mode === 'simulated' ? 'simulated-v1' : this.mode === 'runtime' ? 'speechcraft-runtime-v1' : 'bootstrap-v1', state: 'running', stage,
       task_id: this.taskId(stage), mode: this.mode,
       created_at: now, updated_at: now, started_at: now, completed_at: null,
+      stage_started_at: now,
       attempt_count: 1, revision: 0,
-      progress: this.initialProgress(stage, `Queued ${this.mode} setup.`),
+      progress: identifyJobProgress(this.initialProgress(stage, `Queued ${this.mode} setup.`),
+        jobId, attemptId, stage, this.store.snapshot().revision + 1),
       bootstrap_status: this.tasks.initialBootstrapStatus ? this.tasks.initialBootstrapStatus() : null,
       error: null,
     };
@@ -280,14 +303,16 @@ export class SetupController {
       const job = state.job;
       job.state = 'running';
       job.stage = stage;
+      job.stage_started_at = new Date().toISOString();
       job.task_id = this.taskId(stage);
       job.started_at = new Date().toISOString();
       job.completed_at = null;
       job.attempt_count += 1;
       job.attempt_id = randomUUID();
+      job.progress = identifyJobProgress(this.initialProgress(stage, 'Retrying setup.'),
+        job.id, job.attempt_id, stage, this.store.snapshot().revision + 1);
       job.plan_id ||= recordedMode === 'simulated' ? 'simulated-v1' : recordedMode === 'runtime' ? 'speechcraft-runtime-v1' : 'bootstrap-v1';
       job.error = null;
-      job.progress = this.initialProgress(stage, 'Queued setup retry.');
       // Keep prior component evidence until each trusted stage revalidates it.
       // In particular, an interrupted gated acquisition must be able to tell
       // the user that its ephemeral credential was discarded.
@@ -439,8 +464,10 @@ export class SetupController {
         this.store.commit((state) => {
           if (state.job?.id !== jobId || state.job.attempt_id !== attemptId || state.job.state !== 'running') return;
           state.job.stage = stage;
+          state.job.stage_started_at = new Date().toISOString();
           state.job.task_id = this.taskId(stage);
-          state.job.progress = this.initialProgress(stage, `${stage} started.`);
+          state.job.progress = identifyJobProgress(this.initialProgress(stage, 'Starting this installation step.'),
+            jobId, attemptId, stage, this.store.snapshot().revision + 1);
         }, 'stage_started');
         try { await this.tasks.run(stage, {
           signal,
@@ -452,7 +479,7 @@ export class SetupController {
             const latest = this.store.snapshot().job;
             if (latest?.id !== jobId || latest.attempt_id !== attemptId || !['running', 'completed'].includes(latest.state)) return;
             const eventRevision = this.store.snapshot().revision + 1;
-            const identified = bindProgressIdentity(status, jobId, attemptId, eventRevision);
+            const identified = bindProgressIdentity(status, jobId, attemptId, eventRevision, stage);
             this.store.commit((state) => { state.job.bootstrap_status = identified; }, 'component_status');
           },
           onChildProcess: (record, phase) => {
@@ -477,6 +504,8 @@ export class SetupController {
             const execution = this.activeExecution;
             const identified = progress && typeof progress === 'object' ? {
               ...progress, job_id: jobId, attempt_id: attemptId,
+              stage_id: progress.stage_id || latest.stage,
+              component_id: progress.component_id || progress.component || null,
               event_revision: this.store.snapshot().revision + 1,
             } : progress;
             if (identified?.operation === 'downloading' && identified.progress_mode === 'bytes'

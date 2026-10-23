@@ -6,7 +6,8 @@ const SAMPLE_WINDOW_MS = 5_000;
 const MIN_SAMPLE_MS = 250;
 const MIN_EMIT_INTERVAL_MS = 750;
 const MIN_EMIT_BYTES = 1024 * 1024;
-const OPERATIONS = new Set(['downloading', 'installing', 'verifying', 'loading', 'checking']);
+const OPERATIONS = new Set(['checking', 'resolving', 'downloading', 'installing', 'extracting', 'building',
+  'verifying', 'loading', 'starting', 'completed', 'failed', 'retrying']);
 const PROGRESS_MODES = new Set(['bytes', 'files', 'indeterminate']);
 const SETUP_PHASES = new Set([
   'queued', 'inspecting', 'downloading', 'verifying', 'verified', 'installing',
@@ -21,7 +22,7 @@ function safeIdentifier(value) {
   return typeof value === 'string' && value.length <= 80 && /^[A-Za-z0-9-]+$/.test(value) ? value : null;
 }
 
-function safeArtifactName(value) {
+export function safeArtifactName(value) {
   if (typeof value !== 'string' || value.length > 160 || /[\u0000-\u001f\u007f\\]/.test(value)
       || /https?:|hf_[A-Za-z0-9_-]{16,}/i.test(value) || /^[a-f0-9]{32,}$/i.test(value)) return null;
   if (value.includes('/')) {
@@ -93,6 +94,8 @@ export function sanitizeProgressTelemetry(value) {
     result.completed_files = Math.min(completed, filesTotal);
     result.total_files = filesTotal;
   }
+  const expectedSize = byteCount(value.expected_size_bytes);
+  if (value.artifact_type === 'model' && expectedSize !== null && expectedSize > 0) result.expected_size_bytes = expectedSize;
   for (const key of ['bytes_per_second', 'speed_bytes_per_second']) {
     if (Object.hasOwn(value, key)) result.bytes_per_second = typeof value[key] === 'number' && Number.isFinite(value[key]) && value[key] > 0
       ? Math.min(value[key], 1_000_000_000_000) : null;
@@ -113,13 +116,23 @@ export function sanitizeProgressTelemetry(value) {
   if (typeof value.message === 'string') result.message = value.message.slice(0, 320)
     .replace(/https?:\/\/\S+/gi, '[link removed]')
     .replace(/hf_[A-Za-z0-9_-]{16,}/g, '[credential removed]')
-    .replace(/(?:token|signature|authorization)=\S+/gi, '[credential removed]');
+    .replace(/(?:token|signature|authorization)=\S+/gi, '[credential removed]')
+    .replace(/(?:\/home\/|\/Users\/|[A-Za-z]:\\Users\\)[^\s,;)]*/gi, '[local path removed]');
+  for (const key of ['stage_id', 'component_id']) {
+    if (typeof value[key] === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(value[key])) result[key] = value[key];
+  }
+  if (['reused', 'downloaded', 'installing', 'retrying'].includes(value.cache_status)) result.cache_status = value.cache_status;
+  if (Number.isSafeInteger(value.retry_count) && value.retry_count >= 0 && value.retry_count < 100) result.retry_count = value.retry_count;
   if (typeof value.sampled_at === 'string' && /^\d{4}-\d\d-\d\dT/.test(value.sampled_at)) result.sampled_at = value.sampled_at.slice(0, 40);
   return result;
 }
 
 function phaseFor(event) {
   if (event.operation && OPERATIONS.has(event.operation)) return event.operation;
+  if (event.event === 'resolving') return 'resolving';
+  if (event.event === 'retrying') return 'retrying';
+  if (event.event === 'reused' || event.event === 'installed') return 'completed';
+  if (event.event === 'failed') return 'failed';
   if (event.event === 'verifying' || event.event === 'file_verified') return 'verifying';
   if (event.event === 'publishing' || event.event === 'installed') return 'installing';
   if (['progress', 'downloading', 'source_progress', 'source_acquiring', 'retrying'].includes(event.event)) return 'downloading';
@@ -179,7 +192,7 @@ export class DownloadProgressTracker {
     const operation = phaseFor(event);
     if (!operation || !['speech_detection', 'asr', 'diarization', 'speaker_purity'].includes(role)) return null;
     for (const field of ['downloaded_bytes', 'total_bytes', 'file_downloaded_bytes', 'file_total_bytes',
-      'files_completed', 'files_total', 'attempt', 'transfer_attempt_bytes']) {
+      'files_completed', 'files_total', 'attempt', 'transfer_attempt_bytes', 'model_total_bytes']) {
       if (Object.hasOwn(event, field) && event[field] !== null && byteCount(event[field]) === null) return null;
     }
     const now = this.clock();
@@ -190,7 +203,9 @@ export class DownloadProgressTracker {
     const filesTotal = byteCount(event.total_files ?? event.files_total);
     const attempt = byteCount(event.attempt);
     const networkBytes = byteCount(event.transfer_attempt_bytes);
-    const name = typeof event.artifact_name === 'string' ? event.artifact_name : artifactName;
+    const expectedSize = byteCount(event.model_total_bytes);
+    const nameCandidate = typeof event.artifact_name === 'string' ? event.artifact_name : artifactName;
+    const name = safeArtifactName(nameCandidate);
     const bytesValid = transferred !== null && total !== null && total > 0 && transferred <= total
       && event.transfer_indeterminate !== true;
 
@@ -199,6 +214,9 @@ export class DownloadProgressTracker {
       return {
         operation, phase: operation, role, artifact_name: name, artifact_type: 'model',
         progress_mode: 'indeterminate', current_filename: null,
+        ...(expectedSize !== null && expectedSize > 0 ? { expected_size_bytes: expectedSize } : {}),
+        ...(event.event === 'reused' ? { cache_status: 'reused' } : {}),
+        ...(operation === 'retrying' && Number.isSafeInteger(event.attempt) ? { retry_count: event.attempt } : {}),
       };
     }
 
@@ -222,6 +240,7 @@ export class DownloadProgressTracker {
     const remaining = bytesValid ? total - transferred : null;
     const result = {
       operation: 'downloading', phase: 'downloading', role, artifact_name: name, artifact_type: 'model',
+      ...(expectedSize !== null && expectedSize > 0 ? { expected_size_bytes: expectedSize } : {}),
       progress_mode: bytesValid ? 'bytes' : completed !== null && filesTotal !== null && filesTotal > 0 ? 'files' : 'indeterminate',
       ...(bytesValid ? { transferred_bytes: transferred, total_bytes: total,
         percent: Math.min(100, Math.floor(transferred * 100 / total)) } : {}),

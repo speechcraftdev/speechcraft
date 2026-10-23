@@ -10,8 +10,8 @@ const sha = (value) => createHash('sha256').update(value).digest('hex');
 
 function context(tasks, suffix = '00000000-0000-4000-8000-000000000001') {
   return { attemptId: suffix, signal: new AbortController().signal,
-    componentStatus: tasks.initialBootstrapStatus(),
-    onComponentStatus(value) { this.componentStatus = value; }, onProgress() {},
+    componentStatus: tasks.initialBootstrapStatus(), progressEvents: [],
+    onComponentStatus(value) { this.componentStatus = value; }, onProgress(value) { this.progressEvents.push(value); },
     async onChildProcess() {} };
 }
 
@@ -52,6 +52,9 @@ test('managed FFmpeg installation verifies both pinned executables, reuses them,
   const installed = first.componentStatus.components.ffmpeg.path;
   assert.equal(first.componentStatus.components.ffmpeg.state, 'files_verified');
   assert.equal(transfers, 1);
+  assert.ok(first.progressEvents.some((event) => event.artifact_name === 'FFmpeg fixture-1'
+    && event.operation === 'downloading' && event.progress_mode === 'bytes'));
+  assert.ok(first.progressEvents.every((event) => event.artifact_name !== 'uv'));
   assert.equal(await tasks.verifyFfmpegDirectory(installed, first), true);
 
   const second = context(tasks, '00000000-0000-4000-8000-000000000002');
@@ -107,6 +110,10 @@ test('macOS selects the pinned source-build FFmpeg recipe and rejects a GPL conf
   const first = context(tasks);
   first.managedPython = '/managed/cpython';
   await tasks.installSourceFfmpeg(first, artifact);
+  assert.deepEqual(first.progressEvents.filter((event) => ['downloading', 'verifying', 'extracting', 'building', 'installing'].includes(event.operation))
+    .map((event) => event.operation), ['downloading', 'downloading', 'verifying', 'extracting', 'building', 'building', 'installing']);
+  assert.ok(first.progressEvents.filter((event) => event.operation === 'building')
+    .every((event) => event.artifact_name.startsWith('FFmpeg ')));
   assert.equal(first.componentStatus.components.ffmpeg.state, 'files_verified');
   assert.equal(first.componentStatus.components.ffmpeg.runtime_ready, false);
   const installed = first.componentStatus.components.ffmpeg.path;

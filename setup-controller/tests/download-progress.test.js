@@ -217,6 +217,26 @@ test('install and verification events carry operation labels without download me
   assert.equal(installing.percent, undefined);
 });
 
+test('build and extraction operations remain indeterminate and sanitize local paths', () => {
+  const building = sanitizeProgressTelemetry({ operation: 'building', artifact_name: 'FFmpeg n8.1.3',
+    artifact_type: 'runtime', progress_mode: 'bytes', transferred_bytes: 42, total_bytes: 84,
+    message: 'Building in /home/private-user/.cache/tmp' });
+  assert.equal(building.operation, 'building');
+  assert.equal(building.progress_mode, 'indeterminate');
+  assert.equal(building.transferred_bytes, undefined);
+  assert.match(building.message, /\[local path removed\]/);
+});
+
+test('observed model artifact names are validated before they can enter component messages', () => {
+  const tracker = new DownloadProgressTracker({ clock: () => 0 });
+  const unsafe = tracker.accept({ event: 'downloading', role: 'asr', artifact_name: '/home/private/model.bin',
+    downloaded_bytes: 1, total_bytes: 2, transfer_attempt_bytes: 1, attempt: 1 }, 'asr');
+  assert.equal(unsafe.artifact_name, null);
+  const trusted = tracker.accept({ event: 'downloading', role: 'asr', artifact_name: 'Systran/faster-whisper-large-v3',
+    downloaded_bytes: 1, total_bytes: 2, transfer_attempt_bytes: 1, attempt: 1 }, 'asr');
+  assert.equal(trusted.artifact_name, 'Systran/faster-whisper-large-v3');
+});
+
 test('malformed, out-of-order, or secret-bearing progress cannot become public telemetry', () => {
   let now = 0;
   const tracker = new DownloadProgressTracker({ clock: () => now });

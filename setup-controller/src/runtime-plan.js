@@ -13,6 +13,21 @@ export const PRODUCTION_STAGES = Object.freeze([
   'validate_runtime', 'start_services', 'verify_services',
 ]);
 
+/** User-facing names for the production setup plan, kept beside its stage order. */
+export const PRODUCTION_STAGE_TITLES = Object.freeze({
+  inspect_system: 'Checking your system',
+  install_uv: 'Preparing the package installer',
+  install_python: 'Installing Python',
+  install_model_manager: 'Preparing model downloads',
+  validate_bootstrap: 'Verifying installation tools',
+  install_backend_environment: 'Installing backend dependencies',
+  install_worker_environment: 'Installing speech-processing environment',
+  install_models: 'Downloading models',
+  validate_runtime: 'Testing installed models',
+  start_services: 'Starting Speechcraft',
+  verify_services: 'Checking Speechcraft is ready',
+});
+
 export function cudaProfileReady(recipe, gpuDetected, cudaProbe) {
   return gpuDetected === true && recipe?.available === true
     && cudaProbe?.schema_version === 1 && cudaProbe?.component === 'cuda'

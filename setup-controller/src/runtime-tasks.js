@@ -2,6 +2,7 @@ import { BootstrapError, BootstrapTasks, ensureManagedDirectory, fetchArtifact, 
 import { PRODUCTION_STAGES, evaluateRuntimeReadiness, hashMatches, runtimeRoots, selectManagedFfmpeg, selectRuntimeProfile } from './runtime-plan.js';
 import { BackendService, reconcileOwnedService } from './backend-service.js';
 import { inspectHost } from './platform.js';
+import { ByteTransferSampler } from './download-progress.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -289,6 +290,8 @@ export class RuntimeTasks extends BootstrapTasks {
       this.setComponent(context, 'ffmpeg', { state: 'files_verified', identity: `ffmpeg-source:${artifact.version}:${artifact.sha256}`,
         verification: 'source_archive_sha256_and_local_build', last_verified_at: new Date().toISOString(), path: target,
         runtime_ready: false, failure_code: null, message: 'The local FFmpeg build matches the pinned source. Decode readiness still requires the runtime probe. This binary is not a redistributed Mac build.' });
+      this.emit(context, { operation: 'verifying', phase: 'verified', artifact_name: `FFmpeg ${artifact.version}`,
+        artifact_type: 'runtime', progress_mode: 'indeterminate', cache_status: 'reused', message: 'Verified and reused the existing FFmpeg build.' });
       return true;
     }
     if (fs.existsSync(target)) await this.quarantine(target, 'invalid-ffmpeg');
@@ -299,15 +302,33 @@ export class RuntimeTasks extends BootstrapTasks {
     const prefix = path.join(attempt, 'prefix');
     ensureManagedDirectory(this.dataDirectory, source);
     ensureManagedDirectory(this.dataDirectory, prefix);
+    const sourceName = `FFmpeg source ${artifact.version}`;
+    this.emit(context, { operation: 'downloading', phase: 'downloading', artifact_name: sourceName,
+      artifact_type: 'runtime', progress_mode: 'indeterminate', message: `Downloading ${sourceName}.` });
+    const sourceSampler = new ByteTransferSampler();
     await fetchArtifact(artifact.url, archive, artifact, { signal: context.signal, fetchImpl: this.fetchImpl,
-      maxBytes: artifact.size_bytes, onProgress: (progress) => this.emit(context, { ...progress, component: 'ffmpeg', message: 'Downloading the pinned FFmpeg source archive.' }) });
+      artifactName: sourceName, maxBytes: artifact.size_bytes, onProgress: (progress) => this.emit(context, {
+        ...progress, component: 'ffmpeg', operation: 'downloading', artifact_type: 'runtime', progress_mode: 'bytes',
+        transferred_bytes: progress.current, total_bytes: progress.total,
+        ...sourceSampler.update(progress.current, progress.total), message: `Downloading ${sourceName}.`,
+      }) });
+    this.emit(context, { operation: 'verifying', phase: 'verifying', artifact_name: sourceName,
+      artifact_type: 'runtime', progress_mode: 'indeterminate', message: `Verifying ${sourceName}.` });
     const python = context.managedPython || await this.findPython(context);
     const extractor = `import pathlib,sys,tarfile\na=pathlib.Path(sys.argv[1]); d=pathlib.Path(sys.argv[2]); root=${JSON.stringify(artifact.tar_root)}\nwith tarfile.open(a,'r:gz') as t:\n for m in t:\n  p=pathlib.PurePosixPath(m.name)\n  if p.is_absolute() or '..' in p.parts or not (m.name==root or m.name.startswith(root+'/')) or not (m.isdir() or m.isfile()): raise SystemExit('unsafe archive member')\n t.extractall(d, filter='data')\n`;
+    this.emit(context, { operation: 'extracting', phase: 'installing', artifact_name: sourceName,
+      artifact_type: 'runtime', progress_mode: 'indeterminate', message: 'Extracting verified FFmpeg source.' });
     await this.runProcess(python, ['-I', '-c', extractor, archive, source], context, { cwd: attempt });
     const buildRoot = path.join(source, artifact.tar_root);
     const flags = Array.isArray(artifact.configure) ? artifact.configure : ['--disable-gpl', '--disable-nonfree'];
+    this.emit(context, { operation: 'building', phase: 'installing', artifact_name: `FFmpeg ${artifact.version}`,
+      artifact_type: 'runtime', progress_mode: 'indeterminate', message: 'Configuring FFmpeg build.' });
     await this.runProcess(path.join(buildRoot, 'configure'), [...flags, `--prefix=${prefix}`], context, { cwd: buildRoot });
+    this.emit(context, { operation: 'building', phase: 'installing', artifact_name: `FFmpeg ${artifact.version}`,
+      artifact_type: 'runtime', progress_mode: 'indeterminate', message: 'Building FFmpeg.' });
     await this.runProcess('make', ['-C', buildRoot, '-j2'], context, { cwd: buildRoot });
+    this.emit(context, { operation: 'installing', phase: 'installing', artifact_name: `FFmpeg ${artifact.version}`,
+      artifact_type: 'runtime', progress_mode: 'indeterminate', message: 'Installing FFmpeg.' });
     await this.runProcess('make', ['-C', buildRoot, 'install'], context, { cwd: buildRoot });
     const stage = path.join(attempt, 'bin');
     ensureManagedDirectory(this.dataDirectory, stage);
@@ -371,6 +392,8 @@ export class RuntimeTasks extends BootstrapTasks {
       this.setComponent(context, 'ffmpeg', { state: 'files_verified', identity: `ffmpeg:${artifact.version}:${artifact.sha256}`,
         verification: 'archive_and_executable_sha256', last_verified_at: new Date().toISOString(), path: target,
         runtime_ready: false, failure_code: null, message: 'FFmpeg and FFprobe binaries are verified; audio decode probe is pending.' });
+      this.emit(context, { operation: 'verifying', phase: 'verified', artifact_name: `FFmpeg ${artifact.version}`,
+        artifact_type: 'runtime', progress_mode: 'indeterminate', cache_status: 'reused', message: 'Verified and reused the existing FFmpeg installation.' });
       return true;
     }
     if (fs.existsSync(target)) await this.quarantine(target, 'invalid-ffmpeg');
@@ -385,15 +408,25 @@ export class RuntimeTasks extends BootstrapTasks {
       fs.unlinkSync(archive);
     }
     ensureManagedDirectory(this.dataDirectory, stage);
+    const artifactName = `FFmpeg ${artifact.version}`;
     this.setComponent(context, 'ffmpeg', { state: 'downloading', identity: `ffmpeg:${artifact.version}`,
       failure_code: null, message: null, runtime_ready: false });
+    this.emit(context, { operation: 'downloading', phase: 'downloading', artifact_name: artifactName,
+      artifact_type: 'runtime', progress_mode: 'indeterminate', message: `Downloading ${artifactName}.` });
+    const transferSampler = new ByteTransferSampler();
     await fetchArtifact(artifact.url, archive, artifact, { signal: context.signal, fetchImpl: this.fetchImpl,
-      maxBytes: artifact.size_bytes, onProgress: (progress) => this.emit(context,
-        { ...progress, component: 'ffmpeg', message: 'Downloading the pinned FFmpeg/FFprobe archive.' }) });
+      artifactName, maxBytes: artifact.size_bytes, onProgress: (progress) => this.emit(context,
+        { ...progress, component: 'ffmpeg', operation: 'downloading', artifact_type: 'runtime', progress_mode: 'bytes',
+          transferred_bytes: progress.current, total_bytes: progress.total,
+          ...transferSampler.update(progress.current, progress.total), message: `Downloading ${artifactName}.` }) });
     // fetchArtifact streams and verifies the complete digest before returning.
     this.setComponent(context, 'ffmpeg', { state: 'verifying', verification: 'archive_sha256', failure_code: null, message: null });
+    this.emit(context, { operation: 'verifying', phase: 'verifying', artifact_name: artifactName,
+      artifact_type: 'runtime', progress_mode: 'indeterminate', message: `Verifying ${artifactName} archive.` });
     const python = context.managedPython || await this.findPython(context);
     const extractor = `import pathlib,sys,tarfile,shutil\na=pathlib.Path(sys.argv[1]); d=pathlib.Path(sys.argv[2]); prefix=${JSON.stringify(artifact.tar_root + '/')}; root=prefix.rstrip('/'); allow={prefix+'bin/ffmpeg':'ffmpeg',prefix+'bin/ffprobe':'ffprobe',prefix+'LICENSE.txt':'COPYING.LGPLv3.txt'}; found=set(); total=0\nwith tarfile.open(a, 'r:xz') as t:\n for m in t:\n  p=pathlib.PurePosixPath(m.name)\n  if p.is_absolute() or '..' in p.parts or (m.name!=root and not m.name.startswith(prefix)) or not (m.isdir() or m.isfile()): raise SystemExit('unsafe archive member')\n  if not m.isdir() and m.size>250000000: raise SystemExit('archive member too large')\n  total+=m.size\n  if total>500000000: raise SystemExit('archive expansion exceeds limit')\n  if m.name in allow:\n   if m.name in found or not m.isfile() or m.size<=0: raise SystemExit('invalid duplicate payload')\n   f=t.extractfile(m)\n   if f is None: raise SystemExit('missing payload')\n   with (d/allow[m.name]).open('xb') as out: shutil.copyfileobj(f,out,1024*1024)\n   found.add(m.name)\nif found!=set(allow): raise SystemExit('archive is incomplete')\n`;
+    this.emit(context, { operation: 'verifying', phase: 'verifying', artifact_name: artifactName,
+      artifact_type: 'runtime', progress_mode: 'indeterminate', message: 'Extracting and verifying the FFmpeg archive.' });
     await this.runProcess(python, ['-I', '-c', extractor, archive, stage], context, { cwd: attempt });
     for (const key of ['ffmpeg', 'ffprobe']) fs.chmodSync(path.join(stage, key), 0o755);
     if (!await this.verifyFfmpegDirectory(stage, context)) throw new BootstrapError('FFMPEG_EXECUTABLE_INVALID', 'Extracted FFmpeg and FFprobe did not match the pinned executable identities.');
@@ -428,6 +461,8 @@ export class RuntimeTasks extends BootstrapTasks {
     if (this.service?.record && this.service.child?.exitCode === null
         && this.service.child?.signalCode === null) {
       try {
+        this.emit(context, { operation: 'checking', phase: 'inspecting', artifact_name: 'Speechcraft backend',
+          artifact_type: 'runtime', progress_mode: 'indeterminate', message: 'Checking the existing Speechcraft backend.' });
         const result = await this.service.verify();
         this.setComponent(context, 'backend_service', { state: 'verified', verification: 'internal_health_identity', last_verified_at: new Date().toISOString(), failure_code: null, message: null, port: result.port });
         return;
@@ -486,6 +521,8 @@ export class RuntimeTasks extends BootstrapTasks {
       workerPython,
       onStatus: (status, record) => this.updateServiceStatus(status, record),
     });
+    this.emit(context, { operation: 'starting', phase: 'installing', artifact_name: 'Speechcraft backend',
+      artifact_type: 'runtime', progress_mode: 'indeterminate', message: 'Starting Speechcraft backend.' });
     try {
       await this.service.start(context.signal);
     } catch (error) {
@@ -500,6 +537,8 @@ export class RuntimeTasks extends BootstrapTasks {
 
   async verifyServices(context) {
     if (!this.service) throw Object.assign(new Error('No supervised backend process is available for health verification.'), { code: 'BACKEND_SERVICE_MISSING' });
+    this.emit(context, { operation: 'checking', phase: 'inspecting', artifact_name: 'Speechcraft backend',
+      artifact_type: 'runtime', progress_mode: 'indeterminate', message: 'Checking Speechcraft backend readiness.' });
     const result = await this.service.verify();
     this.setComponent(context, 'backend_service', { state: 'verified', verification: 'internal_health_identity', last_verified_at: new Date().toISOString(), failure_code: null, message: null, port: result.port });
     const components = context.componentStatus.components;

@@ -1,16 +1,21 @@
 export type SetupError = { code: string; message: string };
 export type ProgressTelemetry = {
-  operation?: "downloading" | "installing" | "verifying" | "loading" | "checking" | null;
+  operation?: "checking" | "resolving" | "downloading" | "installing" | "extracting" | "building" | "verifying" | "loading" | "starting" | "completed" | "failed" | "retrying" | null;
   artifact_type?: "model" | "python_package" | "runtime" | null;
   progress_mode?: "bytes" | "files" | "indeterminate" | null;
   transferred_bytes?: number | null;
   total_bytes?: number | null;
+  expected_size_bytes?: number | null;
   completed_files?: number | null;
   total_files?: number | null;
   percent?: number | null;
   job_id?: string | null;
   attempt_id?: string | null;
   event_revision?: number | null;
+  stage_id?: string | null;
+  component_id?: string | null;
+  cache_status?: "reused" | "downloaded" | "installing" | "retrying";
+  retry_count?: number;
   phase?: string | null;
   role?: string | null;
   model_name?: string | null;
@@ -38,6 +43,10 @@ export type SetupJob = {
   error?: SetupError | null;
   attempt_id?: string | null;
   attempt_count?: number;
+  stage_index?: number;
+  stage_count?: number;
+  stage_title?: string;
+  stage_started_at?: string | null;
 };
 export type RuntimeComponent = {
   identity?: string;
