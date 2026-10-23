@@ -38,6 +38,8 @@ export type LabClip = {
   qcScore: number; // 0..1 aggregate
   transcriptConfidence: number; // 0..100 (0 when unscored — see transcriptMatchRaw)
   speakerPurity: number; // 0..100 (0 when unscored — see speakerCheckRaw)
+  referenceQuality: number | null;
+  effectiveDurationRaw?: number | null;
   // Raw nullable scores, distinct from the 0-defaulted fields above. null
   // means "unscored" (backend returned null) — used wherever "unscored" must
   // be told apart from "scored 0", e.g. re-deriving machineBucket when
@@ -241,11 +243,13 @@ export function createMockClips(count = 42): LabClip[] {
       transcript,
       originalTranscript: transcript,
       durationSeconds: duration,
+      effectiveDurationRaw: duration,
       status: "unresolved",
       machineBucket,
       qcScore,
       transcriptConfidence: Number((25 + rand() * 70).toFixed(2)),
       speakerPurity: Number((60 + rand() * 39).toFixed(2)),
+      referenceQuality: Number((60 + rand() * 39).toFixed(2)),
       transcriptMatchRaw: Number((25 + rand() * 70).toFixed(2)),
       speakerCheckRaw: Number((60 + rand() * 39).toFixed(2)),
       variant: "source",
@@ -277,33 +281,33 @@ export function createMockClips(count = 42): LabClip[] {
 
 // ── Sorting + filtering ─────────────────────────────────────────────────
 
-export type SortMode = "source" | "qc_desc" | "qc_asc" | "status";
+export type SortMode = "source" | "transcript_confidence" | "speaker_purity" | "duration" | "reference_quality";
 
 export const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "source", label: "Source Order" },
-  { value: "qc_desc", label: "QC Score (high → low)" },
-  { value: "qc_asc", label: "QC Score (low → high)" },
-  { value: "status", label: "Review Status" },
+  { value: "transcript_confidence", label: "Transcript Confidence" },
+  { value: "speaker_purity", label: "Speaker Purity" },
+  { value: "duration", label: "Duration" },
+  { value: "reference_quality", label: "Reference Quality" },
 ];
 
-const STATUS_PRIORITY: Record<ReviewStatus, number> = {
-  unresolved: 0,
-  rejected: 1,
-  accepted: 2,
-};
+function descendingNullable(a: number | null | undefined, b: number | null | undefined): number {
+  if (a == null) return b == null ? 0 : 1;
+  if (b == null) return -1;
+  return b - a;
+}
 
 export function sortClips(clips: LabClip[], mode: SortMode): LabClip[] {
   const copy = [...clips];
   switch (mode) {
-    case "qc_desc":
-      return copy.sort((a, b) => b.qcScore - a.qcScore);
-    case "qc_asc":
-      return copy.sort((a, b) => a.qcScore - b.qcScore);
-    case "status":
-      return copy.sort(
-        (a, b) =>
-          STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status] || a.order - b.order,
-      );
+    case "transcript_confidence":
+      return copy.sort((a, b) => descendingNullable(a.transcriptMatchRaw, b.transcriptMatchRaw) || a.order - b.order);
+    case "speaker_purity":
+      return copy.sort((a, b) => descendingNullable(a.speakerCheckRaw, b.speakerCheckRaw) || a.order - b.order);
+    case "reference_quality":
+      return copy.sort((a, b) => descendingNullable(a.referenceQuality, b.referenceQuality) || a.order - b.order);
+    case "duration":
+      return copy.sort((a, b) => descendingNullable(a.effectiveDurationRaw, b.effectiveDurationRaw) || a.order - b.order);
     default:
       return copy.sort((a, b) => a.order - b.order);
   }

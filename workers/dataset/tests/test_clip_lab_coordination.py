@@ -112,10 +112,12 @@ class ClipLabCoordinationTests(unittest.TestCase):
             artifacts = run_root / "artifacts"
             artifacts.mkdir(parents=True)
             (artifacts / "clip_lab_state.json").write_text("{}", encoding="utf-8")
+            (artifacts / "reference_quality.json").write_text("{}", encoding="utf-8")
 
             clear_downstream_after_candidate_regeneration(run_root)
 
             self.assertTrue((artifacts / "clip_lab_state.json").exists())
+            self.assertFalse((artifacts / "reference_quality.json").exists())
 
     def test_concurrent_staging_directories_are_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_raw:

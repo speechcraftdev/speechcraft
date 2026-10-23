@@ -81,12 +81,14 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             run_root.mkdir()
             config_path = run_root / 'input_config.json'
             config_path.write_text(json.dumps({'cutpoint_min_gap_ms': 40}), encoding='utf-8')
-            with patch('speechcraft_dataset.rerun_slicer.assemble_candidate_review_clips_locked', return_value={'candidate_review_clips': 2}) as assembly, patch('speechcraft_dataset.rerun_slicer.run_transcript_qc_stage', return_value={'clip_count': 2, 'scored_count': 2}) as transcript_qc, patch('speechcraft_dataset.rerun_slicer.run_speaker_purity_stage', return_value={'clip_count': 2, 'scored_count': 2}) as speaker_purity:
+            order = []
+            with patch('speechcraft_dataset.rerun_slicer.assemble_candidate_review_clips_locked', side_effect=lambda *args: (order.append('assembly') or {'candidate_review_clips': 2})) as assembly, patch('speechcraft_dataset.rerun_slicer.run_transcript_qc_stage', side_effect=lambda *args: (order.append('tc') or {'clip_count': 2, 'scored_count': 2})) as transcript_qc, patch('speechcraft_dataset.rerun_slicer.run_speaker_purity_stage', side_effect=lambda *args: (order.append('sp') or {'clip_count': 2, 'scored_count': 2})), patch('speechcraft_dataset.rerun_slicer.run_reference_quality_stage', side_effect=lambda *args: (order.append('rq') or {'ok': True})) as reference_quality:
                 exit_code = rerun_slicer_main(['--run-root', str(run_root), '--config', str(config_path)])
             self.assertEqual(exit_code, 0)
             assembly.assert_called_once()
             transcript_qc.assert_called_once()
-            speaker_purity.assert_called_once()
+            reference_quality.assert_called_once()
+            self.assertEqual(order, ['assembly', 'tc', 'sp', 'rq'])
             status = read_json(run_root / 'status.json')
             self.assertTrue(status['ok'])
             self.assertEqual(status['stage'], 'speaker_purity')
@@ -178,9 +180,12 @@ class DatasetWorkerRunCliTests(unittest.TestCase):
             (artifacts / 'export_audit.json').write_text('[]', encoding='utf-8')
             (artifacts / 'export_summary.json').write_text('{}', encoding='utf-8')
             (artifacts / 'native_export_clips').mkdir()
-            with patch('speechcraft_dataset.generate_qc_scores.run_transcript_qc_stage', return_value={'clip_count': 0, 'scored_count': 0}), patch('speechcraft_dataset.generate_qc_scores.run_speaker_purity_stage', return_value={'clip_count': 0, 'scored_count': 0}):
+            order = []
+            with patch('speechcraft_dataset.generate_qc_scores.run_transcript_qc_stage', side_effect=lambda *args: (order.append('tc') or {'clip_count': 0, 'scored_count': 0})), patch('speechcraft_dataset.generate_qc_scores.run_speaker_purity_stage', side_effect=lambda *args: (order.append('sp') or {'clip_count': 0, 'scored_count': 0})), patch('speechcraft_dataset.generate_qc_scores.run_reference_quality_stage', side_effect=lambda *args: (order.append('rq') or {'ok': True})) as reference_quality:
                 exit_code = generate_qc_scores_main(['--run-root', str(run_root), '--config', str(config_path), '--force'])
             self.assertEqual(exit_code, 0)
+            reference_quality.assert_called_once()
+            self.assertEqual(order, ['tc', 'sp', 'rq'])
             self.assertFalse((artifacts / 'dataset_qc.json').exists())
             self.assertFalse((artifacts / 'export_manifest.json').exists())
             self.assertFalse((artifacts / 'export_audit.json').exists())

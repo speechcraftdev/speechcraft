@@ -39,6 +39,8 @@ CLIP_LAB_PEAKS_REL = "artifacts/clip_lab_peaks"
 CANDIDATE_MANIFEST_REL = "artifacts/candidate_review_manifest.json"
 TRANSCRIPT_QC_REL = "artifacts/transcript_qc.json"
 SPEAKER_PURITY_REL = "artifacts/speaker_purity.json"
+REFERENCE_QUALITY_REL = "artifacts/reference_quality.json"
+REFERENCE_QUALITY_METHOD = "speaker_representativeness_duration_position_transcript_v2"
 LOCK_FILENAME = ".clip_lab_state.lock"
 
 SCHEMA_VERSION = 1
@@ -104,6 +106,7 @@ UNSET = _UnsetType()
 class QcLoadState:
     transcript_by_id: dict[str, dict[str, Any]]
     speaker_by_id: dict[str, dict[str, Any]]
+    reference_by_id: dict[str, dict[str, Any]]
     qc_available: bool
     qc_error: str | None
 
@@ -636,9 +639,18 @@ def _speaker_check_score(row: dict[str, Any]) -> float | None:
     return None
 
 
-def _load_optional_qc_indexes(run_root: Path) -> QcLoadState:
+def _reference_quality_score(row: dict[str, Any]) -> float | None:
+    value = row.get("reference_quality_score")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    score = float(value)
+    return round(score, 2) if 0.0 <= score <= 100.0 else None
+
+
+def _load_optional_qc_indexes(run_root: Path, *, candidate_manifest_sha256: str) -> QcLoadState:
     transcript_by_id: dict[str, dict[str, Any]] = {}
     speaker_by_id: dict[str, dict[str, Any]] = {}
+    reference_by_id: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
     transcript_path = run_root / TRANSCRIPT_QC_REL
     speaker_path = run_root / SPEAKER_PURITY_REL
@@ -656,11 +668,44 @@ def _load_optional_qc_indexes(run_root: Path) -> QcLoadState:
             )
         except ClipLabValidationError as exc:
             errors.append(str(exc))
+    reference_path = run_root / REFERENCE_QUALITY_REL
+    if reference_path.exists():
+        try:
+            payload = _read_json(reference_path)
+            manifest_hash = hashlib.sha256((run_root / CANDIDATE_MANIFEST_REL).read_bytes()).hexdigest()
+            input_hashes = payload.get("input_sha256")
+            speaker_hash = hashlib.sha256(speaker_path.read_bytes()).hexdigest() if speaker_path.exists() else None
+            source_hashes_match = isinstance(input_hashes, dict) and all(
+                isinstance(relative, str)
+                and (run_root / relative).is_file()
+                and input_hashes.get(key) in {
+                    hashlib.sha256((run_root / relative).read_bytes()).hexdigest(),
+                    f"sha256:{hashlib.sha256((run_root / relative).read_bytes()).hexdigest()}",
+                }
+                for key, relative in (
+                    ("speaker_regions", "artifacts/speaker_regions.jsonl"),
+                    ("speaker_selection", "artifacts/speaker_selection.json"),
+                    ("audio_variants_manifest", "artifacts/audio_variants_manifest.json"),
+                    ("transcript_qc", "artifacts/transcript_qc.json"),
+                )
+            )
+            if (payload.get("schema_version") == 2
+                    and payload.get("score_method") == REFERENCE_QUALITY_METHOD
+                    and payload.get("candidate_manifest_sha256") in {manifest_hash, f"sha256:{manifest_hash}"}
+                    and isinstance(input_hashes, dict)
+                    and input_hashes.get("speaker_purity") in {speaker_hash, f"sha256:{speaker_hash}"}
+                    and source_hashes_match):
+                rows = _clip_rows_from_qc_artifact(payload, artifact_name=REFERENCE_QUALITY_REL)
+                reference_by_id = _index_qc_rows(rows)
+        except (ClipLabValidationError, OSError, TypeError):
+            # Stale or malformed supplementary ranking data is unavailable.
+            reference_by_id = {}
     qc_error = "; ".join(errors) if errors else None
     qc_available = not errors and (transcript_path.exists() or speaker_path.exists())
     return QcLoadState(
         transcript_by_id=transcript_by_id,
         speaker_by_id=speaker_by_id,
+        reference_by_id=reference_by_id,
         qc_available=qc_available,
         qc_error=qc_error,
     )
@@ -672,6 +717,7 @@ def _build_clip_view(
     clip_entry: dict[str, Any],
     transcript_by_id: dict[str, dict[str, Any]],
     speaker_by_id: dict[str, dict[str, Any]],
+    reference_by_id: dict[str, dict[str, Any]],
     run_id: str | None = None,
     source_recording_id: str | None = None,
 ) -> dict[str, Any]:
@@ -698,6 +744,7 @@ def _build_clip_view(
 
     transcript_row = transcript_by_id.get(clip_id, {})
     speaker_row = speaker_by_id.get(clip_id, {})
+    reference_row = reference_by_id.get(clip_id, {})
     whisper_transcript = transcript_row.get("whisper_text")
     if not isinstance(whisper_transcript, str):
         whisper_transcript = ""
@@ -722,6 +769,10 @@ def _build_clip_view(
         "source_audio_identity_available": manifest_has_source_audio_identity(manifest_row, clip_id=clip_id),
         "transcript_match": _transcript_match_score(transcript_row),
         "speaker_check": _speaker_check_score(speaker_row),
+        "reference_quality": (
+            _reference_quality_score(reference_row)
+            if not _clip_has_audio_edits(clip_entry) else None
+        ),
     }
     if run_id is not None:
         from .clip_lab_audio_ops import audio_view_fields
@@ -730,12 +781,21 @@ def _build_clip_view(
     return view
 
 
+def _clip_has_audio_edits(clip_entry: dict[str, Any]) -> bool:
+    recipe = clip_entry.get("audio_edl_recipe")
+    if isinstance(recipe, list):
+        return bool(recipe)
+    if isinstance(recipe, dict):
+        return bool(recipe.get("ops") or recipe.get("operations"))
+    return False
+
+
 def build_clip_lab_view(run_root: Path, *, run_id: str) -> dict[str, Any]:
     manifest = load_candidate_manifest(run_root)
     current_manifest_sha = compute_manifest_sha256(candidate_manifest_path(run_root))
     active_qc_subset = load_qc_subset(run_root, candidate_manifest_sha256=current_manifest_sha)
     saved_state = load_clip_lab_state(run_root)
-    qc_state = _load_optional_qc_indexes(run_root)
+    qc_state = _load_optional_qc_indexes(run_root, candidate_manifest_sha256=current_manifest_sha)
 
     source_recording_by_audio_id: dict[str, str] = {}
     source_manifest_path = run_root / "artifacts" / "source_audio_manifest.json"
@@ -789,6 +849,7 @@ def build_clip_lab_view(run_root: Path, *, run_id: str) -> dict[str, Any]:
                 clip_entry=clip_entry,
                 transcript_by_id=qc_state.transcript_by_id,
                 speaker_by_id=qc_state.speaker_by_id,
+                reference_by_id=qc_state.reference_by_id,
                 run_id=run_id,
                 source_recording_id=source_recording_by_audio_id.get(
                     str(manifest_row.get("source_audio_id") or "")
@@ -993,12 +1054,13 @@ def patch_clip_lab_clip(
         state["candidate_manifest_sha256"] = current_manifest_sha
         save_clip_lab_state(run_root, state)
 
-        qc_state = _load_optional_qc_indexes(run_root)
+        qc_state = _load_optional_qc_indexes(run_root, candidate_manifest_sha256=current_manifest_sha)
         return _build_clip_view(
             manifest_row=manifest_row,
             clip_entry=clip_entry,
             transcript_by_id=qc_state.transcript_by_id,
             speaker_by_id=qc_state.speaker_by_id,
+            reference_by_id=qc_state.reference_by_id,
             run_id=run_id,
         )
 
@@ -1036,6 +1098,7 @@ def _serialize_clip_lab_clip(raw: dict[str, Any]) -> Any:
         acceptance_stale=bool(raw.get("acceptance_stale")),
         transcript_match=raw.get("transcript_match"),
         speaker_check=raw.get("speaker_check"),
+        reference_quality=raw.get("reference_quality"),
         sample_rate_hz=raw.get("sample_rate_hz"),
         effective_audio_kind=raw.get("effective_audio_kind"),
         effective_audio_revision_key=raw.get("effective_audio_revision_key"),

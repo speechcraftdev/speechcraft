@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .io import read_json, resolve_under_root, write_json
 from .qc_artifacts import clear_dataset_qc_artifacts, clear_export_artifacts, clear_qc_score_artifacts
-from .qc_score_stages import run_speaker_purity_stage, run_transcript_qc_stage
+from .qc_score_stages import run_reference_quality_stage, run_speaker_purity_stage, run_transcript_qc_stage
 from .run import config_hash, log_line, utc_now_iso, write_status
 
 
@@ -52,6 +52,11 @@ def main(argv: list[str] | None = None) -> int:
         write_status(run_root, {"ok": None, "stage": "speaker_purity", "summary": transcript_qc_summary})
         speaker_purity_summary = run_speaker_purity_stage(run_root, config)
         log_line(run_root, f"speaker_purity generation completed summary={speaker_purity_summary}")
+        reference_quality_summary = run_reference_quality_stage(run_root)
+        if reference_quality_summary.get("ok"):
+            log_line(run_root, f"reference_quality generation completed summary={reference_quality_summary}")
+        else:
+            log_line(run_root, f"WARNING reference_quality unavailable: {reference_quality_summary.get('warning')}")
         write_status(
             run_root,
             {

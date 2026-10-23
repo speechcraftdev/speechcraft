@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import tempfile
 import threading
@@ -620,6 +621,72 @@ class ClipLabStateTests(unittest.TestCase):
     clip = next(row for row in view["clips"] if row["clip_id"] == "candidate_review_clip_000001")
     self.assertEqual(clip["transcript_match"], 95.0)
     self.assertEqual(clip["speaker_check"], 88.0)
+
+  def test_reference_quality_joins_by_id_and_hides_edited_or_stale_scores(self) -> None:
+    artifacts = self.run_root / "artifacts"
+    manifest_path = artifacts / "candidate_review_manifest.json"
+    speaker_path = artifacts / "speaker_purity.json"
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    speaker_sha = hashlib.sha256(speaker_path.read_bytes()).hexdigest()
+    transcript_path = artifacts / "transcript_qc.json"
+    source_artifact_paths = {
+      "speaker_regions": artifacts / "speaker_regions.jsonl",
+      "speaker_selection": artifacts / "speaker_selection.json",
+      "audio_variants_manifest": artifacts / "audio_variants_manifest.json",
+    }
+    source_artifact_paths["speaker_regions"].write_text("", encoding="utf-8")
+    source_artifact_paths["speaker_selection"].write_text("{}", encoding="utf-8")
+    source_artifact_paths["audio_variants_manifest"].write_text('{"variants": []}', encoding="utf-8")
+    payload = {
+      "schema_version": 2,
+      "score_method": "speaker_representativeness_duration_position_transcript_v2",
+      "candidate_manifest_sha256": manifest_sha,
+      "input_sha256": {
+        "speaker_purity": speaker_sha,
+        "transcript_qc": hashlib.sha256(transcript_path.read_bytes()).hexdigest(),
+        **{key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in source_artifact_paths.items()},
+      },
+      "clips": [
+        {"clip_id": "candidate_review_clip_000001", "reference_quality_score": 0},
+        {"clip_id": "candidate_review_clip_000002", "reference_quality_score": 77.25},
+      ],
+    }
+    artifact_path = artifacts / "reference_quality.json"
+    artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+    view = build_clip_lab_view(self.run_root, run_id="run-1")
+    by_id = {row["clip_id"]: row for row in view["clips"]}
+    self.assertEqual(by_id["candidate_review_clip_000001"]["reference_quality"], 0)
+    self.assertEqual(by_id["candidate_review_clip_000002"]["reference_quality"], 77.25)
+
+    edited = patch_clip_lab_clip(
+      self.run_root,
+      "candidate_review_clip_000002",
+      expected_manifest_sha256=self._manifest_sha(),
+      expected_clip_version=0,
+      audio_edl_recipe={"ops": [{"kind": "trim", "start_sec": 0.1, "end_sec": 3.0}]},
+    )
+    self.assertIsNone(edited["reference_quality"])
+    restored = patch_clip_lab_clip(
+      self.run_root,
+      "candidate_review_clip_000002",
+      expected_manifest_sha256=self._manifest_sha(),
+      expected_clip_version=1,
+      audio_edl_recipe={"ops": []},
+    )
+    self.assertEqual(restored["reference_quality"], 77.25)
+
+    payload["schema_version"] = 1
+    payload["score_method"] = "speaker_representativeness_duration_position_v1"
+    artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+    old_method_view = build_clip_lab_view(self.run_root, run_id="run-1")
+    self.assertTrue(all(row["reference_quality"] is None for row in old_method_view["clips"]))
+
+    payload["schema_version"] = 2
+    payload["score_method"] = "speaker_representativeness_duration_position_transcript_v2"
+    payload["candidate_manifest_sha256"] = "stale"
+    artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+    stale_view = build_clip_lab_view(self.run_root, run_id="run-1")
+    self.assertTrue(all(row["reference_quality"] is None for row in stale_view["clips"]))
 
   def test_null_transcript_match_score_is_tolerated(self) -> None:
     artifacts = self.run_root / "artifacts"

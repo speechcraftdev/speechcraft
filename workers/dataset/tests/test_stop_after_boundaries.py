@@ -52,6 +52,7 @@ class StopAfterBoundaryTests(unittest.TestCase):
             "speechcraft_dataset.run.export_native_candidate_clips",
             side_effect=export_side_effect or (lambda root, config: _stage_summary("native_export")),
         )
+        reference_quality = patch("speechcraft_dataset.run.run_reference_quality_stage", return_value={"ok": True})
 
         with (
             patch("speechcraft_dataset.run.run_prepare_sources", return_value=_stage_summary("source_audio")),
@@ -68,6 +69,7 @@ class StopAfterBoundaryTests(unittest.TestCase):
             ),
             assembly as assembly_mock,
             native_export as export_mock,
+            reference_quality as reference_quality_mock,
         ):
             exit_code = main(
                 [
@@ -80,26 +82,28 @@ class StopAfterBoundaryTests(unittest.TestCase):
                     stop_after,
                 ]
             )
-        return run_root, exit_code, assembly_mock, export_mock
+        return run_root, exit_code, assembly_mock, export_mock, reference_quality_mock
 
     def test_stop_after_buffers_does_not_run_slicer_or_export(self) -> None:
-        run_root, exit_code, assembly, export = self._run_with_stop_after("buffers")
+        run_root, exit_code, assembly, export, reference_quality = self._run_with_stop_after("buffers")
         self.assertEqual(exit_code, 0)
         artifacts = run_root / "artifacts"
         self.assertFalse((artifacts / "candidate_review_manifest.json").exists())
         self.assertFalse((artifacts / "export_manifest.json").exists())
         assembly.assert_not_called()
         export.assert_not_called()
+        reference_quality.assert_not_called()
         status = json.loads((run_root / "status.json").read_text(encoding="utf-8"))
         self.assertTrue(status["ok"])
         self.assertEqual(status["stage"], "buffers")
 
     def test_stop_after_diarization_stops_before_processing_buffers(self) -> None:
-        run_root, exit_code, assembly, export = self._run_with_stop_after("diarization")
+        run_root, exit_code, assembly, export, reference_quality = self._run_with_stop_after("diarization")
         self.assertEqual(exit_code, 0)
         self.assertFalse((run_root / "artifacts" / "processing_buffers.json").exists())
         assembly.assert_not_called()
         export.assert_not_called()
+        reference_quality.assert_not_called()
         status = json.loads((run_root / "status.json").read_text(encoding="utf-8"))
         self.assertTrue(status["ok"])
         self.assertEqual(status["stage"], "diarization")
@@ -113,7 +117,7 @@ class StopAfterBoundaryTests(unittest.TestCase):
             (artifacts / "candidate_review_rejected.json").write_text("[]", encoding="utf-8")
             return _stage_summary("candidate_review_clips")
 
-        run_root, exit_code, assembly, export = self._run_with_stop_after(
+        run_root, exit_code, assembly, export, reference_quality = self._run_with_stop_after(
             "candidate_review_clips",
             assembly_side_effect=_write_clips,
         )
@@ -122,6 +126,7 @@ class StopAfterBoundaryTests(unittest.TestCase):
         self.assertFalse((run_root / "artifacts" / "export_manifest.json").exists())
         assembly.assert_called_once()
         export.assert_not_called()
+        reference_quality.assert_not_called()
         status = json.loads((run_root / "status.json").read_text(encoding="utf-8"))
         self.assertEqual(status["stage"], "candidate_review_clips")
 
@@ -139,7 +144,7 @@ class StopAfterBoundaryTests(unittest.TestCase):
             (artifacts / "export_summary.json").write_text("{}", encoding="utf-8")
             return _stage_summary("native_export")
 
-        run_root, exit_code, assembly, export = self._run_with_stop_after(
+        run_root, exit_code, assembly, export, reference_quality = self._run_with_stop_after(
             "native_export",
             assembly_side_effect=_write_clips,
             export_side_effect=_write_export,
@@ -148,6 +153,7 @@ class StopAfterBoundaryTests(unittest.TestCase):
         self.assertTrue((run_root / "artifacts" / "export_manifest.json").exists())
         assembly.assert_called_once()
         export.assert_called_once()
+        reference_quality.assert_called_once()
         status = json.loads((run_root / "status.json").read_text(encoding="utf-8"))
         self.assertEqual(status["stage"], "native_export")
 
@@ -158,12 +164,13 @@ class StopAfterBoundaryTests(unittest.TestCase):
             (artifacts / "candidate_review_manifest.json").write_text("[]", encoding="utf-8")
             return _stage_summary("candidate_review_clips")
 
-        run_root, exit_code, assembly, export = self._run_with_stop_after(
+        run_root, exit_code, assembly, export, reference_quality = self._run_with_stop_after(
             "speaker_purity",
             assembly_side_effect=_write_clips,
         )
         self.assertEqual(exit_code, 0)
         export.assert_not_called()
+        reference_quality.assert_called_once()
         status = json.loads((run_root / "status.json").read_text(encoding="utf-8"))
         self.assertEqual(status["stage"], "speaker_purity")
 

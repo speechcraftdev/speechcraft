@@ -872,6 +872,7 @@ class DatasetClipLabClipView(SQLModel):
     acceptance_stale: bool = False
     transcript_match: float | None = None
     speaker_check: float | None = None
+    reference_quality: float | None = None
     sample_rate_hz: int | None = None
     effective_audio_kind: Literal["candidate_original", "rendered_revision"] | None = None
     effective_audio_revision_key: str | None = None

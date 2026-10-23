@@ -162,8 +162,13 @@ export function mergeClipLabWriteResponse(prev: LabClip, server: DatasetClipLabC
     originalTranscript: server.original_transcript ?? prev.originalTranscript,
     durationSeconds: server.current_duration_sec ?? prev.durationSeconds,
     durationSamples: server.current_duration_samples ?? prev.durationSamples,
+    effectiveDurationRaw:
+      server.current_duration_samples != null && sampleRateHz > 0
+        ? server.current_duration_samples / sampleRateHz
+        : server.current_duration_sec,
     transcriptConfidence: server.transcript_match ?? prev.transcriptConfidence,
     speakerPurity: server.speaker_check ?? prev.speakerPurity,
+    referenceQuality: server.reference_quality ?? null,
     reasonCodes: (server.pipeline_findings ?? []).map((f) => f.code),
     variant: server.effective_audio_kind ?? prev.variant,
     clipVersion: server.clip_version,
@@ -195,6 +200,7 @@ export type DatasetClipLabClipView = {
   acceptance_stale: boolean;
   transcript_match: number | null;
   speaker_check: number | null;
+  reference_quality?: number | null;
   sample_rate_hz: number | null;
   effective_audio_kind: "candidate_original" | "rendered_revision" | null;
   effective_audio_revision_key: string | null;

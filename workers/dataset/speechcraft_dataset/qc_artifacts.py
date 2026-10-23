@@ -11,6 +11,7 @@ QC_SCORE_FILES = (
     "artifacts/transcript_qc_summary.json",
     "artifacts/speaker_purity.json",
     "artifacts/speaker_purity_summary.json",
+    "artifacts/reference_quality.json",
     "artifacts/target_voiceprint.json",
 )
 DATASET_QC_FILES = (

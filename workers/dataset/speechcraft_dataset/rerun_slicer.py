@@ -6,7 +6,7 @@ from pathlib import Path
 from .clip_lab_coordination import assemble_candidate_review_clips_locked
 from .io import read_json, write_json
 from .qc_artifacts import clear_downstream_after_candidate_regeneration
-from .qc_score_stages import run_speaker_purity_stage, run_transcript_qc_stage
+from .qc_score_stages import run_reference_quality_stage, run_speaker_purity_stage, run_transcript_qc_stage
 from .run import config_hash, log_line, utc_now_iso, write_status
 
 
@@ -31,6 +31,11 @@ def main(argv: list[str] | None = None) -> int:
             write_status(run_root, {"ok": None, "stage": "speaker_purity", "summary": transcript_qc_summary})
             speaker_purity_summary = run_speaker_purity_stage(run_root, config)
             log_line(run_root, f"speaker_purity rerun completed summary={speaker_purity_summary}")
+            reference_quality_summary = run_reference_quality_stage(run_root)
+            if reference_quality_summary.get("ok"):
+                log_line(run_root, f"reference_quality rerun completed summary={reference_quality_summary}")
+            else:
+                log_line(run_root, f"WARNING reference_quality unavailable: {reference_quality_summary.get('warning')}")
             write_status(
                 run_root,
                 {

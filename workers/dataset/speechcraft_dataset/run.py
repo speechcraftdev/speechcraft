@@ -17,7 +17,7 @@ from .buffers import run_processing_buffers
 from .diarization import run_diarization
 from .export import export_native_candidate_clips
 from .io import read_json, resolve_under_root, write_json
-from .qc_score_stages import run_speaker_purity_stage, run_transcript_qc_stage
+from .qc_score_stages import run_reference_quality_stage, run_speaker_purity_stage, run_transcript_qc_stage
 from .vr_slicer import TRUSTED_GEOMETRY_FINGERPRINT, VR_O0_4
 from .runtime_tools import verify_managed_model
 
@@ -341,6 +341,11 @@ def run_dataset_worker(args: argparse.Namespace) -> int:
         write_status(run_root, status)
         speaker_purity_summary = run_speaker_purity_stage(run_root, config)
         log_line(run_root, f"speaker_purity completed summary={speaker_purity_summary}")
+        reference_quality_summary = run_reference_quality_stage(run_root)
+        if reference_quality_summary.get("ok"):
+            log_line(run_root, f"reference_quality completed summary={reference_quality_summary}")
+        else:
+            log_line(run_root, f"WARNING reference_quality unavailable: {reference_quality_summary.get('warning')}")
         if should_stop("speaker_purity", args.stop_after):
             log_line(run_root, "dataset worker completed speaker purity")
             return _complete_ok(run_root, status, "speaker_purity", speaker_purity_summary)

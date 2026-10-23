@@ -83,6 +83,7 @@ export type ClipLabApiClip = {
   pipeline_findings: unknown[];
   transcript_match: number | null;
   speaker_check: number | null;
+  reference_quality?: number | null;
   sample_rate_hz: number | null;
   effective_audio_kind: string | null;
   audio_url: string;
@@ -381,12 +382,17 @@ export function mapApiClip(
     transcript,
     originalTranscript: clip.original_transcript ?? transcript,
     durationSeconds: clip.current_duration_sec ?? 0,
+    effectiveDurationRaw:
+      clip.current_duration_samples != null && sampleRateHz > 0
+        ? clip.current_duration_samples / sampleRateHz
+        : clip.current_duration_sec,
     durationSamples: clip.current_duration_samples ?? null,
     status: normalizeStatus(clip.review_status),
     machineBucket,
     qcScore: Number(qcScore.toFixed(3)),
     transcriptConfidence,
     speakerPurity,
+    referenceQuality: clip.reference_quality ?? null,
     transcriptMatchRaw: clip.transcript_match,
     speakerCheckRaw: clip.speaker_check,
     variant: clip.effective_audio_kind ?? "source",
