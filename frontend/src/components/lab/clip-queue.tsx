@@ -5,15 +5,8 @@ import { cn } from "@midday/ui/cn";
 import { Icons } from "@midday/ui/icons";
 import { Input } from "@midday/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@midday/ui/popover";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@midday/ui/select";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type LabClip,
   type MachineBucket,
@@ -22,6 +15,7 @@ import {
   type ReviewStatus,
   REVIEW_STATUS_ORDER,
   type SortMode,
+  type SortDirections,
   SORT_OPTIONS,
   STATUS_LABELS,
   formatSeconds,
@@ -40,6 +34,8 @@ type ClipQueueProps = {
   onClearFilters: () => void;
   sortMode: SortMode;
   onSortModeChange: (mode: SortMode) => void;
+  sortDirections: SortDirections;
+  onToggleSortDirection: (mode: SortMode) => void;
   onSelect: (id: string) => void;
 };
 
@@ -55,9 +51,12 @@ export function ClipQueue({
   onClearFilters,
   sortMode,
   onSortModeChange,
+  sortDirections,
+  onToggleSortDirection,
   onSelect,
 }: ClipQueueProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [sortOpen, setSortOpen] = useState(false);
   const activeFilterCount = statuses.length + buckets.length;
 
   const virtualizer = useVirtualizer({
@@ -164,18 +163,57 @@ export function ClipQueue({
 
       {/* Sort */}
       <div className="px-3 pb-2">
-        <Select value={sortMode} onValueChange={(value) => onSortModeChange(value as SortMode)}>
-          <SelectTrigger className="h-9">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
+        <Popover open={sortOpen} onOpenChange={setSortOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9 w-full justify-between font-normal"
+              aria-label={`Sort by ${SORT_OPTIONS.find((option) => option.value === sortMode)?.label ?? "Source Order"}`}
+            >
+              <span>{SORT_OPTIONS.find((option) => option.value === sortMode)?.label ?? "Source Order"}</span>
+              <Icons.ChevronDown className="size-4 text-muted-foreground" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-[294px] p-1">
             {SORT_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
+              <div key={option.value} className="flex items-center gap-1">
+                <button
+                  type="button"
+                  aria-pressed={sortMode === option.value}
+                  onClick={() => {
+                    onSortModeChange(option.value);
+                    setSortOpen(false);
+                  }}
+                  className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-sm px-2 text-left text-sm hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {sortMode === option.value ? (
+                    <Icons.Check aria-hidden="true" className="size-4 shrink-0" />
+                  ) : (
+                    <span aria-hidden="true" className="size-4 shrink-0" />
+                  )}
+                  <span className="truncate">{option.label}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Reverse ${option.label} to ${sortDirections[option.value] === "down" ? "ascending" : "descending"}`}
+                  onClick={() => {
+                    onToggleSortDirection(option.value);
+                    setSortOpen(false);
+                  }}
+                  className="flex size-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {sortDirections[option.value] === "down" ? (
+                    <Icons.ArrowDownward aria-hidden="true" className="size-4" />
+                  ) : (
+                    <Icons.ArrowUpward aria-hidden="true" className="size-4" />
+                  )}
+                </button>
+              </div>
             ))}
-          </SelectContent>
-        </Select>
+          </PopoverContent>
+        </Popover>
       </div>
 
       {/* Virtualized list */}

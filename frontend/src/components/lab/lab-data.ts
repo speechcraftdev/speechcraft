@@ -282,6 +282,16 @@ export function createMockClips(count = 42): LabClip[] {
 // ── Sorting + filtering ─────────────────────────────────────────────────
 
 export type SortMode = "source" | "transcript_confidence" | "speaker_purity" | "duration" | "reference_quality";
+export type SortDirection = "down" | "up";
+export type SortDirections = Record<SortMode, SortDirection>;
+
+export const DEFAULT_SORT_DIRECTIONS: SortDirections = {
+  source: "down",
+  transcript_confidence: "down",
+  speaker_purity: "down",
+  duration: "down",
+  reference_quality: "down",
+};
 
 export const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "source", label: "Source Order" },
@@ -291,23 +301,32 @@ export const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "reference_quality", label: "Reference Quality" },
 ];
 
-function descendingNullable(a: number | null | undefined, b: number | null | undefined): number {
+function compareNullable(
+  a: number | null | undefined,
+  b: number | null | undefined,
+  direction: SortDirection,
+): number {
   if (a == null) return b == null ? 0 : 1;
   if (b == null) return -1;
-  return b - a;
+  return direction === "down" ? b - a : a - b;
 }
 
-export function sortClips(clips: LabClip[], mode: SortMode): LabClip[] {
+export function sortClips(clips: LabClip[], mode: SortMode, direction: SortDirection = "down"): LabClip[] {
   const copy = [...clips];
+  if (mode === "source") {
+    return copy.sort((a, b) => direction === "down" ? a.order - b.order : b.order - a.order);
+  }
+  const compare = (a: LabClip, b: LabClip, left: number | null | undefined, right: number | null | undefined) =>
+    compareNullable(left, right, direction) || a.order - b.order;
   switch (mode) {
     case "transcript_confidence":
-      return copy.sort((a, b) => descendingNullable(a.transcriptMatchRaw, b.transcriptMatchRaw) || a.order - b.order);
+      return copy.sort((a, b) => compare(a, b, a.transcriptMatchRaw, b.transcriptMatchRaw));
     case "speaker_purity":
-      return copy.sort((a, b) => descendingNullable(a.speakerCheckRaw, b.speakerCheckRaw) || a.order - b.order);
+      return copy.sort((a, b) => compare(a, b, a.speakerCheckRaw, b.speakerCheckRaw));
     case "reference_quality":
-      return copy.sort((a, b) => descendingNullable(a.referenceQuality, b.referenceQuality) || a.order - b.order);
+      return copy.sort((a, b) => compare(a, b, a.referenceQuality, b.referenceQuality));
     case "duration":
-      return copy.sort((a, b) => descendingNullable(a.effectiveDurationRaw, b.effectiveDurationRaw) || a.order - b.order);
+      return copy.sort((a, b) => compare(a, b, a.effectiveDurationRaw, b.effectiveDurationRaw));
     default:
       return copy.sort((a, b) => a.order - b.order);
   }

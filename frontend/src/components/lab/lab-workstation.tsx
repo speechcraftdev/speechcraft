@@ -26,6 +26,8 @@ import {
   type MachineBucket,
   type ReviewStatus,
   type SortMode,
+  type SortDirections,
+  DEFAULT_SORT_DIRECTIONS,
   createMockClips,
   filterClips,
   initialReviewClipId,
@@ -239,6 +241,7 @@ export function LabWorkstation() {
   const [search, setSearch] = useState("");
   const [filterStatuses, setFilterStatuses] = useState<ReviewStatus[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>("source");
+  const [sortDirections, setSortDirections] = useState<SortDirections>(DEFAULT_SORT_DIRECTIONS);
   const [filterBuckets, setFilterBuckets] = useState<MachineBucket[]>([]);
   const [autoplayClipId, setAutoplayClipId] = useState<string | null>(null);
   const [activeQcSubset, setActiveQcSubset] = useState<QcSubset | null>(null);
@@ -247,6 +250,14 @@ export function LabWorkstation() {
     speaker_check_min: number;
   }>({ transcript_match_min: 0, speaker_check_min: 0 });
   const seededRunRef = useRef<string | null>(null);
+
+  const toggleSortDirection = useCallback((mode: SortMode) => {
+    setSortMode(mode);
+    setSortDirections((current) => ({
+      ...current,
+      [mode]: current[mode] === "down" ? "up" : "down",
+    }));
+  }, []);
 
   useEffect(() => {
     if (!useMockClips && view && runId && seededRunRef.current !== runId) {
@@ -259,6 +270,7 @@ export function LabWorkstation() {
       const initialQueue = sortClips(
         mapped.filter((clip) => passesQcSubset(clip, view.active_qc_subset)),
         sortMode,
+        sortDirections[sortMode],
       );
       setClips(mapped);
       setActiveClipId(initialReviewClipId(initialQueue));
@@ -276,7 +288,7 @@ export function LabWorkstation() {
     // run. Threshold changes after seeding are handled by the re-derive
     // effect below so in-progress edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, runId, useMockClips, sortMode]);
+  }, [view, runId, useMockClips, sortMode, sortDirections]);
 
   // Active subset thresholds can change after clips are already seeded. Re-derive
   // machineBucket/qcScore in place —
@@ -325,12 +337,12 @@ export function LabWorkstation() {
     if (useMockClips && seededRunRef.current !== "demo") {
       const mock = createMockClips();
       setClips(mock);
-      setActiveClipId(initialReviewClipId(sortClips(mock, sortMode)));
+      setActiveClipId(initialReviewClipId(sortClips(mock, sortMode, sortDirections[sortMode])));
       setActiveQcSubset(null);
       setDraftQcThresholds({ transcript_match_min: 0, speaker_check_min: 0 });
       seededRunRef.current = "demo";
     }
-  }, [useMockClips, sortMode]);
+  }, [useMockClips, sortMode, sortDirections]);
 
   const qcScopedClips = useMemo(
     () => clips.filter((clip) => passesQcSubset(clip, activeQcSubset)),
@@ -338,8 +350,8 @@ export function LabWorkstation() {
   );
 
   const visibleClips = useMemo(
-    () => sortClips(filterClips(qcScopedClips, search, filterStatuses, filterBuckets), sortMode),
-    [qcScopedClips, search, filterStatuses, filterBuckets, sortMode],
+    () => sortClips(filterClips(qcScopedClips, search, filterStatuses, filterBuckets), sortMode, sortDirections[sortMode]),
+    [qcScopedClips, search, filterStatuses, filterBuckets, sortMode, sortDirections],
   );
 
   // If filters/search/sort hide the active clip, clear selection so the queue
@@ -854,6 +866,8 @@ export function LabWorkstation() {
             }}
             sortMode={sortMode}
             onSortModeChange={setSortMode}
+            sortDirections={sortDirections}
+            onToggleSortDirection={toggleSortDirection}
             onSelect={setActiveClipId}
           />
 
