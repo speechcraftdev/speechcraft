@@ -663,15 +663,15 @@ class ClipLabStateTests(unittest.TestCase):
       "candidate_review_clip_000002",
       expected_manifest_sha256=self._manifest_sha(),
       expected_clip_version=0,
-      audio_edl_recipe={"ops": [{"kind": "trim", "start_sec": 0.1, "end_sec": 3.0}]},
+      transcript_override="Transcript only change.",
     )
-    self.assertIsNone(edited["reference_quality"])
+    self.assertEqual(edited["reference_quality"], 77.25)
     restored = patch_clip_lab_clip(
       self.run_root,
       "candidate_review_clip_000002",
       expected_manifest_sha256=self._manifest_sha(),
       expected_clip_version=1,
-      audio_edl_recipe={"ops": []},
+      review_status="accepted",
     )
     self.assertEqual(restored["reference_quality"], 77.25)
 
@@ -687,6 +687,10 @@ class ClipLabStateTests(unittest.TestCase):
     artifact_path.write_text(json.dumps(payload), encoding="utf-8")
     stale_view = build_clip_lab_view(self.run_root, run_id="run-1")
     self.assertTrue(all(row["reference_quality"] is None for row in stale_view["clips"]))
+
+    artifact_path.write_text("[]", encoding="utf-8")
+    malformed_view = build_clip_lab_view(self.run_root, run_id="run-1")
+    self.assertTrue(all(row["reference_quality"] is None for row in malformed_view["clips"]))
 
   def test_null_transcript_match_score_is_tolerated(self) -> None:
     artifacts = self.run_root / "artifacts"

@@ -672,28 +672,30 @@ def _load_optional_qc_indexes(run_root: Path, *, candidate_manifest_sha256: str)
     if reference_path.exists():
         try:
             payload = _read_json(reference_path)
-            manifest_hash = hashlib.sha256((run_root / CANDIDATE_MANIFEST_REL).read_bytes()).hexdigest()
+            if not isinstance(payload, dict):
+                payload = {}
             input_hashes = payload.get("input_sha256")
-            speaker_hash = hashlib.sha256(speaker_path.read_bytes()).hexdigest() if speaker_path.exists() else None
+            dependency_paths = {
+                "speaker_purity": SPEAKER_PURITY_REL,
+                "speaker_regions": "artifacts/speaker_regions.jsonl",
+                "speaker_selection": "artifacts/speaker_selection.json",
+                "audio_variants_manifest": "artifacts/audio_variants_manifest.json",
+                "transcript_qc": TRANSCRIPT_QC_REL,
+            }
+            dependency_hashes: dict[str, str] = {}
+            for key, relative in dependency_paths.items():
+                dependency_path = run_root / relative
+                if dependency_path.is_file():
+                    dependency_hashes[key] = hashlib.sha256(dependency_path.read_bytes()).hexdigest()
             source_hashes_match = isinstance(input_hashes, dict) and all(
-                isinstance(relative, str)
-                and (run_root / relative).is_file()
-                and input_hashes.get(key) in {
-                    hashlib.sha256((run_root / relative).read_bytes()).hexdigest(),
-                    f"sha256:{hashlib.sha256((run_root / relative).read_bytes()).hexdigest()}",
-                }
-                for key, relative in (
-                    ("speaker_regions", "artifacts/speaker_regions.jsonl"),
-                    ("speaker_selection", "artifacts/speaker_selection.json"),
-                    ("audio_variants_manifest", "artifacts/audio_variants_manifest.json"),
-                    ("transcript_qc", "artifacts/transcript_qc.json"),
-                )
+                key in dependency_hashes
+                and input_hashes.get(key) in {dependency_hashes[key], f"sha256:{dependency_hashes[key]}"}
+                for key in dependency_paths
             )
             if (payload.get("schema_version") == 2
                     and payload.get("score_method") == REFERENCE_QUALITY_METHOD
-                    and payload.get("candidate_manifest_sha256") in {manifest_hash, f"sha256:{manifest_hash}"}
+                    and payload.get("candidate_manifest_sha256") in {candidate_manifest_sha256, f"sha256:{candidate_manifest_sha256}"}
                     and isinstance(input_hashes, dict)
-                    and input_hashes.get("speaker_purity") in {speaker_hash, f"sha256:{speaker_hash}"}
                     and source_hashes_match):
                 rows = _clip_rows_from_qc_artifact(payload, artifact_name=REFERENCE_QUALITY_REL)
                 reference_by_id = _index_qc_rows(rows)
@@ -745,6 +747,14 @@ def _build_clip_view(
     transcript_row = transcript_by_id.get(clip_id, {})
     speaker_row = speaker_by_id.get(clip_id, {})
     reference_row = reference_by_id.get(clip_id, {})
+    from .clip_lab_audio_ops import audio_view_fields
+
+    audio_fields = audio_view_fields(run_id=run_id or "", manifest_row=manifest_row, clip_entry=clip_entry)
+    original_audio_is_effective = (
+        audio_fields.get("effective_audio_kind") == "candidate_original"
+        and isinstance(audio_fields.get("source_audio_sha256"), str)
+        and audio_fields.get("effective_audio_revision_key") == audio_fields.get("source_audio_sha256")
+    )
     whisper_transcript = transcript_row.get("whisper_text")
     if not isinstance(whisper_transcript, str):
         whisper_transcript = ""
@@ -771,23 +781,11 @@ def _build_clip_view(
         "speaker_check": _speaker_check_score(speaker_row),
         "reference_quality": (
             _reference_quality_score(reference_row)
-            if not _clip_has_audio_edits(clip_entry) else None
+            if original_audio_is_effective else None
         ),
     }
-    if run_id is not None:
-        from .clip_lab_audio_ops import audio_view_fields
-
-        view.update(audio_view_fields(run_id=run_id, manifest_row=manifest_row, clip_entry=clip_entry))
+    view.update(audio_fields)
     return view
-
-
-def _clip_has_audio_edits(clip_entry: dict[str, Any]) -> bool:
-    recipe = clip_entry.get("audio_edl_recipe")
-    if isinstance(recipe, list):
-        return bool(recipe)
-    if isinstance(recipe, dict):
-        return bool(recipe.get("ops") or recipe.get("operations"))
-    return False
 
 
 def build_clip_lab_view(run_root: Path, *, run_id: str) -> dict[str, Any]:

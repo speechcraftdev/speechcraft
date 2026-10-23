@@ -24,6 +24,7 @@ from app.clip_lab_audio_ops import (
     effective_revision_key,
     load_revision_peaks_payload,
     resolve_revision_media_bytes,
+    undo_clip_audio_operation,
 )
 from app.clip_lab_state import (
     ClipLabValidationError,
@@ -156,6 +157,45 @@ class ClipLabAudioOpsLifecycleTests(unittest.TestCase):
             expected_clip_version=version,
             operation={"kind": "delete_range", "start_sample": 5, "end_sample": 15},
         )
+
+    def _install_reference_quality(self) -> None:
+        artifacts = self.run_root / "artifacts"
+        sources = {
+            "speaker_purity": ("speaker_purity.json", {"clips": [{"clip_id": self.clip_id}]}),
+            "transcript_qc": ("transcript_qc.json", {"clips": [{"clip_id": self.clip_id}]}),
+            "speaker_regions": ("speaker_regions.jsonl", ""),
+            "speaker_selection": ("speaker_selection.json", {"target_speaker_id": "speaker_0"}),
+            "audio_variants_manifest": ("audio_variants_manifest.json", {"variants": []}),
+        }
+        hashes = {}
+        for key, (filename, payload) in sources.items():
+            path = artifacts / filename
+            path.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
+            hashes[key] = hashlib.sha256(path.read_bytes()).hexdigest()
+        (artifacts / "reference_quality.json").write_text(json.dumps({
+            "schema_version": 2,
+            "score_method": "speaker_representativeness_duration_position_transcript_v2",
+            "candidate_manifest_sha256": self.manifest_sha,
+            "input_sha256": hashes,
+            "clips": [{"clip_id": self.clip_id, "reference_quality_score": 82.5}],
+        }), encoding="utf-8")
+
+    def test_audio_edit_response_hides_rq_and_undo_restores_original_score(self) -> None:
+        self._install_reference_quality()
+        edited = self._append_delete()
+        self.assertEqual(edited["effective_audio_kind"], "rendered_revision")
+        self.assertIsNone(edited["reference_quality"])
+
+        restored = undo_clip_audio_operation(
+            self.run_root,
+            run_id="run-1",
+            clip_id=self.clip_id,
+            expected_manifest_sha256=self.manifest_sha,
+            expected_clip_version=edited["clip_version"],
+        )
+        self.assertEqual(restored["effective_audio_kind"], "candidate_original")
+        self.assertEqual(restored["effective_audio_revision_key"], restored["source_audio_sha256"])
+        self.assertEqual(restored["reference_quality"], 82.5)
 
     def test_finalize_render_succeeds_after_tag_only_clip_version_bump(self) -> None:
         import app.clip_lab_audio_ops as ops_module

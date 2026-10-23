@@ -420,14 +420,16 @@ def _clip_view_after_mutation(
     manifest_row: dict[str, Any],
     clip_entry: dict[str, Any],
 ) -> dict[str, Any]:
-    qc_state = _load_optional_qc_indexes(run_root)
+    current_manifest_sha = compute_manifest_sha256(candidate_manifest_path(run_root))
+    qc_state = _load_optional_qc_indexes(run_root, candidate_manifest_sha256=current_manifest_sha)
     view = _build_clip_view(
         manifest_row=manifest_row,
         clip_entry=clip_entry,
         transcript_by_id=qc_state.transcript_by_id,
         speaker_by_id=qc_state.speaker_by_id,
+        reference_by_id=qc_state.reference_by_id,
+        run_id=run_id,
     )
-    view.update(audio_view_fields(run_id=run_id, manifest_row=manifest_row, clip_entry=clip_entry))
     view["clip_id"] = clip_id
     return view
 
