@@ -77,9 +77,9 @@ function setupProgress(status: SetupStatus, models: ModelState[]): ProgressView 
   const stageArtifact: Record<string, string> = {
     install_uv: `uv ${status.components?.uv?.identity?.replace(/^uv\s+/, "") || "runtime"}`,
     install_python: `CPython ${status.components?.managed_python?.identity?.match(/\d+\.\d+\.\d+/)?.[0] || "runtime"}`,
-    install_model_manager: "Installing dependencies",
-    install_backend_environment: "Installing dependencies",
-    install_worker_environment: "Installing dependencies",
+    install_model_manager: "Model manager environment",
+    install_backend_environment: "Backend Python environment",
+    install_worker_environment: "Dataset worker environment",
     install_models: "Preparing model",
   };
   const artifact = progress?.artifact_name || stageArtifact[stage]
@@ -88,7 +88,8 @@ function setupProgress(status: SetupStatus, models: ModelState[]): ProgressView 
         : operation === "installing" && kind === "Python package" ? "Installing dependencies" : "Preparing setup");
   const title = operation === "downloading" && kind === "Model" ? "Downloading models"
     : operation === "downloading" && kind === "Runtime" ? "Downloading runtime"
-      : operation === "installing" ? artifact
+      : operation === "installing" && kind === "Python package" ? "Installing Python dependencies"
+        : operation === "installing" ? artifact
         : operation === "verifying" ? "Verifying installation"
           : operation === "loading" ? "Loading model" : "Preparing Speechcraft";
   return { title, artifact, kind, progress };
@@ -152,7 +153,8 @@ function ProgressScreen({ view }: { view: ProgressView }) {
       <div className="text-center space-y-2">
         <h1 className="text-lg lg:text-xl mb-4 font-serif">{view.title}</h1>
         <p className="font-sans text-sm text-[#878787]">
-          {downloading ? `${view.artifact} is downloading.` : indeterminateLabel}
+          {downloading ? `${view.artifact} is downloading.` : operation === "installing" && progress?.message
+            ? progress.message : indeterminateLabel}
         </p>
       </div>
       <div className="mt-8 space-y-3" aria-live="polite">
