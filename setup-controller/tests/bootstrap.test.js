@@ -38,6 +38,7 @@ function archiveFor(files) {
 
 function setTreeMode(directory, mode) {
   const info = fs.lstatSync(directory);
+  if (info.isSymbolicLink()) return;
   if (info.isDirectory() && !info.isSymbolicLink()) {
     for (const name of fs.readdirSync(directory)) setTreeMode(path.join(directory, name), mode);
   }
@@ -56,6 +57,14 @@ test('worker dependency builds use a writable managed copy of the verified read-
   fs.writeFileSync(path.join(manager, 'README.md'), 'packaged local dependency\n');
   fs.mkdirSync(path.join(manager, 'speechcraft_models'));
   fs.writeFileSync(path.join(manager, 'speechcraft_models/cli.py'), 'value = 1\n');
+  fs.writeFileSync(path.join(manager, 'speechcraft_models/catalog.json'), '{"models":[]}\n');
+  fs.symlinkSync('catalog.json', path.join(manager, 'speechcraft_models/catalog-link.json'));
+  fs.mkdirSync(path.join(profile, '.venv/bin'), { recursive: true });
+  fs.symlinkSync('/outside/python', path.join(profile, '.venv/bin/python'));
+  fs.mkdirSync(path.join(manager, 'speechcraft_models/__pycache__'), { recursive: true });
+  fs.writeFileSync(path.join(manager, 'speechcraft_models/__pycache__/cli.pyc'), 'ignored cache');
+  fs.mkdirSync(path.join(manager, 'speechcraft_model_manager.egg-info'));
+  fs.writeFileSync(path.join(manager, 'speechcraft_model_manager.egg-info/PKG-INFO'), 'ignored metadata');
   setTreeMode(app, 0o555);
   try {
     const stagedProfile = stageWorkerBuildSources(app, data, path.join(data, 'staging/attempt-test'),
@@ -67,6 +76,12 @@ test('worker dependency builds use a writable managed copy of the verified read-
     assert.ok(fs.statSync(stagedManager).mode & 0o200, 'the local dependency directory must be writable by uv');
     assert.ok(fs.statSync(path.join(stagedManager, 'pyproject.toml')).mode & 0o200, 'the build metadata must be writable');
     assert.equal(fs.readFileSync(path.join(stagedManager, 'speechcraft_models/cli.py'), 'utf8'), 'value = 1\n');
+    assert.equal(fs.readFileSync(path.join(stagedManager, 'speechcraft_models/catalog-link.json'), 'utf8'), '{"models":[]}\n',
+      'safe in-package source links should be materialized as regular files');
+    assert.equal(fs.existsSync(path.join(stagedProfile, '.venv')), false, 'a local development environment is not a build input');
+    assert.equal(fs.existsSync(path.join(stagedManager, 'speechcraft_models/__pycache__')), false, 'bytecode caches are not build inputs');
+    assert.equal(fs.existsSync(path.join(stagedManager, 'speechcraft_model_manager.egg-info')), false, 'local egg metadata is not a build input');
+    assert.equal(fs.lstatSync(path.join(stagedManager, 'speechcraft_models/catalog-link.json')).isSymbolicLink(), false);
     assert.equal(fs.statSync(path.join(manager, 'pyproject.toml')).mode & 0o222, 0, 'the installed release must remain read-only');
     assert.equal(fs.readFileSync(path.join(manager, 'pyproject.toml'), 'utf8'), '[project]\nname="speechcraft-model-manager"\n');
   } finally {
@@ -234,22 +249,24 @@ test('ordinary installed-runtime recovery requires and binds reuse to the truste
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('an application update rebuilds only the model-manager environment when the trusted wheel changes', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-manager-wheel-upgrade-'));
-  const tasks = new BootstrapTasks({ dataDirectory: root });
-  let lookups = 0;
-  let rebuilds = 0;
-  tasks.findInstalledModelManager = async () => {
-    lookups += 1;
-    if (lookups === 1) throw Object.assign(new Error('old trusted wheel'), { code: 'MODEL_MANAGER_WHEEL_HASH_MISMATCH' });
-    return { environmentRoot: '/managed/new-manager', wheel_sha256: 'b'.repeat(64) };
-  };
-  tasks.ensureModelManager = async () => { rebuilds += 1; };
-  const found = await tasks.findOrRepairInstalledModelManager({ attemptId: 'wheel-upgrade', signal: new AbortController().signal });
-  assert.equal(found.environmentRoot, '/managed/new-manager');
-  assert.equal(lookups, 2);
-  assert.equal(rebuilds, 1);
-  fs.rmSync(root, { recursive: true, force: true });
+test('an updated wheel or damaged installed files rebuild only the model-manager environment', async () => {
+  for (const code of ['MODEL_MANAGER_WHEEL_HASH_MISMATCH', 'MODEL_MANAGER_INSTALLED_FILES_MISMATCH']) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'speechcraft-manager-wheel-recovery-'));
+    const tasks = new BootstrapTasks({ dataDirectory: root });
+    let lookups = 0;
+    let rebuilds = 0;
+    tasks.findInstalledModelManager = async () => {
+      lookups += 1;
+      if (lookups === 1) throw Object.assign(new Error('manager environment needs repair'), { code });
+      return { environmentRoot: '/managed/new-manager', wheel_sha256: 'b'.repeat(64) };
+    };
+    tasks.ensureModelManager = async () => { rebuilds += 1; };
+    const found = await tasks.findOrRepairInstalledModelManager({ attemptId: 'wheel-upgrade', signal: new AbortController().signal });
+    assert.equal(found.environmentRoot, '/managed/new-manager');
+    assert.equal(lookups, 2);
+    assert.equal(rebuilds, 1);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('controller restart reconstructs all installed model paths and retains the prior CUDA selection for revalidation without a wheel', async () => {

@@ -15,7 +15,11 @@ import { runLinuxUninstall } from './uninstall-linux.js';
 import { runMacUninstall } from './uninstall-macos.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const FRONTEND_PORT = 3002;
+const configuredFrontendPort = process.env.SPEECHCRAFT_FRONTEND_PORT;
+const FRONTEND_PORT = configuredFrontendPort === undefined ? 3002 : Number(configuredFrontendPort);
+if (!Number.isInteger(FRONTEND_PORT) || FRONTEND_PORT < 1024 || FRONTEND_PORT > 65535) {
+  throw new Error('SPEECHCRAFT_FRONTEND_PORT must be an integer between 1024 and 65535.');
+}
 const CONTROLLER_PORT = 4317;
 const BACKEND_PORT = 8010;
 const LOOPBACK = '127.0.0.1';
@@ -63,7 +67,7 @@ export function chooseDestination() {
 
 export function formatFrontendReadyEvent({ url, route, ready, owned = false }) {
   if (route !== '/login') throw new Error('Refusing to publish an untrusted frontend route.');
-  if (url !== `http://127.0.0.1:3002${route}`) throw new Error('Refusing to publish an untrusted frontend URL.');
+  if (url !== `http://127.0.0.1:${FRONTEND_PORT}${route}`) throw new Error('Refusing to publish an untrusted frontend URL.');
   return `SPEECHCRAFT_READY ${JSON.stringify({
     event: 'frontend_ready', protocol: FRONTEND_READY_PROTOCOL, url, route, ready: ready === true, owned: owned === true,
   })}`;
@@ -74,7 +78,7 @@ export function parseFrontendReadyEvent(line) {
   let payload;
   try { payload = JSON.parse(line.slice('SPEECHCRAFT_READY '.length)); } catch { return null; }
   if (!payload || payload.event !== 'frontend_ready' || payload.protocol !== FRONTEND_READY_PROTOCOL || payload.ready !== true) return null;
-  if (payload.route !== '/login' || payload.url !== `http://127.0.0.1:3002${payload.route}`) return null;
+  if (payload.route !== '/login' || payload.url !== `http://127.0.0.1:${FRONTEND_PORT}${payload.route}`) return null;
   const allowed = new Set(['event', 'protocol', 'url', 'route', 'ready', 'owned']);
   if (Object.keys(payload).some((key) => !allowed.has(key))) return null;
   return { event: payload.event, protocol: payload.protocol, url: payload.url, route: payload.route, ready: true };
@@ -635,7 +639,7 @@ export async function stopOwned(handle, { identityResolver = ownedProcessIdentit
 }
 
 export async function openDefaultBrowser(url, { platform = process.platform, env = process.env, spawnImpl = spawn, wsl = false } = {}) {
-  if (!/^http:\/\/127\.0\.0\.1:3002\/(?:setup|login)$/.test(url)) throw new Error('Refusing to open a non-SpeechCraft local URL.');
+  if (url !== `http://127.0.0.1:${FRONTEND_PORT}/setup` && url !== `http://127.0.0.1:${FRONTEND_PORT}/login`) throw new Error('Refusing to open a non-SpeechCraft local URL.');
   if (platform === 'linux' && !wsl && !env.DISPLAY && !env.WAYLAND_DISPLAY) return false;
   if (platform === 'darwin' && env.SSH_CONNECTION) return false;
   let command; let args;
@@ -674,7 +678,7 @@ export async function stopForUninstall(dataDirectory) {
       throw new Error(`Cannot inspect the data directory (${error.message}). Uninstall aborted; no application files were removed.`);
     }
     if (!(await isPortAvailable(CONTROLLER_PORT)) || !(await isPortAvailable(FRONTEND_PORT))) {
-      throw new Error('A process is listening on SpeechCraft port 4317 or 3002, but there is no data directory credential to authenticate shutdown. Uninstall aborted; no application files were removed.');
+      throw new Error(`A process is listening on SpeechCraft port 4317 or ${FRONTEND_PORT}, but there is no data directory credential to authenticate shutdown. Uninstall aborted; no application files were removed.`);
     }
     return { stopped: true, status: 'not_running' };
   }
@@ -897,7 +901,7 @@ export async function runLauncher({ args = process.argv.slice(2), env = process.
   } else {
     console.log(`SpeechCraft: checking the frontend already listening at http://${LOOPBACK}:${FRONTEND_PORT}`);
     try { await verifyFrontendOwnership(appOrigin, frontendIdentity, null); }
-    catch { throw new Error('Frontend port 3002 is occupied by a different or unverified application; SpeechCraft will not stop it.'); }
+    catch { throw new Error(`Frontend port ${FRONTEND_PORT} is occupied by a different or unverified application; SpeechCraft will not stop it.`); }
     console.log('SpeechCraft: frontend identity matches this installation');
   }
   const route = chooseDestination(status.onboarding);

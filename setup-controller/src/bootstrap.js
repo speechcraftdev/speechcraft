@@ -267,6 +267,14 @@ function assertInside(root, target) {
   }
 }
 
+function validateNoSymlinks(directory) {
+  const info = fs.lstatSync(directory);
+  if (info.isSymbolicLink()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'Refusing to clean a staging path containing a symlink.');
+  if (info.isDirectory()) {
+    for (const name of fs.readdirSync(directory)) validateNoSymlinks(path.join(directory, name));
+  }
+}
+
 export function ensureManagedDirectory(root, target) {
   const resolvedRoot = fs.realpathSync(root);
   const absolute = path.resolve(target);
@@ -286,14 +294,6 @@ export function ensureManagedDirectory(root, target) {
   return absolute;
 }
 
-function validateNoSymlinks(directory) {
-  const info = fs.lstatSync(directory);
-  if (info.isSymbolicLink()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'Refusing to clean a staging path containing a symlink.');
-  if (info.isDirectory()) {
-    for (const name of fs.readdirSync(directory)) validateNoSymlinks(path.join(directory, name));
-  }
-}
-
 function makeTreeWritable(directory) {
   const info = fs.lstatSync(directory);
   if (info.isSymbolicLink()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'A staged worker source contains a symbolic link.');
@@ -304,6 +304,30 @@ function makeTreeWritable(directory) {
   }
   if (!info.isFile()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'A staged worker source contains an unsupported filesystem object.');
   fs.chmodSync(directory, (info.mode & 0o777) | 0o600);
+}
+
+function copyWorkerSourceTree(source, target, sourceRoot) {
+  const info = fs.lstatSync(source);
+  if (info.isSymbolicLink()) {
+    const resolved = fs.realpathSync(source);
+    assertInside(sourceRoot, resolved);
+    const targetInfo = fs.statSync(resolved);
+    if (!targetInfo.isFile()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'A worker source link must resolve to a file inside the application package.');
+    fs.copyFileSync(resolved, target, fs.constants.COPYFILE_EXCL);
+    return;
+  }
+  if (info.isDirectory()) {
+    fs.mkdirSync(target, { mode: 0o700 });
+    for (const name of fs.readdirSync(source)) {
+      // These are local development artifacts and are never build inputs.
+      if (name === '.venv' || name === '__pycache__' || name === '.pytest_cache'
+          || name.endsWith('.egg-info')) continue;
+      copyWorkerSourceTree(path.join(source, name), path.join(target, name), sourceRoot);
+    }
+    return;
+  }
+  if (!info.isFile()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'A worker source contains an unsupported filesystem object.');
+  fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
 }
 
 export function stageWorkerBuildSources(applicationRoot, dataDirectory, stagingRoot, projectRelative) {
@@ -321,9 +345,8 @@ export function stageWorkerBuildSources(applicationRoot, dataDirectory, stagingR
     assertInside(sourceRoot, source);
     const info = fs.lstatSync(source);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new BootstrapError('BOOTSTRAP_PATH_UNSAFE', 'A packaged worker build source is not a regular directory.');
-    validateNoSymlinks(source);
     fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-    fs.cpSync(source, target, { recursive: true, errorOnExist: true });
+    copyWorkerSourceTree(source, target, sourceRoot);
     makeTreeWritable(target);
   }
   const projectSource = path.resolve(sourceRoot, projectRelative);
@@ -1503,8 +1526,8 @@ export class BootstrapTasks {
       // An application update can ship a new trusted model-manager wheel
       // while preserving the older versioned data directory. Rebuild only
       // this owned environment from the packaged wheel, then revalidate it.
-      if (!['MODEL_MANAGER_WHEEL_HASH_MISMATCH', 'MODEL_MANAGER_ENVIRONMENT_UNAVAILABLE',
-        'MODEL_MANAGER_ENVIRONMENT_INVALID'].includes(error?.code)) throw error;
+      if (!['MODEL_MANAGER_WHEEL_HASH_MISMATCH', 'MODEL_MANAGER_INSTALLED_FILES_MISMATCH',
+        'MODEL_MANAGER_ENVIRONMENT_UNAVAILABLE', 'MODEL_MANAGER_ENVIRONMENT_INVALID'].includes(error?.code)) throw error;
       await this.ensureModelManager(context);
       return this.findInstalledModelManager(context);
     }
