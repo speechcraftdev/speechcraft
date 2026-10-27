@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "speechcraft-e2e-bench"
+version = "0.1.0"
+description = "Model-agnostic end-to-end TTS evaluation toolkit"
+requires-python = ">=3.11,<3.13"
+dependencies = ["numpy>=1.26,<3", "PyYAML>=6", "soundfile>=0.12", "scipy>=1.11", "jiwer>=3.0,<5"]
+
+[project.optional-dependencies]
+speaker = ["speechbrain>=1.0,<2"]
+ecapa2 = ["torch>=2.0", "torchaudio>=2.0", "huggingface_hub>=0.20"]
+ttsds = ["ttsds==2.1.3"]
+
+[project.scripts]
+speechcraft-e2e = "speechcraft_e2e_bench.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

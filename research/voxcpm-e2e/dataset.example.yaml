@@ -1,0 +1,27 @@
+version: 1
+speaker_id: speaker_001
+real_recordings:
+  - id: real_001
+    path: audio/reference_001.wav
+    transcript: "A short example sentence."
+prompts:
+  - id: prompt_001
+    text: "A short example sentence."
+    source_recording_id: original_042
+conditions:
+  baseline:
+    metadata: {model: example-tts, checkpoint: abc123}
+    clips:
+      - id: baseline_001
+        prompt_id: prompt_001
+        path: audio/baseline_001.wav
+        seed: 42
+        generation_attempt_id: attempt_001
+        outcome: success
+attempts:
+  - id: attempt_001
+    condition: baseline
+    prompt_id: prompt_001
+    outcome: success
+    clip_id: baseline_001
+attempts_complete: true

@@ -1,0 +1,59 @@
+{
+  "experiment_id": "local-example",
+  "models": {
+    "voxcpm": {
+      "base_revision": "<model revision>",
+      "base_config_sha256": "<sha256>",
+      "base_weights_sha256": "<sha256>",
+      "source_commit": "<upstream git commit>"
+    },
+    "f5tts": {
+      "base_revision": "<model revision>",
+      "pretrained_checkpoint_sha256": "<sha256>",
+      "source_commit": "<upstream git commit>",
+      "vocoder": "<vocoder>",
+      "vocoder_revision": "<revision>"
+    }
+  },
+  "speakers": {
+    "speaker_001": {
+      "voxcpm": {
+        "checkpoint": "<optional local LoRA path>",
+        "checkpoint_sha256": "<optional sha256>"
+      }
+    }
+  },
+  "prompts": {
+    "manifest": "prompts.jsonl",
+    "sha256": "<manifest sha256>"
+  },
+  "references": {
+    "manifest": "references.jsonl"
+  },
+  "inference": {
+    "voxcpm": {
+      "cfg_value": 2.0,
+      "inference_timesteps": 10,
+      "min_len": 2,
+      "max_len": 4096,
+      "normalize": false,
+      "denoise": false,
+      "retry_badcase": false,
+      "seed_base": 123400
+    },
+    "f5tts": {
+      "target_rms": 0.1,
+      "cross_fade_duration": 0.15,
+      "sway_sampling_coef": -1,
+      "cfg_strength": 2,
+      "nfe_step": 32,
+      "speed": 1.0,
+      "use_ema": true,
+      "seed_base": 123400
+    }
+  },
+  "generation_modes": {
+    "voxcpm": ["zero_shot", "fine_tuned", "reference_free"],
+    "f5tts": ["zero_shot", "fine_tuned"]
+  }
+}

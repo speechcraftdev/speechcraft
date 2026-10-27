@@ -1,0 +1,6 @@
+HyperPyYAML==1.2.3
+pip==25.0.1
+ruamel.yaml.clib==0.2.15
+ruamel.yaml==0.18.17
+sentencepiece==0.2.2
+speechbrain==1.0.3

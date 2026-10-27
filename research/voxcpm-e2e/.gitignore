@@ -1,0 +1,18 @@
+# Local data, model artifacts, evaluator caches, and run outputs
+runs/
+cache/
+worker-envs/
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.wav
+*.flac
+*.mp3
+*.npy
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+answer-key*.json
+responses*.json

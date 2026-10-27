@@ -1,0 +1,20 @@
+asr:
+  python: null
+  model: large-v3
+  compute_type: int8
+transcribe_real: false
+speaker:
+  backend: speechbrain
+  python: null
+  model: speechbrain/spkrec-ecapa-voxceleb
+ttsds2:
+  python: null
+  minimum_samples: 20
+failure_thresholds:
+  min_duration_seconds: 0.15
+  max_duration_seconds: 90
+  review_wer: 0.5
+  review_cer: 0.4
+  silence_fraction_review: 0.8
+  repetition_ratio_review: 0.5
+  truncation_ratio_review: 0.5

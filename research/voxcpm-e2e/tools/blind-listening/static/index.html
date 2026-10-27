@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Blind Listening Test</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main class="shell">
+<header><div><p class="eyebrow">SPEECHCRAFT E2E · LISTENING STUDY</p><h1>Blind voice comparison</h1></div><span id="saveStatus" class="save">Loading session…</span></header>
+<section id="evaluation">
+<div class="progress-row"><div><strong id="speaker">Speaker</strong><span id="counter"></span></div><progress id="progress" max="1" value="0"></progress></div>
+<div class="anchor card"><div><span class="eyebrow">REAL SPEAKER ANCHOR</span><p>Use this genuine recording as an identity reference.</p></div><audio id="anchor" controls preload="none"></audio></div>
+<section class="sentence card"><span class="eyebrow">SENTENCE TO EVALUATE</span><p id="sentence"></p></section>
+<div class="players"><section class="player card"><h2>A</h2><audio id="playerA" controls preload="none"></audio></section><section class="player card"><h2>B</h2><audio id="playerB" controls preload="none"></audio></section></div>
+<section class="questions card">
+<fieldset><legend>Overall preference</legend><p>Which output would you actually prefer to use in a voice-cloning application?</p><div class="choices" data-question="overall"></div></fieldset>
+</section>
+<section id="reveal" class="reveal card" hidden aria-live="polite"><h2>Clip identities</h2><div class="reveal-sides"><p><strong>A:</strong> <span id="conditionA"></span></p><p><strong>B:</strong> <span id="conditionB"></span></p></div><p id="metricNotice" class="metric-notice"></p><div id="clipMetrics" class="clip-metrics"></div></section>
+<section class="observations card"><h2>Optional observations</h2><div class="checks"><label><input id="errorA" type="checkbox"> A has an audible content/pronunciation error</label><label><input id="errorB" type="checkbox"> B has an audible content/pronunciation error</label></div><label class="notes-label" for="notes">Notes</label><textarea id="notes" rows="3" placeholder="Pauses, prosody, accent, missing or strange words, pitch…"></textarea></section>
+<nav><button id="previous" class="secondary">Previous</button><span id="answered"></span><button id="next">Next</button></nav>
+<div class="submit-row"><button id="submit" class="submit" disabled>Submit completed test and reveal results</button></div>
+</section>
+<section id="results" hidden><div class="results-head"><p class="eyebrow">SUBMITTED · ANSWER KEY REVEALED</p><h2>Your blinded listening results</h2><p>These are one listener’s preferences. Repeated trials are excluded from primary counts.</p></div><div id="report"></div></section>
+</main><script src="/static/app.js"></script></body></html>
