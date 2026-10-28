@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import { LabWorkstation } from "@/components/lab/lab-workstation";
 
 export const metadata: Metadata = {
-  title: "Clip Lab | Speechcraft",
+  title: "Curate Data | Speechcraft",
 };
 
 // Inherently dynamic: reads URL search params and fetches live data from the

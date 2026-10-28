@@ -780,12 +780,24 @@ export function LabWorkstation() {
                 mode === "lab" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
               )}
             >
-              Clip Lab
+              Curate Data
+            </button>
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Train Voice
+            </button>
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Voice Studio
             </button>
           </div>
           <div>
             <h1 className="font-serif text-lg leading-none">
-              {mode === "lab" ? "Clip Lab" : "Dataset Health"}
+              {mode === "lab" ? "Curate Data" : "Dataset Health"}
             </h1>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {mode === "lab"
